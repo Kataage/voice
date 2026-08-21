@@ -5,7 +5,6 @@ from pathlib import Path
 
 from personavoice import doctor, setup_env
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
