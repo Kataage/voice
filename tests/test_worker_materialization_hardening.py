@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from personavoice.doctor import report as doctor_report
+
 
 def _load_asr_worker(monkeypatch):
     faster_whisper = types.ModuleType("faster_whisper")
@@ -86,6 +88,19 @@ def test_asr_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monk
     result = worker.download({})
     assert result["revision"] == worker.PINNED_MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.PINNED_MODEL_REVISION
+
+
+def test_doctor_asr_static_check_requires_config_and_weights(tmp_path: Path):
+    local = tmp_path / "models" / "asr" / "large-v3"
+    local.mkdir(parents=True)
+    (local / "model.bin").write_bytes(b"weights")
+
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["asr"] is False
+
+    (local / "config.json").write_text("{}\n", encoding="utf-8")
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["asr"] is True
 
 
 def test_pyannote_local_source_requires_nonempty_config_and_revision(tmp_path: Path, monkeypatch):
