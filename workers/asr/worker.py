@@ -19,10 +19,14 @@ def model_path(model: str) -> str:
     return str(local) if local.exists() else model
 
 
-def make_model(name: str, compute_type: str = "auto") -> WhisperModel:
+def cuda_available() -> bool:
     import ctranslate2
 
-    device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+    return ctranslate2.get_cuda_device_count() > 0
+
+
+def make_model(name: str, compute_type: str = "auto") -> WhisperModel:
+    device = "cuda" if cuda_available() else "cpu"
     if compute_type == "auto":
         compute_type = "float16" if device == "cuda" else "int8"
     return WhisperModel(
@@ -103,7 +107,8 @@ def download(payload: dict) -> dict:
 
 
 def health(payload: dict) -> dict:
-    result = {"ok": True}
+    has_cuda = cuda_available()
+    result = {"ok": True, "cuda": has_cuda, "device": "cuda" if has_cuda else "cpu"}
     if payload.get("deep"):
         model = make_model(payload.get("model", "large-v3"), payload.get("compute_type", "auto"))
         result["model_loaded"] = model is not None
