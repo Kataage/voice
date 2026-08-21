@@ -93,7 +93,16 @@ class PersonaConfig(StrictConfigModel):
         value = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError(f"Persona config must contain a YAML mapping: {path}")
-        return cls.model_validate(value)
+        config = cls.model_validate(value)
+        # A persona.yaml is namespaced by its directory. Allowing the embedded
+        # name to drift would change speaker labels/model run names while the
+        # command still targets a different persona directory.
+        if path.name == "persona.yaml" and path.parent.name != config.name:
+            raise ValueError(
+                f"Persona config name {config.name!r} does not match directory "
+                f"{path.parent.name!r}: {path}"
+            )
+        return config
 
     def save(self, path: Path) -> None:
         path.write_text(
