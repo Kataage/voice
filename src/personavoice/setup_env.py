@@ -150,6 +150,8 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
             "lfm_revision": LFM_MODEL_REVISION,
             "asr_revision": ASR_MODEL_REVISION,
+        },
+        "prepare_assets": {
             "pyannote_revision": PYANNOTE_MODEL_REVISION,
             "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
             "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
