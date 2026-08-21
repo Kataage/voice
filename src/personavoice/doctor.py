@@ -254,11 +254,12 @@ def report(
 ) -> dict:
     required = {name: shutil.which(name) for name in ("uv", "git", "ffmpeg", "ffprobe")}
     runtime = repo_root / ".runtime"
+    asr_dir = repo_root / "models" / "asr" / "large-v3"
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
         "lfm": _nonempty_file(repo_root / "models/lfm/base/config.json"),
-        "asr": _nonempty_file(repo_root / "models/asr/large-v3/model.bin"),
+        "asr": _nonempty_file(asr_dir / "config.json") and _nonempty_file(asr_dir / "model.bin"),
         "pyannote": _nonempty_file(repo_root / "models/pyannote/community-1/config.yaml"),
         "sense": _nonempty_file(runtime / "sense-model-ready"),
         "seed_vc_models": _nonempty_file(runtime / "seed-vc-models-ready"),
