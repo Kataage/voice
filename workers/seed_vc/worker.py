@@ -4,12 +4,15 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
 from contextlib import nullcontext
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
 REVISION_MARKER = ".personavoice-revision"
+EXPECTED_VENDOR_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
 
 
 def read_request(path: str) -> dict:
@@ -44,6 +47,21 @@ def _contract_digest() -> str:
     return _sha256(_contract_path())
 
 
+def _canonical_relative(value, *, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"{label} must be a non-empty relative path")
+    if "\\" in value:
+        raise RuntimeError(f"{label} must use canonical forward-slash separators: {value!r}")
+    relative = Path(value)
+    windows = PureWindowsPath(value)
+    if relative.is_absolute() or windows.is_absolute() or windows.drive or ".." in relative.parts:
+        raise RuntimeError(f"{label} escapes the Seed-VC asset directory: {value!r}")
+    normalized = relative.as_posix()
+    if normalized in {"", "."}:
+        raise RuntimeError(f"{label} must name a path below the asset directory")
+    return normalized
+
+
 def _load_contract() -> dict:
     path = _contract_path()
     try:
@@ -55,17 +73,49 @@ def _load_contract() -> dict:
     snapshots = value.get("snapshots")
     if not isinstance(snapshots, dict) or not snapshots:
         raise RuntimeError("Seed-VC asset contract contains no snapshots")
+
+    seen_dirs: set[str] = set()
+    for name, snapshot in snapshots.items():
+        if not isinstance(name, str) or not name or not isinstance(snapshot, dict):
+            raise RuntimeError("Seed-VC asset contract contains an invalid snapshot entry")
+        repo_id = snapshot.get("repo_id")
+        revision = snapshot.get("revision")
+        local_dir = _canonical_relative(snapshot.get("local_dir"), label=f"{name}.local_dir")
+        required = snapshot.get("required_files")
+        hashes = snapshot.get("sha256") or {}
+        if not isinstance(repo_id, str) or "/" not in repo_id:
+            raise RuntimeError(f"{name}.repo_id is invalid")
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise RuntimeError(f"{name}.revision must be a full 40-character Git commit")
+        if local_dir in seen_dirs:
+            raise RuntimeError(f"duplicate Seed-VC local_dir: {local_dir}")
+        seen_dirs.add(local_dir)
+        if not isinstance(required, list) or not required or not isinstance(hashes, dict):
+            raise RuntimeError(f"{name}.required_files/sha256 contract is invalid")
+        normalized = [
+            _canonical_relative(item, label=f"{name}.required_files") for item in required
+        ]
+        if len(normalized) != len(set(normalized)):
+            raise RuntimeError(f"{name}.required_files contains duplicates")
+        normalized_hashes: dict[str, str] = {}
+        for raw_relative, digest in hashes.items():
+            relative = _canonical_relative(raw_relative, label=f"{name}.sha256 key")
+            if relative not in normalized:
+                raise RuntimeError(f"{name}.sha256 references undeclared asset: {raw_relative}")
+            if relative in normalized_hashes:
+                raise RuntimeError(f"{name}.sha256 contains duplicate canonical paths")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise RuntimeError(f"{name}.sha256[{raw_relative!r}] is invalid")
+            normalized_hashes[relative] = digest
+        snapshot["local_dir"] = local_dir
+        snapshot["required_files"] = normalized
+        snapshot["sha256"] = normalized_hashes
     return value
 
 
 def _snapshot_dir(snapshot: dict) -> Path:
-    local_dir = snapshot.get("local_dir")
-    if not isinstance(local_dir, str) or not local_dir:
-        raise RuntimeError("Seed-VC asset contract has an invalid local_dir")
-    relative = Path(local_dir)
-    if relative.is_absolute() or relative.drive or ".." in relative.parts:
-        raise RuntimeError(f"Seed-VC local_dir escapes the asset root: {local_dir!r}")
-    return (_asset_root() / relative).resolve()
+    local_dir = _canonical_relative(snapshot.get("local_dir"), label="snapshot.local_dir")
+    return (_asset_root() / local_dir).resolve()
 
 
 def _validate_assets(*, verify_hashes: bool) -> dict[str, Path]:
@@ -73,31 +123,19 @@ def _validate_assets(*, verify_hashes: bool) -> dict[str, Path]:
     directories: dict[str, Path] = {}
     errors: list[str] = []
     for name, snapshot in contract["snapshots"].items():
-        if not isinstance(name, str) or not isinstance(snapshot, dict):
-            raise RuntimeError("Seed-VC asset contract contains an invalid snapshot entry")
         directory = _snapshot_dir(snapshot)
         directories[name] = directory
-        revision = snapshot.get("revision")
+        revision = snapshot["revision"]
         marker = directory / REVISION_MARKER
         try:
             recorded = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
         except OSError:
             recorded = None
-        if not isinstance(revision, str) or recorded != revision:
+        if recorded != revision:
             errors.append(f"{name}: revision marker mismatch")
-        required = snapshot.get("required_files")
-        hashes = snapshot.get("sha256") or {}
-        if not isinstance(required, list) or not isinstance(hashes, dict):
-            errors.append(f"{name}: invalid required_files/sha256 contract")
-            continue
-        for raw_relative in required:
-            if not isinstance(raw_relative, str) or not raw_relative:
-                errors.append(f"{name}: invalid required file path")
-                continue
-            relative = Path(raw_relative)
-            if relative.is_absolute() or relative.drive or ".." in relative.parts:
-                errors.append(f"{name}: required file escapes asset directory: {raw_relative}")
-                continue
+        hashes = snapshot["sha256"]
+        for raw_relative in snapshot["required_files"]:
+            relative = _canonical_relative(raw_relative, label=f"{name}.required file")
             path = directory / relative
             try:
                 valid = path.is_file() and path.stat().st_size > 0
@@ -106,7 +144,7 @@ def _validate_assets(*, verify_hashes: bool) -> dict[str, Path]:
             if not valid:
                 errors.append(f"{name}: missing/empty required asset: {raw_relative}")
                 continue
-            expected = hashes.get(raw_relative)
+            expected = hashes.get(relative)
             if verify_hashes and isinstance(expected, str):
                 actual = _sha256(path)
                 if actual != expected:
@@ -140,8 +178,35 @@ def _ready_marker_matches_contract() -> bool:
 
 def vendor() -> Path:
     path = _root() / "vendor" / "seed-vc"
-    if not (path / "inference_v2.py").is_file():
+    if not (path / "inference_v2.py").is_file() or not (path / ".git").exists():
         raise FileNotFoundError("Seed-VC is not installed. Run `persona setup` first.")
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("Seed-VC vendor checkout integrity could not be verified") from exc
+    if head != EXPECTED_VENDOR_REVISION:
+        raise RuntimeError(
+            f"Seed-VC vendor HEAD mismatch: expected {EXPECTED_VENDOR_REVISION}, got {head}. "
+            "Run `persona setup` to restore the audited checkout."
+        )
+    if status:
+        raise RuntimeError(
+            "Seed-VC vendor checkout has tracked local modifications. "
+            "Run `persona setup` after restoring the audited checkout."
+        )
     return path
 
 
@@ -174,6 +239,21 @@ def _cpu_autocast_override(original_autocast):
         return original_autocast(*args, **kwargs)
 
     return replacement
+
+
+def _declared_file(snapshot: dict, directory: Path, value, *, label: str) -> Path:
+    relative = _canonical_relative(value, label=label)
+    required = snapshot.get("required_files")
+    if not isinstance(required, list) or relative not in required:
+        raise RuntimeError(f"Seed-VC attempted undeclared local asset access: {label}={relative}")
+    candidate = directory / relative
+    try:
+        valid = candidate.is_file() and candidate.stat().st_size > 0
+    except OSError:
+        valid = False
+    if not valid:
+        raise FileNotFoundError(f"Pinned Seed-VC asset is missing: {candidate}")
+    return candidate
 
 
 def _load_wrapper(
@@ -225,16 +305,22 @@ def _load_wrapper(
                 raise RuntimeError(
                     f"Seed-VC attempted undeclared Hugging Face access: {repo_id}:{model_filename}"
                 )
-            name, _snapshot = mapped
+            name, snapshot = mapped
             directory = directories[name]
-            model_path = directory / str(model_filename)
-            if not model_path.is_file() or model_path.stat().st_size <= 0:
-                raise FileNotFoundError(f"Pinned Seed-VC asset is missing: {model_path}")
+            model_path = _declared_file(
+                snapshot,
+                directory,
+                model_filename,
+                label=f"{name}.model_filename",
+            )
             if config_filename is None:
                 return str(model_path)
-            config_path = directory / str(config_filename)
-            if not config_path.is_file() or config_path.stat().st_size <= 0:
-                raise FileNotFoundError(f"Pinned Seed-VC config asset is missing: {config_path}")
+            config_path = _declared_file(
+                snapshot,
+                directory,
+                config_filename,
+                label=f"{name}.config_filename",
+            )
             return str(model_path), str(config_path)
 
         original_resolver = vc_module.load_custom_model_from_hf
@@ -302,10 +388,13 @@ def convert(payload: dict) -> dict:
             "Seed-VC pinned assets are not finalized for this repository contract. "
             "Run `persona setup` first."
         )
+    # Re-hash every inference-critical pinned weight before use. Seed-VC inference
+    # is expensive enough that this small deterministic I/O cost is preferable to
+    # silently accepting same-size corruption after setup.
     wrapper, torch, device, dtype = _load_wrapper(
         ar_checkpoint=payload.get("ar_checkpoint"),
         cfm_checkpoint=payload.get("cfm_checkpoint"),
-        verify_hashes=False,
+        verify_hashes=True,
     )
     source = Path(payload["source"]).expanduser().resolve()
     target = Path(payload["target"]).expanduser().resolve()
