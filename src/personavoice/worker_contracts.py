@@ -26,9 +26,7 @@ def _timed_row(value: Any, *, require_speaker: bool) -> bool:
         return False
     if float(start) < 0 or float(end) < float(start):
         return False
-    if require_speaker and not isinstance(value.get("speaker"), str):
-        return False
-    return True
+    return not (require_speaker and not isinstance(value.get("speaker"), str))
 
 
 def valid_embedding_result(value: Any) -> bool:
