@@ -59,6 +59,9 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
             repo_root / "src" / "personavoice" / "irodori.py"
         ),
         "lfm_train_code_sha256": _file_contract(repo_root / "workers" / "lfm" / "train.py"),
+        "lfm_model_contract_code_sha256": _file_contract(
+            repo_root / "workers" / "lfm" / "model_contract.py"
+        ),
         "seed_vc_worker_code_sha256": _file_contract(
             repo_root / "workers" / "seed_vc" / "worker.py"
         ),
