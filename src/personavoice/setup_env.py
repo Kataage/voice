@@ -8,7 +8,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from personavoice.atomic import atomic_write_json, atomic_write_text
-from personavoice.environment_contract import environment_contract
+from personavoice.environment_contract import SETUP_TRANSACTION_MARKER, environment_contract
 from personavoice.hardware import detect_irodori_backend
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
@@ -213,6 +213,23 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         expected = ", ".join(sorted(SUPPORTED_IRODORI_BACKENDS))
         raise ValueError(f"Unsupported Irodori backend {selected_backend!r}; choose one of: {expected}")
 
+    worker_extras = _worker_extras(selected_backend)
+    runtime = repo_root / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    transaction_marker = runtime / SETUP_TRANSACTION_MARKER
+    transaction_state = {
+        "schema_version": 1,
+        "irodori_backend": selected_backend,
+        "worker_backends": worker_extras,
+        "irodori_revision": IRODORI_REVISION,
+        "seed_vc_revision": SEED_VC_REVISION,
+        "environment_contract": environment_contract(repo_root),
+    }
+    # This marker is written before the first environment mutation. It is
+    # deliberately kept on any failure so an old setup.json can never authorize
+    # a partially replaced CPU/CUDA environment after an interrupted setup.
+    atomic_write_json(transaction_marker, transaction_state)
+
     irodori = _clone_pinned(
         repo_root,
         "Irodori-TTS",
@@ -222,14 +239,11 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     seed = _clone_pinned(repo_root, "seed-vc", SEED_VC_REPO, SEED_VC_REVISION)
     _install_irodori(repo_root, irodori, selected_backend)
 
-    worker_extras = _worker_extras(selected_backend)
     synced = []
     for name in ("asr", "diarization", "sense", "lfm", "seed_vc"):
         worker(repo_root, name).sync(repo_root, extra=worker_extras[name])
         synced.append(name)
 
-    runtime = repo_root / ".runtime"
-    runtime.mkdir(parents=True, exist_ok=True)
     setup_state = {
         "irodori_backend": selected_backend,
         "worker_backends": worker_extras,
@@ -251,6 +265,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         },
     }
     atomic_write_json(runtime / "setup.json", setup_state)
+    transaction_marker.unlink(missing_ok=True)
     return {
         **setup_state,
         "workers": synced,
