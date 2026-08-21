@@ -491,7 +491,7 @@ def prepare_persona(
     if not force and store.is_complete("prepare", fingerprint):
         return store.stage("prepare").get("result", {})
 
-    with store.running("prepare", fingerprint):
+    with store.running("prepare", fingerprint, force=force):
         source_inventory = inventory(paths.raw)
         _dump(paths.dataset / "source_inventory.json", source_inventory)
 
