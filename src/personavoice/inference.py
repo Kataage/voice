@@ -19,7 +19,9 @@ from personavoice.irodori import (
     base_checkpoint,
     codec_checkpoint,
     configured_backend,
+    lora_adapter_complete,
     reference_files,
+    speaker_embedding_complete,
     vendor_dir,
 )
 from personavoice.process import run
@@ -47,6 +49,13 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _caption(style: str | None, emotion: str | None, events: list[str] | None) -> str:
     pieces = []
     if style:
@@ -67,23 +76,25 @@ def _caption(style: str | None, emotion: str | None, events: list[str] | None) -
 
 def resolve_reference(paths: PersonaPaths, ref: str | Path | None) -> list[Path]:
     if ref is None:
-        return reference_files(paths.references)
-    candidate = Path(ref)
-    if candidate.exists():
+        return [path for path in reference_files(paths.references) if _nonempty_file(path)]
+    candidate = Path(ref).expanduser()
+    if _nonempty_file(candidate):
         return [candidate.resolve()]
     named = paths.references / "by_emotion" / str(ref).lower()
-    if named.exists():
-        files = sorted(named.glob("*.flac"))
+    if named.is_dir():
+        files = [path for path in sorted(named.glob("*.flac")) if _nonempty_file(path)]
         if files:
             return files
-    raise FileNotFoundError(f"Reference {ref!r} is neither a file nor a known reference preset")
+    raise FileNotFoundError(
+        f"Reference {ref!r} is neither a non-empty audio file nor a known reference preset"
+    )
 
 
 def _best_lora_adapter(paths: PersonaPaths) -> Path | None:
     root = paths.models / "irodori" / "lora"
     candidates: list[tuple[float, Path]] = []
     for path in root.glob("checkpoint_best_val_loss_*"):
-        if not path.is_dir():
+        if not path.is_dir() or not lora_adapter_complete(path):
             continue
         try:
             score = float(path.name.rsplit("_", 1)[-1])
@@ -94,11 +105,18 @@ def _best_lora_adapter(paths: PersonaPaths) -> Path | None:
         candidates.sort(key=lambda item: item[0])
         return candidates[0][1]
     final = root / "checkpoint_final"
-    return final if final.exists() else None
+    return final if lora_adapter_complete(final) else None
 
 
 def _verify_outputs(paths: list[Path]) -> list[Path]:
-    missing = [path for path in paths if not path.is_file() or path.stat().st_size <= 44]
+    missing = []
+    for path in paths:
+        try:
+            valid = path.is_file() and path.stat().st_size > 44
+        except OSError:
+            valid = False
+        if not valid:
+            missing.append(path)
     if missing:
         raise RuntimeError(
             "Irodori finished without creating valid output WAV(s): "
@@ -108,10 +126,13 @@ def _verify_outputs(paths: list[Path]) -> list[Path]:
 
 
 def _append_audio_reference_args(args: list[str | Path], refs: list[Path]) -> None:
-    if len(refs) == 1:
-        args += ["--ref-wav", refs[0]]
+    valid_refs = [path for path in refs if _nonempty_file(path)]
+    if not valid_refs:
+        raise FileNotFoundError("No non-empty Irodori audio reference is available")
+    if len(valid_refs) == 1:
+        args += ["--ref-wav", valid_refs[0]]
     else:
-        args += ["--ref-wavs", *refs]
+        args += ["--ref-wavs", *valid_refs]
 
 
 def _append_reference_args(
@@ -121,36 +142,32 @@ def _append_reference_args(
     ref: str | Path | None,
 ) -> None:
     speaker = paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
-
-    # An explicit --ref always means audio reference and overrides the default mode.
     if ref is not None:
         _append_audio_reference_args(args, resolve_reference(paths, ref))
         return
 
     mode = cfg.inference.reference_mode
     if mode == "speaker-embed":
-        if not speaker.is_file():
+        if not speaker_embedding_complete(speaker):
             raise FileNotFoundError(
-                "inference.reference_mode is 'speaker-embed', but no trained speaker embedding "
-                "exists. Run `persona train` with Irodori Speaker Inversion enabled or choose "
-                "reference_mode: auto/audio."
+                "inference.reference_mode is 'speaker-embed', but no complete trained speaker "
+                "embedding exists. Run `persona train` with Irodori Speaker Inversion enabled "
+                "or choose reference_mode: auto/audio."
             )
         args += ["--ref-embed", speaker]
         return
 
-    refs = reference_files(paths.references)
+    refs = [path for path in reference_files(paths.references) if _nonempty_file(path)]
     if mode == "audio":
         if not refs:
             raise FileNotFoundError(
-                "inference.reference_mode is 'audio', but the reference bank is empty. "
+                "inference.reference_mode is 'audio', but the reference bank has no valid audio. "
                 "Run `persona prepare` or pass --ref explicitly."
             )
         _append_audio_reference_args(args, refs)
         return
 
-    # auto: prefer the compact learned speaker embedding, then the prepared
-    # reference bank, and only use unconditioned synthesis when neither exists.
-    if speaker.is_file():
+    if speaker_embedding_complete(speaker):
         args += ["--ref-embed", speaker]
     elif refs:
         _append_audio_reference_args(args, refs)
@@ -189,11 +206,7 @@ def synthesize(
     if requested < 1:
         raise ValueError("candidates must be at least 1")
     gpus = nvidia_gpus() if backend == "cu128" else []
-    requested = (
-        1
-        if not gpus or max(gpu.total_mib for gpu in gpus) < 16000
-        else min(requested, 4)
-    )
+    requested = 1 if not gpus or max(gpu.total_mib for gpu in gpus) < 16000 else min(requested, 4)
 
     args: list[str | Path] = [
         "uv",
@@ -246,9 +259,9 @@ def synthesize(
 
 
 def _best_reference(paths: PersonaPaths) -> Path:
-    refs = reference_files(paths.references)
+    refs = [path for path in reference_files(paths.references) if _nonempty_file(path)]
     if not refs:
-        raise FileNotFoundError("No reference bank exists. Run `persona prepare` first.")
+        raise FileNotFoundError("No valid reference bank exists. Run `persona prepare` first.")
     return refs[0]
 
 
@@ -262,9 +275,8 @@ def reenact(
     transfer_style: bool = True,
 ) -> Path:
     _ensure_authorized(cfg)
-    # Seed-VC upstream derives a deterministic filename from source/target/settings.
-    # Isolate each call so repeated or concurrent conversions cannot overwrite each
-    # other and confuse the worker's newly-created-output detection.
+    if not _nonempty_file(source):
+        raise FileNotFoundError(f"Source audio is missing or empty: {source}")
     output_dir = paths.outputs / "reenact" / _stamp()
     cfm = paths.models / "seed_vc" / "cfm.pth"
     target = resolve_reference(paths, ref)[0] if ref is not None else _best_reference(paths)
@@ -279,17 +291,23 @@ def reenact(
             "similarity_cfg_rate": cfg.inference.seed_vc_similarity_cfg,
             "intelligibility_cfg_rate": cfg.inference.seed_vc_intelligibility_cfg,
             "convert_style": transfer_style,
-            "cfm_checkpoint": str(cfm.resolve()) if cfm.exists() else None,
+            "cfm_checkpoint": str(cfm.resolve()) if _nonempty_file(cfm) else None,
         },
     )
     output = Path(result["output"])
-    if not output.is_file() or output.stat().st_size <= 44:
+    try:
+        valid = output.is_file() and output.stat().st_size > 44
+    except OSError:
+        valid = False
+    if not valid:
         raise RuntimeError(f"Seed-VC returned an invalid output: {output}")
     return output
 
 
 def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Path) -> list[Path]:
     _ensure_authorized(cfg)
+    if not _nonempty_file(source):
+        raise FileNotFoundError(f"Source audio is missing or empty: {source}")
     asr = worker(repo_root, "asr").call(
         repo_root,
         "transcribe",
@@ -301,8 +319,7 @@ def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Pat
         },
     )
     text = "".join(
-        str(segment.get("text") or "").strip()
-        for segment in asr.get("segments", [])
+        str(segment.get("text") or "").strip() for segment in asr.get("segments", [])
     ).strip()
     sense = worker(repo_root, "sense").call(
         repo_root,
@@ -312,9 +329,7 @@ def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Pat
     if not text:
         if sense.get("events"):
             return [reenact(repo_root, paths, cfg, source, transfer_style=True)]
-        raise RuntimeError(
-            "No speech or supported non-verbal event could be detected in the source audio"
-        )
+        raise RuntimeError("No speech or supported non-verbal event could be detected in the source audio")
     return synthesize(
         repo_root,
         paths,
@@ -344,11 +359,7 @@ def _extract_json(text: str) -> dict[str, Any]:
             pass
     return {
         "text": text,
-        "voice": {
-            "caption": "自然に話している。",
-            "emotion": "NEUTRAL",
-            "events": [],
-        },
+        "voice": {"caption": "自然に話している。", "emotion": "NEUTRAL", "events": []},
     }
 
 
@@ -399,7 +410,7 @@ def chat_turn(
     result = worker(repo_root, "lfm").call(
         repo_root,
         "infer",
-        {"messages": messages, "adapter": str(adapter) if adapter.exists() else None},
+        {"messages": messages, "adapter": str(adapter) if adapter.is_dir() else None},
     )
     plan = _normalize_chat_plan(_extract_json(str(result.get("text") or "")))
     voice = plan["voice"]
