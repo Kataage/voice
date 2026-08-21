@@ -19,7 +19,7 @@ def vendor() -> Path:
     return path
 
 
-def download(payload: dict) -> dict:
+def load_default_wrapper() -> dict:
     root = vendor()
     sys.path.insert(0, str(root))
     old = Path.cwd()
@@ -30,12 +30,18 @@ def download(payload: dict) -> dict:
         from hydra.utils import instantiate
         from omegaconf import DictConfig
 
-        cfg = DictConfig(yaml.safe_load((root / "configs/v2/vc_wrapper.yaml").read_text(encoding="utf-8")))
+        cfg = DictConfig(
+            yaml.safe_load((root / "configs/v2/vc_wrapper.yaml").read_text(encoding="utf-8"))
+        )
         wrapper = instantiate(cfg)
         wrapper.load_checkpoints(ar_checkpoint_path=None, cfm_checkpoint_path=None)
-        return {"ok": True, "cuda": torch.cuda.is_available()}
+        return {"ok": True, "cuda": torch.cuda.is_available(), "models_loaded": True}
     finally:
         os.chdir(old)
+
+
+def download(payload: dict) -> dict:
+    return load_default_wrapper()
 
 
 def convert(payload: dict) -> dict:
@@ -46,17 +52,28 @@ def convert(payload: dict) -> dict:
     args = [
         sys.executable,
         str(root / "inference_v2.py"),
-        "--source", payload["source"],
-        "--target", payload["target"],
-        "--output", str(output_dir),
-        "--diffusion-steps", str(payload.get("diffusion_steps", 30)),
-        "--length-adjust", str(payload.get("length_adjust", 1.0)),
-        "--intelligibility-cfg-rate", str(payload.get("intelligibility_cfg_rate", 0.7)),
-        "--similarity-cfg-rate", str(payload.get("similarity_cfg_rate", 0.7)),
-        "--top-p", str(payload.get("top_p", 0.9)),
-        "--temperature", str(payload.get("temperature", 1.0)),
-        "--repetition-penalty", str(payload.get("repetition_penalty", 1.0)),
-        "--convert-style", "true" if payload.get("convert_style", True) else "false",
+        "--source",
+        payload["source"],
+        "--target",
+        payload["target"],
+        "--output",
+        str(output_dir),
+        "--diffusion-steps",
+        str(payload.get("diffusion_steps", 30)),
+        "--length-adjust",
+        str(payload.get("length_adjust", 1.0)),
+        "--intelligibility-cfg-rate",
+        str(payload.get("intelligibility_cfg_rate", 0.7)),
+        "--similarity-cfg-rate",
+        str(payload.get("similarity_cfg_rate", 0.7)),
+        "--top-p",
+        str(payload.get("top_p", 0.9)),
+        "--temperature",
+        str(payload.get("temperature", 1.0)),
+        "--repetition-penalty",
+        str(payload.get("repetition_penalty", 1.0)),
+        "--convert-style",
+        "true" if payload.get("convert_style", True) else "false",
     ]
     if payload.get("ar_checkpoint"):
         args += ["--ar-checkpoint-path", payload["ar_checkpoint"]]
@@ -72,6 +89,12 @@ def convert(payload: dict) -> dict:
     return {"output": str(result.resolve())}
 
 
+def health(payload: dict) -> dict:
+    if payload.get("deep"):
+        return load_default_wrapper()
+    return {"ok": True, "vendor": str(vendor())}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["convert", "download", "health"])
@@ -83,7 +106,7 @@ def main() -> None:
     elif args.command == "download":
         result = download(payload)
     else:
-        result = {"ok": True}
+        result = health(payload)
     print(json.dumps(result, ensure_ascii=False))
 
 
