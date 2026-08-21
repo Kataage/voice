@@ -22,6 +22,7 @@ from personavoice.model_assets import (
     SENSE_MODEL_WEIGHT_SHA256,
 )
 from personavoice.process import run
+from personavoice.seed_vc_assets import materialization_status as seed_vc_materialization_status
 from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_REVISION
 from personavoice.workers import local_model_env, worker
 
@@ -130,13 +131,21 @@ def _nonempty_file(path: Path) -> bool:
         return False
 
 
-def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
+def _model_asset_integrity(
+    repo_root: Path,
+    setup: dict,
+    *,
+    deep: bool,
+    require_seed_vc: bool,
+    seed_vc_status: dict,
+) -> dict:
     expected_setup = {
         "irodori_model_sha256": IRODORI_MODEL_SHA256,
         "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
         "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
         "lfm_revision": LFM_MODEL_REVISION,
         "asr_revision": ASR_MODEL_REVISION,
+        "seed_vc_asset_contract_sha256": seed_vc_status.get("contract_sha256"),
     }
     expected_prepare = {
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
@@ -169,6 +178,7 @@ def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
         "asr_revision": asr_revision,
         "pyannote_revision": pyannote_revision,
         "sense_verified_marker": sense_marker,
+        "seed_vc": seed_vc_status,
         "irodori_sha256": None,
         "dacvae_sha256": None,
     }
@@ -187,6 +197,12 @@ def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
         errors.append("pyannote materialized revision does not match the audited revision")
     if sense_marker != "verified":
         errors.append("SenseVoice assets have not been verified by the current setup")
+    if require_seed_vc and not bool(seed_vc_status.get("ok")):
+        seed_errors = seed_vc_status.get("errors")
+        if isinstance(seed_errors, list) and seed_errors:
+            errors.extend(f"Seed-VC: {value}" for value in seed_errors)
+        else:
+            errors.append("Seed-VC pinned assets are incomplete or stale")
 
     if deep and _nonempty_file(irodori) and _nonempty_file(dacvae):
         try:
@@ -285,6 +301,7 @@ def report(
     asr_dir = repo_root / "models" / "asr" / "large-v3"
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
     sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
+    seed_vc_status = seed_vc_materialization_status(repo_root, verify_hashes=deep)
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
@@ -295,7 +312,7 @@ def report(
         ),
         "sense": all(_nonempty_file(sense_dir / name) for name in _SENSE_REQUIRED_FILES)
         and _read_revision(runtime / "sense-model-ready") == "verified",
-        "seed_vc_models": _nonempty_file(runtime / "seed-vc-models-ready"),
+        "seed_vc_models": bool(seed_vc_status.get("ok")),
         "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
         "irodori_vendor": _nonempty_file(repo_root / "vendor/Irodori-TTS/infer.py"),
     }
@@ -306,7 +323,13 @@ def report(
     active_workers = tuple(name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc")
     setup = _setup_state(repo_root)
     environment = environment_contract_status(repo_root, setup.get("environment_contract"))
-    model_assets = _model_asset_integrity(repo_root, setup, deep=deep)
+    model_assets = _model_asset_integrity(
+        repo_root,
+        setup,
+        deep=deep,
+        require_seed_vc=require_seed_vc,
+        seed_vc_status=seed_vc_status,
+    )
     vendor_integrity = {
         "irodori": _vendor_integrity(repo_root, "Irodori-TTS", IRODORI_REVISION),
         "seed_vc": _vendor_integrity(repo_root, "seed-vc", SEED_VC_REVISION),
