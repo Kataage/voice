@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 import torch
 from huggingface_hub import snapshot_download
@@ -17,6 +18,33 @@ REVISION_MARKER = ".personavoice-revision"
 ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 
 
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _read_marker(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip() if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 def read_request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -26,11 +54,12 @@ def base_path() -> str:
     local = root / "models" / "lfm" / "base"
     config = local / "config.json"
     marker = local / REVISION_MARKER
-    if not config.is_file():
+    if not _nonempty_file(config):
         raise FileNotFoundError(
-            f"Pinned LFM model is missing: {local}. Run `persona setup --download-models`."
+            f"Pinned LFM model is missing or incomplete: {local}. "
+            "Run `persona setup --download-models`."
         )
-    actual_revision = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    actual_revision = _read_marker(marker)
     if actual_revision != MODEL_REVISION:
         raise RuntimeError(
             "Local LFM snapshot does not match the audited revision: "
@@ -62,16 +91,15 @@ def load_base():
 def _adapter_weight(adapter: Path) -> Path | None:
     for name in ("adapter_model.safetensors", "adapter_model.bin"):
         candidate = adapter / name
-        if candidate.is_file() and candidate.stat().st_size > 0:
+        if _nonempty_file(candidate):
             return candidate
     return None
 
 
 def verify_adapter(adapter: Path) -> None:
-    if not (adapter / "adapter_config.json").is_file() or _adapter_weight(adapter) is None:
+    if not _nonempty_file(adapter / "adapter_config.json") or _adapter_weight(adapter) is None:
         raise FileNotFoundError(f"LFM adapter is incomplete: {adapter}")
-    marker = adapter / ADAPTER_REVISION_MARKER
-    revision = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    revision = _read_marker(adapter / ADAPTER_REVISION_MARKER)
     if revision != MODEL_REVISION:
         raise RuntimeError(
             "LFM adapter was not finalized against the audited JP-202606 base revision: "
@@ -116,7 +144,12 @@ def download_model(payload: dict) -> dict:
         local_dir=local,
         cache_dir=Path(os.environ["HF_HOME"]),
     )
-    (local / REVISION_MARKER).write_text(MODEL_REVISION + "\n", encoding="utf-8")
+    config = local / "config.json"
+    if not _nonempty_file(config):
+        raise FileNotFoundError(
+            f"Pinned LFM download completed without a valid config: {config}"
+        )
+    _atomic_write_text(local / REVISION_MARKER, MODEL_REVISION + "\n")
     return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}
 
 
