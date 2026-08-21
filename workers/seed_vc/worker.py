@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
@@ -62,7 +63,7 @@ def _snapshot_dir(snapshot: dict) -> Path:
     if not isinstance(local_dir, str) or not local_dir:
         raise RuntimeError("Seed-VC asset contract has an invalid local_dir")
     relative = Path(local_dir)
-    if relative.is_absolute() or ".." in relative.parts:
+    if relative.is_absolute() or relative.drive or ".." in relative.parts:
         raise RuntimeError(f"Seed-VC local_dir escapes the asset root: {local_dir!r}")
     return (_asset_root() / relative).resolve()
 
@@ -94,7 +95,7 @@ def _validate_assets(*, verify_hashes: bool) -> dict[str, Path]:
                 errors.append(f"{name}: invalid required file path")
                 continue
             relative = Path(raw_relative)
-            if relative.is_absolute() or ".." in relative.parts:
+            if relative.is_absolute() or relative.drive or ".." in relative.parts:
                 errors.append(f"{name}: required file escapes asset directory: {raw_relative}")
                 continue
             path = directory / relative
@@ -153,6 +154,26 @@ def _checkpoint(path: str | None, default: Path, *, label: str) -> Path:
     if not valid:
         raise FileNotFoundError(f"{label} checkpoint is missing or empty: {candidate}")
     return candidate
+
+
+def _cpu_autocast_override(original_autocast):
+    """Make Seed-VC's internal CPU autocast scopes explicit no-ops.
+
+    The pinned Seed-VC wrapper opens ``torch.autocast`` internally. Torch 2.4
+    disables CPU autocast when passed float32, but emits a warning and makes the
+    behavior dependent on AMP policy. PersonaVoice deliberately executes the CPU
+    fallback in plain fp32 instead. Non-CPU autocast calls are delegated unchanged.
+    """
+
+    def replacement(*args, **kwargs):
+        device_type = kwargs.get("device_type")
+        if device_type is None and args:
+            device_type = args[0]
+        if device_type == "cpu":
+            return nullcontext()
+        return original_autocast(*args, **kwargs)
+
+    return replacement
 
 
 def _load_wrapper(
@@ -281,7 +302,7 @@ def convert(payload: dict) -> dict:
             "Seed-VC pinned assets are not finalized for this repository contract. "
             "Run `persona setup` first."
         )
-    wrapper, _torch, device, dtype = _load_wrapper(
+    wrapper, torch, device, dtype = _load_wrapper(
         ar_checkpoint=payload.get("ar_checkpoint"),
         cfm_checkpoint=payload.get("cfm_checkpoint"),
         verify_hashes=False,
@@ -296,25 +317,33 @@ def convert(payload: dict) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / f"seed-vc-{uuid4().hex}.wav"
     full_audio = None
-    generator = wrapper.convert_voice_with_streaming(
-        source_audio_path=str(source),
-        target_audio_path=str(target),
-        diffusion_steps=int(payload.get("diffusion_steps", 30)),
-        length_adjust=float(payload.get("length_adjust", 1.0)),
-        intelligebility_cfg_rate=float(payload.get("intelligibility_cfg_rate", 0.7)),
-        similarity_cfg_rate=float(payload.get("similarity_cfg_rate", 0.7)),
-        top_p=float(payload.get("top_p", 0.9)),
-        temperature=float(payload.get("temperature", 1.0)),
-        repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
-        convert_style=bool(payload.get("convert_style", True)),
-        anonymization_only=bool(payload.get("anonymization_only", False)),
-        device=device,
-        dtype=dtype,
-        stream_output=True,
-    )
-    for _chunk, candidate in generator:
-        if candidate is not None:
-            full_audio = candidate
+
+    original_autocast = torch.autocast
+    if device.type == "cpu":
+        torch.autocast = _cpu_autocast_override(original_autocast)
+    try:
+        generator = wrapper.convert_voice_with_streaming(
+            source_audio_path=str(source),
+            target_audio_path=str(target),
+            diffusion_steps=int(payload.get("diffusion_steps", 30)),
+            length_adjust=float(payload.get("length_adjust", 1.0)),
+            intelligebility_cfg_rate=float(payload.get("intelligibility_cfg_rate", 0.7)),
+            similarity_cfg_rate=float(payload.get("similarity_cfg_rate", 0.7)),
+            top_p=float(payload.get("top_p", 0.9)),
+            temperature=float(payload.get("temperature", 1.0)),
+            repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
+            convert_style=bool(payload.get("convert_style", True)),
+            anonymization_only=bool(payload.get("anonymization_only", False)),
+            device=device,
+            dtype=dtype,
+            stream_output=True,
+        )
+        for _chunk, candidate in generator:
+            if candidate is not None:
+                full_audio = candidate
+    finally:
+        torch.autocast = original_autocast
+
     if not isinstance(full_audio, tuple) or len(full_audio) != 2:
         raise RuntimeError("Seed-VC completed without a final audio result")
     sample_rate, audio = full_audio
