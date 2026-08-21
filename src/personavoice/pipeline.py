@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from personavoice.atomic import atomic_write_json
 from personavoice.captions import annotate_text, build_caption, normalize_events
 from personavoice.config import PersonaConfig
 from personavoice.dataset import export_irodori, export_lfm, export_seed_vc, replace_utterances
@@ -19,7 +20,7 @@ from personavoice.media import (
     sha256_file,
 )
 from personavoice.project import PersonaPaths
-from personavoice.speaker import dominant_speaker, overlap_ratio, select_target_speaker
+from personavoice.speaker import TARGET_NOT_FOUND, dominant_speaker, overlap_ratio, select_target_speaker
 from personavoice.state import StateStore
 from personavoice.workers import worker
 
@@ -27,17 +28,32 @@ PREPARE_SCHEMA_VERSION = 3
 
 
 def _dump(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temp.replace(path)
+    atomic_write_json(path, value)
 
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_cache_json(path: Path) -> dict[str, Any] | None:
+    """Read a disposable prepare cache, self-healing corrupt/truncated files."""
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        path.unlink(missing_ok=True)
+        return None
+    if not isinstance(value, dict):
+        path.unlink(missing_ok=True)
+        return None
+    return value
+
+
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _batch_results(rows: list[dict[str, Any]], *, operation: str) -> dict[str, Any]:
@@ -276,12 +292,13 @@ def _identity_embeddings(repo_root: Path, paths: PersonaPaths) -> list[list[floa
         key = sha256_file(source)[:20]
         cache = paths.cache / "identity" / f"{key}.json"
         cache_paths[key] = cache
-        if cache.exists():
-            cached = _read_json(cache)
-            embedding = cached.get("embedding")
-            if embedding:
-                values_by_key[key] = [float(value) for value in embedding]
+        cached = _read_cache_json(cache) if cache.is_file() else None
+        embedding = cached.get("embedding") if cached is not None else None
+        if isinstance(embedding, list) and embedding:
+            values_by_key[key] = [float(value) for value in embedding]
         else:
+            if cache.exists():
+                cache.unlink(missing_ok=True)
             pending.append({"id": key, "audio": str(source.resolve())})
     if pending:
         response = diarization.call(
@@ -311,8 +328,9 @@ def _batch_asr(
         source_id = str(source["source_id"])
         cache = paths.cache / "asr" / f"{source_id}.json"
         cache_paths[source_id] = cache
-        if cache.exists():
-            values[source_id] = _read_json(cache)
+        cached = _read_cache_json(cache) if cache.is_file() else None
+        if cached is not None:
+            values[source_id] = cached
         else:
             pending.append({"id": source_id, "audio": str(source["audio"].resolve())})
     if pending:
@@ -345,8 +363,9 @@ def _batch_diarization(
         source_id = str(source["source_id"])
         cache = paths.cache / "diarization" / f"{source_id}.json"
         cache_paths[source_id] = cache
-        if cache.exists():
-            values[source_id] = _read_json(cache)
+        cached = _read_cache_json(cache) if cache.is_file() else None
+        if cached is not None:
+            values[source_id] = cached
         else:
             pending.append({"id": source_id, "audio": str(source["audio"].resolve())})
     if pending:
@@ -375,6 +394,7 @@ def _batch_sense(
         return {}
     values: dict[str, dict[str, Any]] = {}
     pending = []
+    pending_keys: set[str] = set()
     cache_paths: dict[str, Path] = {}
     for row in rows:
         audio_path = row.get("audio_path")
@@ -385,10 +405,12 @@ def _batch_sense(
         row["sense_key"] = key
         cache = paths.cache / "sense" / f"{key}.json"
         cache_paths[key] = cache
-        if cache.exists():
-            values[key] = _read_json(cache)
-        elif key not in {str(item["id"]) for item in pending}:
+        cached = _read_cache_json(cache) if cache.is_file() else None
+        if cached is not None:
+            values[key] = cached
+        elif key not in pending_keys:
             pending.append({"id": key, "audio": str(audio.resolve())})
+            pending_keys.add(key)
     if pending:
         response = worker(repo_root, "sense").call(
             repo_root,
@@ -499,7 +521,8 @@ def prepare_persona(
         for source in source_inventory:
             source_id = source["sha256"][:16]
             source_audio = paths.cache / "audio" / f"{source_id}.flac"
-            if not source_audio.exists():
+            if not _nonempty_file(source_audio):
+                source_audio.unlink(missing_ok=True)
                 extract_lossless_audio(Path(source["absolute_path"]), source_audio)
             prepared_sources.append(
                 {
@@ -513,6 +536,7 @@ def prepare_persona(
         asr_by_source = _batch_asr(repo_root, paths, cfg, prepared_sources)
         diar_by_source = _batch_diarization(repo_root, paths, prepared_sources)
         all_rows: list[dict[str, Any]] = []
+        skipped_sources: list[dict[str, Any]] = []
 
         for prepared in prepared_sources:
             source_id = str(prepared["source_id"])
@@ -529,11 +553,17 @@ def prepare_persona(
                 identity_embeddings,
                 threshold=cfg.prepare.min_identity_similarity,
             )
-            exclusive = (
-                diarization.get("exclusive_turns")
-                or diarization.get("turns")
-                or []
-            )
+            if target_label == TARGET_NOT_FOUND:
+                skipped_sources.append(
+                    {
+                        "source_id": source_id,
+                        "source_path": source["path"],
+                        "reason": "authorized_speaker_below_identity_threshold",
+                        "best_similarity": round(float(target_similarity), 6),
+                        "threshold": cfg.prepare.min_identity_similarity,
+                    }
+                )
+            exclusive = diarization.get("exclusive_turns") or diarization.get("turns") or []
             regular = diarization.get("turns") or exclusive
             source_rows = _turn_rows(
                 asr,
@@ -578,7 +608,8 @@ def prepare_persona(
                     and (end - start) >= cfg.prepare.min_clip_seconds
                 ):
                     clip = paths.dataset / "clips" / f"{item['id']}.flac"
-                    if not clip.exists():
+                    if not _nonempty_file(clip):
+                        clip.unlink(missing_ok=True)
                         cut_audio(source_audio, clip, start, end)
                     item["audio_path"] = str(clip.resolve())
                 all_rows.append(item)
@@ -611,6 +642,7 @@ def prepare_persona(
         master_db = paths.dataset / "master.sqlite3"
         replace_utterances(master_db, all_rows)
         _dump(paths.dataset / "master.json", all_rows)
+        _dump(paths.dataset / "skipped_sources.json", skipped_sources)
         references = _select_references(paths, all_rows, cfg)
         irodori_count = export_irodori(
             master_db,
@@ -628,6 +660,7 @@ def prepare_persona(
         result = {
             "prepare_schema": PREPARE_SCHEMA_VERSION,
             "sources": len(source_inventory),
+            "skipped_sources": len(skipped_sources),
             "utterances": len(all_rows),
             "target_utterances": len(target_rows),
             "usable_tts_utterances": len(usable),
