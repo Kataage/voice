@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from personavoice import irodori
+from personavoice.dataset import replace_utterances
 from personavoice.model_assets import LFM_MODEL_REVISION
 from personavoice.state import PREPARE_CACHE_POLICY_VERSION, StateStore
 from personavoice.workers import Worker
@@ -39,6 +40,33 @@ def _state(path: Path, *, stage: str, fingerprint: str, result: dict) -> StateSt
         encoding="utf-8",
     )
     return StateStore(path)
+
+
+def _write_master(path: Path, clip: Path) -> None:
+    replace_utterances(
+        path,
+        [
+            {
+                "id": "source_000001",
+                "source_id": "source",
+                "source_path": "source.wav",
+                "start": 0.0,
+                "end": 1.0,
+                "speaker": "SPEAKER_00",
+                "target": True,
+                "speaker_similarity": 0.9,
+                "speaker_coverage": 1.0,
+                "overlap_ratio": 0.0,
+                "text": "a",
+                "text_annotated": "a",
+                "emotion": "NEUTRAL",
+                "events": [],
+                "caption": "",
+                "audio_path": str(clip.resolve()),
+                "quality": 1.0,
+            }
+        ],
+    )
 
 
 def test_worker_sync_refuses_missing_lockfile(tmp_path: Path):
@@ -85,10 +113,9 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
     fingerprint = "prepare-fingerprint"
 
     _write(dataset / "source_inventory.json", b"[]")
-    _write(dataset / "skipped_sources.json", b"[]")
     _write(dataset / "master.json", b"[]")
-    _write(dataset / "master.sqlite3", b"sqlite")
     clip = _write(dataset / "clips" / "u.flac", b"audio")
+    _write_master(dataset / "master.sqlite3", clip)
     seed_clip = _write(dataset / "seed_vc" / "audio" / "u.flac", b"audio")
     (dataset / "irodori_source.jsonl").write_text(
         json.dumps({"audio": str(clip.resolve()), "text": "a"}) + "\n",
