@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 SCHEMA_VERSION = 1
 
@@ -101,13 +102,27 @@ def load_utterances(path: Path, *, target_only: bool = False) -> list[dict[str, 
 
 
 def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> int:
+    """Publish complete JSONL exports atomically.
+
+    A killed prepare process must not leave a half-written training dataset at
+    the canonical output path. The temporary file lives beside the destination
+    so os.replace/Path.replace remains atomic on the same filesystem.
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     count = 0
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-            count += 1
-    return count
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                count += 1
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+        return count
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def export_irodori(master_db: Path, output: Path, persona_name: str) -> int:
@@ -149,6 +164,50 @@ def export_seed_vc(master_db: Path, output_dir: Path) -> int:
     return write_jsonl(output_dir / "manifest.jsonl", manifest)
 
 
+def _conversation_blocks(source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse consecutive segments from the same conversational side.
+
+    Prepare may split one long turn into several clips. Treating each target
+    clip as a new assistant response teaches the persona model to answer its own
+    immediately preceding speech. Collapsing same-side segments reconstructs a
+    cleaner dialogue-turn view while retaining the original acoustic rows for
+    TTS training.
+    """
+
+    blocks: list[dict[str, Any]] = []
+    for row in source_rows:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        target = bool(row.get("target"))
+        speaker = str(row.get("speaker") or "")
+        same_side = bool(
+            blocks
+            and blocks[-1]["target"] == target
+            and (target or blocks[-1]["speaker"] == speaker)
+        )
+        if same_side:
+            block = blocks[-1]
+            block["text"] += text
+            block["end"] = row.get("end", block["end"])
+            block["rows"].append(row)
+            if target and float(row.get("quality", 0.0)) > float(block["voice_row"].get("quality", 0.0)):
+                block["voice_row"] = row
+            continue
+        blocks.append(
+            {
+                "target": target,
+                "speaker": speaker,
+                "text": text,
+                "start": row.get("start"),
+                "end": row.get("end"),
+                "rows": [row],
+                "voice_row": row,
+            }
+        )
+    return blocks
+
+
 def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
     all_rows = load_utterances(master_db)
     examples: list[dict[str, Any]] = []
@@ -160,30 +219,30 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
         "返答は必ずJSONのみで、textとvoice.caption、voice.emotion、voice.eventsを返してください。"
     )
     for source_rows in by_source.values():
-        for index, row in enumerate(source_rows):
-            if not row.get("target") or not row.get("text"):
+        blocks = _conversation_blocks(source_rows)
+        for index, block in enumerate(blocks):
+            if not block["target"] or index == 0:
                 continue
-            context = source_rows[max(0, index - 4) : index]
-            if not context:
+            # After collapsing same-side segments, a valid persona response must
+            # begin directly after another speaker. This excludes monologues and
+            # avoids manufacturing a user prompt from the persona's own speech.
+            if blocks[index - 1]["target"]:
                 continue
+            context = blocks[max(0, index - 4) : index]
             lines = []
-            for context_row in context:
-                speaker = (
-                    persona_name
-                    if context_row.get("target")
-                    else (context_row.get("speaker") or "相手")
-                )
-                if context_row.get("text"):
-                    lines.append(f"{speaker}: {context_row['text']}")
+            for context_block in context:
+                speaker = persona_name if context_block["target"] else "相手"
+                lines.append(f"{speaker}: {context_block['text']}")
             if not lines:
                 continue
             user = "直前の会話:\n" + "\n".join(lines) + "\nこの続きとして自然に返答してください。"
+            voice_row = block["voice_row"]
             answer = {
-                "text": row["text"],
+                "text": block["text"],
                 "voice": {
-                    "caption": row.get("caption") or "自然に話している。",
-                    "emotion": row.get("emotion") or "NEUTRAL",
-                    "events": row.get("events") or [],
+                    "caption": voice_row.get("caption") or "自然に話している。",
+                    "emotion": voice_row.get("emotion") or "NEUTRAL",
+                    "events": voice_row.get("events") or [],
                 },
             }
             examples.append(

@@ -5,11 +5,15 @@ from pathlib import Path
 
 import pytest
 
+from personavoice import inference, setup_env
+from personavoice.api import ui
 from personavoice.captions import annotate_text, build_caption, normalize_events
 from personavoice.config import PersonaConfig
 from personavoice.dataset import load_utterances, replace_utterances
+from personavoice.doctor import _requires_cuda
 from personavoice.pipeline import _batch_results, _prepare_fingerprint, _turn_rows
 from personavoice.project import init_persona, safe_name
+from personavoice.setup_env import _worker_extras
 from personavoice.speaker import (
     cosine_similarity,
     dominant_speaker,
@@ -43,6 +47,66 @@ def test_state_resume(tmp_path: Path):
         store.set_result("x", {"value": 1})
     assert store.is_complete("x", "abc")
     assert store.stage("x")["result"]["value"] == 1
+
+
+def _stale_prepare_paths(paths) -> list[Path]:
+    return [
+        paths.cache / "asr" / "old.json",
+        paths.cache / "diarization" / "old.json",
+        paths.cache / "identity" / "old.json",
+        paths.cache / "sense" / "old.json",
+        paths.dataset / "clips" / "old.flac",
+    ]
+
+
+def _write_stale(paths: list[Path]) -> None:
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"stale")
+
+
+def test_prepare_changed_fingerprint_invalidates_unsafe_subcaches(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    store = StateStore(paths.state)
+    with store.running("prepare", "first"):
+        pass
+    stale = _stale_prepare_paths(paths)
+    _write_stale(stale)
+    with store.running("prepare", "second"):
+        assert all(not path.exists() for path in stale)
+
+
+def test_prepare_force_after_complete_invalidates_unsafe_subcaches(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    store = StateStore(paths.state)
+    with store.running("prepare", "same"):
+        pass
+    stale = _stale_prepare_paths(paths)
+    _write_stale(stale)
+    with store.running("prepare", "same", force=True):
+        assert all(not path.exists() for path in stale)
+
+
+def test_prepare_failed_resume_keeps_expensive_subcaches(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    store = StateStore(paths.state)
+    with pytest.raises(RuntimeError), store.running("prepare", "same"):
+        raise RuntimeError("interrupted")
+    stale = _stale_prepare_paths(paths)
+    _write_stale(stale)
+    with store.running("prepare", "same"):
+        assert all(path.exists() for path in stale)
+
+
+def test_prepare_force_after_failed_run_invalidates_unsafe_subcaches(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    store = StateStore(paths.state)
+    with pytest.raises(RuntimeError), store.running("prepare", "same"):
+        raise RuntimeError("interrupted")
+    stale = _stale_prepare_paths(paths)
+    _write_stale(stale)
+    with store.running("prepare", "same", force=True):
+        assert all(not path.exists() for path in stale)
 
 
 def test_speaker_math():
@@ -158,3 +222,154 @@ def test_huggingface_cache_layout_is_consistent(tmp_path: Path):
     assert hub_cache.parent == hf_home
     assert env["HF_HUB_OFFLINE"] == "1"
     assert env["TRANSFORMERS_OFFLINE"] == "1"
+
+
+def test_worker_backend_mapping_is_explicit():
+    cuda = _worker_extras("cu128")
+    assert cuda["diarization"] == "cu128"
+    assert cuda["sense"] == "cu128"
+    assert cuda["lfm"] == "cu128"
+    assert cuda["seed_vc"] == "cu124"
+    cpu = _worker_extras("cpu")
+    assert all(value in {None, "cpu"} for value in cpu.values())
+    assert _requires_cuda("cu128") is True
+    assert _requires_cuda("cu124") is True
+    assert _requires_cuda("cpu") is False
+
+
+def test_worker_pyprojects_pin_pytorch_indexes():
+    root = Path(__file__).resolve().parents[1]
+    expectations = {
+        "diarization": "pytorch-cu128",
+        "sense": "pytorch-cu128",
+        "lfm": "pytorch-cu128",
+        "seed_vc": "pytorch-cu124",
+    }
+    for name, index in expectations.items():
+        text = (root / "workers" / name / "pyproject.toml").read_text(encoding="utf-8")
+        assert "explicit = true" in text
+        assert index in text
+        assert "pytorch-cpu" in text
+
+
+@pytest.mark.parametrize("original", [None, b"upstream-lock"])
+def test_irodori_locked_sync_restores_vendor_checkout(
+    tmp_path: Path,
+    monkeypatch,
+    original: bytes | None,
+):
+    repo_root = tmp_path
+    vendor = repo_root / "vendor" / "Irodori-TTS"
+    vendor.mkdir(parents=True)
+    managed = repo_root / "locks" / "Irodori-TTS.uv.lock"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"audited-lock")
+    vendor_lock = vendor / "uv.lock"
+    if original is not None:
+        vendor_lock.write_bytes(original)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append([str(value) for value in args])
+
+    monkeypatch.setattr(setup_env, "run", fake_run)
+    setup_env._install_irodori(repo_root, vendor, "cpu")
+
+    assert calls and "--locked" in calls[0]
+    if original is None:
+        assert not vendor_lock.exists()
+    else:
+        assert vendor_lock.read_bytes() == original
+
+
+def test_best_irodori_adapter_prefers_lowest_validation_loss(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    root = paths.models / "irodori" / "lora"
+    (root / "checkpoint_final").mkdir(parents=True)
+    worse = root / "checkpoint_best_val_loss_0001000_0.900000"
+    better = root / "checkpoint_best_val_loss_0002000_0.400000"
+    worse.mkdir()
+    better.mkdir()
+    assert inference._best_lora_adapter(paths) == better
+
+
+def test_speaker_embed_reference_mode_requires_embedding(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "speaker-embed"
+    with pytest.raises(FileNotFoundError, match="speaker-embed"):
+        inference._append_reference_args([], paths, cfg, None)
+
+
+def test_audio_reference_mode_requires_reference_bank(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "audio"
+    with pytest.raises(FileNotFoundError, match="reference bank"):
+        inference._append_reference_args([], paths, cfg, None)
+
+
+def test_auto_reference_mode_can_fall_back_to_no_ref(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "auto"
+    args: list[str | Path] = []
+    inference._append_reference_args(args, paths, cfg, None)
+    assert args == ["--no-ref"]
+
+
+def test_explicit_reference_overrides_reference_mode(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "speaker-embed"
+    ref = tmp_path / "reference.wav"
+    ref.write_bytes(b"RIFF" + b"0" * 64)
+    args: list[str | Path] = []
+    inference._append_reference_args(args, paths, cfg, ref)
+    assert args == ["--ref-wav", ref.resolve()]
+
+
+def test_extract_json_falls_back_on_malformed_braces():
+    raw = "普通の返答 {not valid json}"
+    result = inference._extract_json(raw)
+    assert result["text"] == raw
+    assert result["voice"]["emotion"] == "NEUTRAL"
+
+
+def test_synthesize_forwards_cfg_and_checks_output(tmp_path: Path, monkeypatch):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.default_candidates = 1
+    cfg.inference.tts_cfg_scale = 4.25
+    vendor = tmp_path / "vendor" / "Irodori-TTS"
+    vendor.mkdir(parents=True)
+    base = tmp_path / "model.safetensors"
+    base.write_bytes(b"model")
+    codec = tmp_path / "weights.pth"
+    codec.write_bytes(b"codec")
+    captured: dict[str, list[str]] = {}
+
+    monkeypatch.setattr(inference, "vendor_dir", lambda _root: vendor)
+    monkeypatch.setattr(inference, "base_checkpoint", lambda _root: base)
+    monkeypatch.setattr(inference, "codec_checkpoint", lambda _root: codec)
+    monkeypatch.setattr(inference, "nvidia_gpus", lambda: [])
+
+    def fake_run(args, **_kwargs):
+        argv = [str(value) for value in args]
+        captured["argv"] = argv
+        output = Path(argv[argv.index("--output-wav") + 1])
+        output.write_bytes(b"RIFF" + b"0" * 64)
+
+    monkeypatch.setattr(inference, "run", fake_run)
+    outputs = inference.synthesize(tmp_path, paths, cfg, "テスト", candidates=1)
+    assert len(outputs) == 1 and outputs[0].exists()
+    argv = captured["argv"]
+    assert argv[argv.index("--cfg-scale-text") + 1] == "4.25"
+    assert argv[argv.index("--cfg-scale-caption") + 1] == "4.25"
+    assert argv[argv.index("--codec-repo") + 1] == str(codec)
+
+
+def test_ui_does_not_insert_llm_text_as_html():
+    html = ui()
+    assert "textContent=text||''" in html
+    assert "${x.text" not in html

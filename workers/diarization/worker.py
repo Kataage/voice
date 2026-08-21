@@ -10,6 +10,8 @@ from huggingface_hub import snapshot_download
 from pyannote.audio import Pipeline
 
 MODEL_ID = "pyannote/speaker-diarization-community-1"
+MODEL_REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
+REVISION_MARKER = ".personavoice-revision"
 
 
 def read_request(path: str) -> dict:
@@ -19,7 +21,20 @@ def read_request(path: str) -> dict:
 def local_source() -> str:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "pyannote" / "community-1"
-    return str(local) if (local / "config.yaml").exists() else MODEL_ID
+    config = local / "config.yaml"
+    marker = local / REVISION_MARKER
+    if not config.is_file():
+        raise FileNotFoundError(
+            f"Pinned pyannote model is missing: {config}. Run `persona setup --download-models`."
+        )
+    actual_revision = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    if actual_revision != MODEL_REVISION:
+        raise RuntimeError(
+            "Local pyannote snapshot does not match the audited revision: "
+            f"expected {MODEL_REVISION}, got {actual_revision!r}. "
+            "Re-run `persona setup --download-models` with HF_TOKEN available."
+        )
+    return str(local)
 
 
 def load_pipeline() -> Pipeline:
@@ -109,11 +124,13 @@ def download(payload: dict) -> dict:
     token = os.getenv("HF_TOKEN")
     snapshot_download(
         MODEL_ID,
+        revision=MODEL_REVISION,
         local_dir=local,
         cache_dir=Path(os.environ["HF_HOME"]),
         token=token,
     )
-    return {"model": MODEL_ID, "path": str(local)}
+    (local / REVISION_MARKER).write_text(MODEL_REVISION + "\n", encoding="utf-8")
+    return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}
 
 
 def health(payload: dict) -> dict:

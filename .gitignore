@@ -18,8 +18,10 @@ personas/*/models/*
 personas/*/outputs/*
 personas/*/cache/*
 personas/*/logs/*
+personas/*/state.json
 
-# Keep directory markers and persona config/state if explicitly committed
+# Keep directory markers. persona.yaml remains intentionally versionable;
+# state.json is machine/runtime state and stays local by default.
 !personas/*/raw/.gitkeep
 !personas/*/identity/.gitkeep
 !personas/*/dataset/.gitkeep

@@ -7,11 +7,11 @@
 ```powershell
 .\scripts\bootstrap.ps1
 $env:HF_TOKEN="hf_..."  # pyannote Community-1初回取得時のみ
-uv run persona setup
-uv run persona init alice --authorized
+uv run --locked persona setup
+uv run --locked persona init alice --authorized
 # personas/alice/raw/ と personas/alice/identity/ に素材を配置
-uv run persona build alice
-uv run persona ui
+uv run --locked persona build alice
+uv run --locked persona ui
 ```
 
 ## 機能
@@ -24,8 +24,9 @@ uv run persona ui
 - LFM2.5-1.2B-JP-202606: 会話/口調LoRA + 発話スタイル計画
 - Seed-VC v2: 入力音声の間・抑揚・演技を使ったVoice Conversion
 - `say`, `reenact`, `repeat`, `chat`, Web UI, localhost REST API
-- canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidaton
+- canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidation
 - rootと各ML stackを独立した`uv`環境に隔離
+- root / worker / Irodoriを監査済み`uv.lock`へ固定
 
 ## セットアップ
 
@@ -36,7 +37,7 @@ Windows:
 ```powershell
 .\scripts\bootstrap.ps1
 $env:HF_TOKEN="hf_..."
-uv run persona setup
+uv run --locked persona setup
 ```
 
 Linux/macOS:
@@ -44,20 +45,22 @@ Linux/macOS:
 ```bash
 ./scripts/bootstrap.sh
 export HF_TOKEN=hf_...
-uv run persona setup
+uv run --locked persona setup
 ```
 
-`HF_TOKEN`は`pyannote/speaker-diarization-community-1`の初回取得時のみ必要です。PersonaVoiceはtokenを保存しません。`persona setup`は固定upstream revision取得、各独立`uv`環境のsync、モデル取得、offline model load検証まで実行します。
+`HF_TOKEN`は`pyannote/speaker-diarization-community-1`の初回取得時のみ必要です。PersonaVoiceはtokenを保存しません。`persona setup`は固定upstream revision取得、コミット済みlockを使った各独立`uv`環境のsync、モデル取得、offline model load検証まで実行します。
 
 ```bash
-uv run persona doctor
-uv run persona doctor --deep
+uv run --locked persona doctor
+uv run --locked persona doctor --deep
 ```
+
+`doctor --deep`はworkerのモデルロードだけでなく、Irodoriのoffline smoke synthesis、選択したGPU backend、lockfile、Irodori/Seed-VC vendorの固定revisionとclean状態も検証します。
 
 ## 人物作成 / 学習
 
 ```bash
-uv run persona init alice --authorized
+uv run --locked persona init alice --authorized
 ```
 
 ```text
@@ -66,7 +69,7 @@ personas/alice/identity/  # 本人だけが話す綺麗な参照音声を1〜3�
 ```
 
 ```bash
-uv run persona build alice
+uv run --locked persona build alice
 ```
 
 処理概要:
@@ -90,33 +93,35 @@ raw media
  -> evaluation
 ```
 
-ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけロードします。同じfingerprintでの中断はcache/checkpointから再開し、`raw/`, `identity/`, prepare設定、training dataset/設定の変更時は依存artifactを無効化します。
+ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけロードします。同じfingerprintで失敗/中断した通常の再実行は安全なcache/checkpointから再開します。`raw/`, `identity/`, prepare設定、training dataset/設定が変わった場合は依存artifactを自動で無効化します。`--force`を指定した場合は、同じfingerprintの失敗後であってもprepare由来cacheを破棄して完全に作り直します。
 
 ```bash
-uv run persona prepare alice
-uv run persona train alice
-uv run persona eval alice
-uv run persona status alice
-uv run persona build alice --force
+uv run --locked persona prepare alice
+uv run --locked persona train alice
+uv run --locked persona eval alice
+uv run --locked persona status alice
+uv run --locked persona build alice --force
 ```
 
 ## 生成
 
 ```bash
-uv run persona say alice "おはよう"
-uv run persona say alice "えっ、本当に？" --style surprised
-uv run persona say alice "やった！" --emotion happy
-uv run persona say alice "ふぅ……疲れた" --event sigh
-uv run persona say alice "こんにちは" --ref happy
-uv run persona say alice "こんにちは" --ref C:\path\to\reference.wav
+uv run --locked persona say alice "おはよう"
+uv run --locked persona say alice "えっ、本当に？" --style surprised
+uv run --locked persona say alice "やった！" --emotion happy
+uv run --locked persona say alice "ふぅ……疲れた" --event sigh
+uv run --locked persona say alice "こんにちは" --ref happy
+uv run --locked persona say alice "こんにちは" --ref C:\path\to\reference.wav
 ```
+
+Irodori LoRAにvalidation-loss best checkpointがある場合は推論時に最良checkpointを優先し、なければ`checkpoint_final`へフォールバックします。生成後はWAVが実際に作成されたことも検証します。
 
 ## Audio → Persona
 
 ```bash
-uv run persona reenact alice acting.wav
-uv run persona reenact alice acting.wav --timbre-only
-uv run persona repeat alice input.wav
+uv run --locked persona reenact alice acting.wav
+uv run --locked persona reenact alice acting.wav --timbre-only
+uv run --locked persona repeat alice input.wav
 ```
 
 `reenact`はsourceの演技/間/抑揚をVoice Conversionで維持し、`repeat`は内容・感情を解析してIrodoriで本人として再演します。文字起こし不能な非言語音だけの場合、`repeat`は`reenact`へフォールバックします。
@@ -124,17 +129,17 @@ uv run persona repeat alice input.wav
 ## 会話
 
 ```bash
-uv run persona chat alice
-uv run persona chat alice "今日は何してた？"
+uv run --locked persona chat alice
+uv run --locked persona chat alice "今日は何してた？"
 ```
 
-LFMが本文と`voice.caption`, `voice.emotion`, `voice.events`を計画しIrodoriへ渡します。
+LFMが本文と`voice.caption`, `voice.emotion`, `voice.events`を計画しIrodoriへ渡します。構造化JSONが崩れた場合もplain-text fallbackで安全に処理します。
 
 ## Web UI / API
 
 ```bash
-uv run persona ui
-uv run persona serve --host 127.0.0.1 --port 8848
+uv run --locked persona ui
+uv run --locked persona serve --host 127.0.0.1 --port 8848
 ```
 
 UI: Talk/Voice Design, emotion/non-verbal/reference, Reenact, Repeat, Chat, WAV再生。
@@ -150,7 +155,7 @@ API:
 
 認証を持たないため非loopback bindは`--allow-remote`なしでは拒否します。
 
-## uv環境
+## uv環境 / lock運用
 
 ```text
 root .venv                 orchestration / CLI / API
@@ -162,14 +167,26 @@ workers/seed_vc/.venv      Seed-VC compatible Python 3.10
 vendor/Irodori-TTS/.venv   pinned official Irodori environment
 ```
 
-各`uv sync`は対象プロジェクトの`uv.lock`をローカル生成/更新します。lock更新用に`scripts/lock_all.ps1` / `scripts/lock_all.sh`があります。Irodori backendは`persona setup --backend auto|cu128|cpu|rocm|xpu`で選択できます。
+rootと全workerの`uv.lock`はリポジトリへコミットされています。Irodoriは固定upstream checkoutを直接変更しないため、監査済みlockを`locks/Irodori-TTS.uv.lock`として管理し、setup時だけ一時適用してvendor checkoutを元のclean状態へ戻します。
+
+通常利用ではbootstrap/setupが`--locked`で同期し、依存定義とlockがずれていれば失敗させます。依存を意図的に更新した時だけ次を実行し、生成されたlock差分をレビューしてください。
+
+```powershell
+.\scripts\lock_all.ps1
+```
+
+```bash
+./scripts/lock_all.sh
+```
+
+Irodori backendは`persona setup --backend auto|cu128|cpu|rocm|xpu`で選択できます。NVIDIA時はmodern Torch workerをCUDA 12.8系、互換性のためTorch 2.4に固定しているSeed-VCをCUDA 12.4系へ明示的に解決します。
 
 ## テスト / 実機検証
 
-GitHub Actions `core-ci` はLinux/Windowsで`uv sync`, Ruff, pytest, compileall, CLI smokeを実行します。数GB級weight/GPUはCIに持ち込まず、対象実機上の`persona setup` + `persona doctor --deep`でoffline model loadを検証します。
+GitHub Actions `core-ci` はLinux/Windowsの両方でrootのlocked sync、Ruff、pytest、compileall、CLI smokeを実行し、さらにASR / diarization / SenseVoice / LFM / Seed-VCの全worker環境を各OSで`uv sync --locked`して依存解決とPython compileを検証します。数GB級weight/GPUはCIに持ち込まず、対象実機上の`persona setup` + `persona doctor --deep`でoffline model loadとIrodori smoke synthesisを検証します。
 
 ## ローカルデータ / 同意
 
-素材、dataset、model、output、vendor、runtime requestはgitignore対象です。`consent.authorized: true`でないpersonaではprepare/train/voice generationを拒否します。ローカル利用、配布、公開、商用利用の許可範囲は別々に管理してください。
+素材、dataset、model、output、vendor、runtime request、personaの実行stateはgitignore対象です。`consent.authorized: true`でないpersonaではprepare/train/voice generationを拒否します。ローカル利用、配布、公開、商用利用の許可範囲は別々に管理してください。
 
 詳細: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) / [`docs/MODELS.md`](docs/MODELS.md) / [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)

@@ -7,12 +7,20 @@ from pathlib import Path
 
 from personavoice.config import PersonaConfig
 from personavoice.irodori import base_checkpoint, prepare_manifest, train_irodori
+from personavoice.model_assets import (
+    IRODORI_DACVAE_SHA256,
+    IRODORI_MODEL_SHA256,
+    IRODORI_TEXT_ENCODER_REVISION,
+    LFM_MODEL_REVISION,
+)
+from personavoice.pipeline import _prepare_fingerprint
 from personavoice.process import run
 from personavoice.project import PersonaPaths
+from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.state import StateStore
-from personavoice.workers import local_model_env
+from personavoice.workers import local_model_env, worker
 
-TRAIN_SCHEMA_VERSION = 2
+TRAIN_SCHEMA_VERSION = 3
 
 
 def _line_count(path: Path) -> int:
@@ -25,6 +33,17 @@ def _line_count(path: Path) -> int:
 def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     digest = hashlib.sha256()
     digest.update(f"train-schema:{TRAIN_SCHEMA_VERSION}".encode())
+    model_contract = {
+        "irodori_source_revision": IRODORI_REVISION,
+        "irodori_model_sha256": IRODORI_MODEL_SHA256,
+        "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
+        "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
+        "lfm_revision": LFM_MODEL_REVISION,
+        "seed_vc_source_revision": SEED_VC_REVISION,
+    }
+    digest.update(
+        json.dumps(model_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
     for path in (
         paths.dataset / "irodori_source.jsonl",
         paths.dataset / "lfm_train.jsonl",
@@ -48,6 +67,22 @@ def _invalidate_training_artifacts(paths: PersonaPaths) -> None:
     (paths.dataset / "irodori_manifest.jsonl").unlink(missing_ok=True)
     for config in paths.cache.glob("irodori_*.yaml"):
         config.unlink(missing_ok=True)
+
+
+def _has_training_artifacts(paths: PersonaPaths) -> bool:
+    """Return True when derived training state exists without relying on directories alone."""
+
+    markers = (
+        paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors",
+        paths.models / "irodori" / "lora" / "checkpoint_final",
+        paths.models / "lfm" / "adapter" / "adapter_config.json",
+        paths.models / "seed_vc" / "cfm.pth",
+        paths.dataset / "irodori_manifest.jsonl",
+    )
+    if any(path.exists() for path in markers):
+        return True
+    latents = paths.cache / "irodori_latents"
+    return latents.is_dir() and any(latents.iterdir())
 
 
 def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str | None:
@@ -102,6 +137,15 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
     audio_files = list(audio_dir.glob("*.flac")) if audio_dir.exists() else []
     if len(audio_files) < 2:
         return None
+
+    health = worker(repo_root, "seed_vc").call(repo_root, "health", {"deep": False})
+    if not bool(health.get("cuda")):
+        raise RuntimeError(
+            "Seed-VC fine-tuning requires a CUDA-enabled Seed-VC worker. "
+            "Re-run `persona setup` on a supported NVIDIA system, or leave "
+            "training.seed_vc_finetune=false and use zero-shot reenactment."
+        )
+
     vendor = repo_root / "vendor" / "seed-vc"
     project = repo_root / "workers" / "seed_vc"
     run_name = f"personavoice_{cfg.name}"
@@ -157,13 +201,21 @@ def train_persona(
 ) -> dict:
     if not cfg.consent.authorized:
         raise PermissionError("Training is blocked because consent.authorized is not true.")
+
+    store = StateStore(paths.state)
+    current_prepare_fingerprint = _prepare_fingerprint(paths, cfg)
+    if not store.is_complete("prepare", current_prepare_fingerprint):
+        raise RuntimeError(
+            "Prepared dataset is missing or stale for the current raw/identity/config inputs. "
+            "Run `persona prepare` before training."
+        )
+
     source = paths.dataset / "irodori_source.jsonl"
     if _line_count(source) < 2:
         raise RuntimeError(
             "Prepared Irodori dataset is missing or too small. Run `persona prepare` first."
         )
 
-    store = StateStore(paths.state)
     fingerprint = _fingerprint(paths, cfg)
     previous = store.stage("train")
     if not force and store.is_complete("train", fingerprint):
@@ -171,7 +223,8 @@ def train_persona(
 
     previous_fingerprint = previous.get("fingerprint")
     inputs_changed = bool(previous_fingerprint and previous_fingerprint != fingerprint)
-    if force or inputs_changed:
+    untracked_artifacts = previous_fingerprint is None and _has_training_artifacts(paths)
+    if force or inputs_changed or untracked_artifacts:
         _invalidate_training_artifacts(paths)
         if cfg.training.seed_vc_finetune:
             shutil.rmtree(

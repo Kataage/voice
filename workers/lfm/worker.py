@@ -23,14 +23,19 @@ def base_path() -> str:
     return str(local) if (local / "config.json").exists() else MODEL_ID
 
 
+def model_dtype() -> torch.dtype:
+    if not torch.cuda.is_available():
+        return torch.float32
+    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+
 def load_base():
     base = base_path()
     offline = os.getenv("HF_HUB_OFFLINE") == "1"
     tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=offline)
-    dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "auto"
     model = AutoModelForCausalLM.from_pretrained(
         base,
-        dtype=dtype,
+        dtype=model_dtype(),
         device_map="auto",
         local_files_only=offline,
     )
@@ -73,7 +78,11 @@ def download_model(payload: dict) -> dict:
 
 
 def health(payload: dict) -> dict:
-    result = {"ok": True, "cuda": torch.cuda.is_available()}
+    result = {
+        "ok": True,
+        "cuda": torch.cuda.is_available(),
+        "dtype": str(model_dtype()).removeprefix("torch."),
+    }
     if payload.get("deep"):
         tokenizer, model = load_base()
         result.update(

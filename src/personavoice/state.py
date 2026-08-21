@@ -1,11 +1,45 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from personavoice.model_assets import (
+    ASR_MODEL_REVISION,
+    PYANNOTE_MODEL_REVISION,
+    SENSE_MODEL_CMVN_SHA256,
+    SENSE_MODEL_TOKENIZER_SHA256,
+    SENSE_MODEL_WEIGHT_SHA256,
+)
+
+
+def _prepare_cache_policy() -> str:
+    """Return a compact prepare-semantics/model contract identifier.
+
+    Changing a preprocessing model pin must invalidate derived ASR, diarization,
+    identity, SenseVoice, and clip caches even when the raw files and user config
+    are unchanged. The explicit schema prefix covers code-level cache semantics.
+    """
+
+    contract = {
+        "schema": 4,
+        "asr_revision": ASR_MODEL_REVISION,
+        "pyannote_revision": PYANNOTE_MODEL_REVISION,
+        "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
+        "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
+        "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"4-{hashlib.sha256(encoded).hexdigest()[:20]}"
+
+
+# Cached prepare artifacts are valid only for this exact preprocessing contract.
+PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
 
 
 def _now() -> str:
@@ -33,6 +67,8 @@ class StateStore:
 
     def is_complete(self, name: str, fingerprint: str) -> bool:
         stage = self.stage(name)
+        if name == "prepare" and stage.get("cache_policy_version") != PREPARE_CACHE_POLICY_VERSION:
+            return False
         return stage.get("status") == "complete" and stage.get("fingerprint") == fingerprint
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
@@ -40,10 +76,51 @@ class StateStore:
         state.setdefault("stages", {}).setdefault(name, {})["result"] = result
         self.save(state)
 
+    def _invalidate_prepare_derived(self) -> None:
+        """Remove only artifacts whose identity depends on prepare semantics.
+
+        The lossless source-audio cache is intentionally retained because it is
+        content-addressed by source SHA. ASR/diarization/Sense caches and cut
+        clips are not safe to reuse across arbitrary prepare-setting, model, or
+        code changes, so they are rebuilt when the prepare fingerprint/policy
+        changes or the caller explicitly forces a rebuild.
+        """
+
+        persona_root = self.path.parent
+        for relative in (
+            Path("cache/asr"),
+            Path("cache/diarization"),
+            Path("cache/identity"),
+            Path("cache/sense"),
+            Path("dataset/clips"),
+        ):
+            shutil.rmtree(persona_root / relative, ignore_errors=True)
+
     @contextmanager
-    def running(self, name: str, fingerprint: str) -> Iterator[dict[str, Any]]:
+    def running(
+        self,
+        name: str,
+        fingerprint: str,
+        *,
+        force: bool = False,
+    ) -> Iterator[dict[str, Any]]:
         state = self.load()
         stage = state.setdefault("stages", {}).setdefault(name, {})
+
+        if name == "prepare":
+            old_fingerprint = stage.get("fingerprint")
+            old_policy = stage.get("cache_policy_version")
+            # Same-fingerprint failed/running stages keep expensive caches for
+            # normal resumability. Explicit --force always starts from fresh
+            # prepare-derived caches regardless of the prior stage status.
+            must_invalidate = (
+                force
+                or old_policy != PREPARE_CACHE_POLICY_VERSION
+                or (old_fingerprint is not None and old_fingerprint != fingerprint)
+            )
+            if must_invalidate:
+                self._invalidate_prepare_derived()
+
         stage.update(
             {
                 "status": "running",
@@ -53,6 +130,8 @@ class StateStore:
                 "error": None,
             }
         )
+        if name == "prepare":
+            stage["cache_policy_version"] = PREPARE_CACHE_POLICY_VERSION
         self.save(state)
         try:
             yield stage

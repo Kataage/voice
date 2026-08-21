@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,14 @@ from funasr import AutoModel
 from modelscope import snapshot_download
 
 MODEL_ID = "iic/SenseVoiceSmall"
+MODEL_WEIGHT_SHA256 = "833ca2dcfdf8ec91bd4f31cfac36d6124e0c459074d5e909aec9cabe6204a3ea"
+MODEL_CMVN_SHA256 = "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5"
+MODEL_TOKENIZER_SHA256 = "aa87f86064c3730d799ddf7af3c04659151102cba548bce325cf06ba4da4e6a8"
+MODEL_ASSETS = {
+    "model.pt": MODEL_WEIGHT_SHA256,
+    "am.mvn": MODEL_CMVN_SHA256,
+    "chn_jpn_yue_eng_ko_spectok.bpe.model": MODEL_TOKENIZER_SHA256,
+}
 EMOTIONS = {"HAPPY", "SAD", "ANGRY", "NEUTRAL", "FEARFUL", "DISGUSTED", "SURPRISED"}
 EVENTS = {
     "BGM",
@@ -31,15 +40,71 @@ def read_request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _root() -> Path:
+    return Path(os.environ["PERSONAVOICE_ROOT"])
+
+
+def _local_dir() -> Path:
+    return _root() / "models" / "sense" / "SenseVoiceSmall"
+
+
+def _mark_verified() -> None:
+    runtime = _root() / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    (runtime / "sense-model-ready").write_text("verified\n", encoding="utf-8")
+
+
+def verify_local_assets() -> dict:
+    local = _local_dir()
+    if not local.is_dir():
+        raise FileNotFoundError(f"SenseVoice model directory is missing: {local}")
+    verified: dict[str, str] = {}
+    for relative, expected in MODEL_ASSETS.items():
+        path = local / relative
+        if not path.is_file():
+            raise FileNotFoundError(f"SenseVoice required asset is missing: {path}")
+        actual = _sha256(path)
+        if actual.lower() != expected.lower():
+            raise RuntimeError(
+                f"SenseVoice checksum mismatch for {relative}: expected {expected}, got {actual}. "
+                "Remove the local SenseVoice model and rerun `persona setup`."
+            )
+        verified[relative] = actual
+    # Verification is the authority for this marker. This also migrates legacy
+    # `ready` markers from older PersonaVoice versions without re-downloading a
+    # byte when the already materialized model matches the audited hashes.
+    _mark_verified()
+    return {"model": MODEL_ID, "path": str(local), "verified": verified}
+
+
 def local_model() -> str:
-    root = Path(os.environ["PERSONAVOICE_ROOT"])
-    local = root / "models" / "sense" / "SenseVoiceSmall"
-    return str(local) if local.exists() else MODEL_ID
+    local = _local_dir()
+    if local.exists():
+        verify_local_assets()
+        return str(local)
+    return MODEL_ID
 
 
 def load_model() -> AutoModel:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    return AutoModel(model=local_model(), trust_remote_code=True, device=device)
+    # Use the uv-locked FunASR implementation rather than executing model-repo
+    # Python code. The inference-critical model assets are hash-verified above.
+    # FunASR's version check is explicitly disabled so deep doctor remains a
+    # deterministic local-only operation instead of attempting an update lookup.
+    return AutoModel(
+        model=local_model(),
+        trust_remote_code=False,
+        disable_update=True,
+        device=device,
+    )
 
 
 def parse_result(result) -> dict:
@@ -84,11 +149,10 @@ def batch_analyze(payload: dict) -> dict:
 
 
 def download_model(payload: dict) -> dict:
-    root = Path(os.environ["PERSONAVOICE_ROOT"])
-    local = root / "models" / "sense" / "SenseVoiceSmall"
+    local = _local_dir()
     local.parent.mkdir(parents=True, exist_ok=True)
-    resolved = snapshot_download(MODEL_ID, local_dir=str(local))
-    return {"model": MODEL_ID, "path": str(resolved)}
+    snapshot_download(MODEL_ID, local_dir=str(local))
+    return verify_local_assets()
 
 
 def health(payload: dict) -> dict:
@@ -100,8 +164,13 @@ def health(payload: dict) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["analyze", "batch_analyze", "download", "health"])
+    parser = argparse.ArgumentParser(
+        description="PersonaVoice isolated SenseVoice worker"
+    )
+    parser.add_argument(
+        "command",
+        choices=["analyze", "batch_analyze", "download", "verify", "health"],
+    )
     parser.add_argument("--request", required=True)
     args = parser.parse_args()
     payload = read_request(args.request)
@@ -111,6 +180,8 @@ def main() -> None:
         result = batch_analyze(payload)
     elif args.command == "download":
         result = download_model(payload)
+    elif args.command == "verify":
+        result = verify_local_assets()
     else:
         result = health(payload)
     print(json.dumps(result, ensure_ascii=False))

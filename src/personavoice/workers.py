@@ -15,7 +15,14 @@ class Worker:
     project_dir: Path
     entrypoint: str = "worker.py"
 
-    def call(self, repo_root: Path, command: str, payload: dict[str, Any], *, offline: bool = True) -> Any:
+    def call(
+        self,
+        repo_root: Path,
+        command: str,
+        payload: dict[str, Any],
+        *,
+        offline: bool = True,
+    ) -> Any:
         request_dir = repo_root / ".runtime" / "requests"
         request_dir.mkdir(parents=True, exist_ok=True)
         request_path = request_dir / f"{self.name}-{uuid4().hex}.json"
@@ -41,14 +48,22 @@ class Worker:
         finally:
             request_path.unlink(missing_ok=True)
 
-    def sync(self, repo_root: Path) -> None:
-        run(["uv", "sync", "--project", self.project_dir], cwd=repo_root)
+    def sync(self, repo_root: Path, *, extra: str | None = None) -> None:
+        args: list[str | Path] = ["uv", "sync", "--project", self.project_dir]
+        lockfile = self.project_dir / "uv.lock"
+        if lockfile.exists():
+            args.append("--locked")
+        if extra:
+            args.extend(["--extra", extra])
+        run(args, cwd=repo_root)
 
 
 def local_model_env(repo_root: Path, *, offline: bool = True) -> dict[str, str]:
     env = {
         "HF_HOME": str((repo_root / "models" / "hf-cache").resolve()),
-        "HUGGINGFACE_HUB_CACHE": str((repo_root / "models" / "hf-cache" / "hub").resolve()),
+        "HUGGINGFACE_HUB_CACHE": str(
+            (repo_root / "models" / "hf-cache" / "hub").resolve()
+        ),
         "MODELSCOPE_CACHE": str((repo_root / "models" / "modelscope-cache").resolve()),
         "PERSONAVOICE_ROOT": str(repo_root.resolve()),
         "TOKENIZERS_PARALLELISM": "false",

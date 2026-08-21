@@ -10,6 +10,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
 
+def _model_dtype() -> torch.dtype:
+    if not torch.cuda.is_available():
+        return torch.float32
+    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -25,8 +31,11 @@ def main() -> None:
     if len(dataset) < 2:
         raise RuntimeError("LFM fine-tuning needs at least two conversational examples")
     tokenizer = AutoTokenizer.from_pretrained(args.base, local_files_only=True)
-    dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(args.base, dtype=dtype, local_files_only=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.base,
+        dtype=_model_dtype(),
+        local_files_only=True,
+    )
     peft_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -34,7 +43,12 @@ def main() -> None:
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         task_type="CAUSAL_LM",
     )
-    batch = 2 if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory >= 16 * 1024**3 else 1
+    batch = (
+        2
+        if torch.cuda.is_available()
+        and torch.cuda.get_device_properties(0).total_memory >= 16 * 1024**3
+        else 1
+    )
     grad_accum = 8 if batch == 1 else 4
     config = SFTConfig(
         output_dir=args.output,
@@ -58,7 +72,8 @@ def main() -> None:
         processing_class=tokenizer,
         peft_config=peft_config,
     )
-    trainer.train(resume_from_checkpoint=True if list(Path(args.output).glob("checkpoint-*")) else None)
+    resume = True if list(Path(args.output).glob("checkpoint-*")) else None
+    trainer.train(resume_from_checkpoint=resume)
     trainer.save_model(args.output)
     tokenizer.save_pretrained(args.output)
 
