@@ -33,6 +33,13 @@ _ASR_REQUIRED_FILES = (
     "tokenizer.json",
     "vocabulary.json",
 )
+_PYANNOTE_REQUIRED_FILES = (
+    "config.yaml",
+    "embedding/pytorch_model.bin",
+    "segmentation/pytorch_model.bin",
+    "plda/plda.npz",
+    "plda/xvec_transform.npz",
+)
 
 
 def _setup_state(repo_root: Path) -> dict:
@@ -262,12 +269,15 @@ def report(
     required = {name: shutil.which(name) for name in ("uv", "git", "ffmpeg", "ffprobe")}
     runtime = repo_root / ".runtime"
     asr_dir = repo_root / "models" / "asr" / "large-v3"
+    pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
         "lfm": _nonempty_file(repo_root / "models/lfm/base/config.json"),
         "asr": all(_nonempty_file(asr_dir / name) for name in _ASR_REQUIRED_FILES),
-        "pyannote": _nonempty_file(repo_root / "models/pyannote/community-1/config.yaml"),
+        "pyannote": all(
+            _nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES
+        ),
         "sense": _nonempty_file(runtime / "sense-model-ready"),
         "seed_vc_models": _nonempty_file(runtime / "seed-vc-models-ready"),
         "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
