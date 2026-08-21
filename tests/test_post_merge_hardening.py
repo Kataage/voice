@@ -108,7 +108,7 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
         encoding="utf-8",
     )
     result = {
-        "prepare_schema": 3,
+        "prepare_schema": 4,
         "sources": 1,
         "skipped_sources": 0,
         "utterances": 1,
