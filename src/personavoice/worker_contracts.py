@@ -173,9 +173,6 @@ def validate_worker_response(worker_name: str, command: str, value: Any) -> None
     elif worker_name == "lfm" and command == "infer":
         valid = valid_lfm_infer_result(value)
     elif worker_name in {"asr", "diarization", "sense", "lfm", "seed_vc"}:
-        # Setup/health/download/verify responses still need to be JSON objects,
-        # while model-specific deep semantics are checked by the corresponding
-        # command itself or doctor.
         valid = isinstance(value, dict)
 
     if not valid:
@@ -193,7 +190,13 @@ PREPARE_CACHE_VALIDATORS: dict[str, ResultValidator] = {
 
 
 def purge_invalid_prepare_caches(persona_root: Path) -> list[str]:
-    """Delete disposable prepare cache JSON that no longer satisfies worker contracts."""
+    """Delete parseable prepare caches that fail semantic worker contracts.
+
+    Syntax-corrupt/truncated JSON remains the responsibility of the pipeline's
+    per-cache reader, which removes it on access. This preserves expensive
+    same-fingerprint resume state until a cache is actually needed while still
+    preventing parseable-but-logically-invalid values from being reused.
+    """
 
     removed: list[str] = []
     cache_root = persona_root / "cache"
@@ -204,8 +207,11 @@ def purge_invalid_prepare_caches(persona_root: Path) -> list[str]:
         for path in target.glob("*.json"):
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            try:
                 valid = validator(value)
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 valid = False
             if valid:
                 continue
