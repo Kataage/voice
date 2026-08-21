@@ -65,6 +65,7 @@ def test_extract_audio_atomically_publishes_success(tmp_path: Path, monkeypatch)
 def _write_minimal_complete_prepare_artifacts(paths) -> dict:
     dataset = paths.dataset
     (dataset / "source_inventory.json").write_text("[]\n", encoding="utf-8")
+    (dataset / "skipped_sources.json").write_text("[]\n", encoding="utf-8")
     (dataset / "master.json").write_text("[]\n", encoding="utf-8")
     (dataset / "master.sqlite3").write_bytes(b"sqlite-placeholder")
     (dataset / "irodori_source.jsonl").write_text("", encoding="utf-8")
@@ -75,6 +76,13 @@ def _write_minimal_complete_prepare_artifacts(paths) -> dict:
     bank = paths.references / "bank.json"
     bank.write_text(json.dumps({"files": [], "seconds": 0.0}), encoding="utf-8")
     return {
+        "prepare_schema": 3,
+        "sources": 1,
+        "skipped_sources": 0,
+        "utterances": 1,
+        "target_utterances": 1,
+        "usable_tts_utterances": 1,
+        "usable_seconds": 1.0,
         "master_db": str((dataset / "master.sqlite3").resolve()),
         "irodori_examples": 0,
         "lfm_examples": 0,
