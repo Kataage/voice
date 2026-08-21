@@ -7,13 +7,20 @@ from pathlib import Path
 
 from personavoice.config import PersonaConfig
 from personavoice.irodori import base_checkpoint, prepare_manifest, train_irodori
+from personavoice.model_assets import (
+    IRODORI_DACVAE_SHA256,
+    IRODORI_MODEL_SHA256,
+    IRODORI_TEXT_ENCODER_REVISION,
+    LFM_MODEL_REVISION,
+)
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.process import run
 from personavoice.project import PersonaPaths
+from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.state import StateStore
 from personavoice.workers import local_model_env, worker
 
-TRAIN_SCHEMA_VERSION = 2
+TRAIN_SCHEMA_VERSION = 3
 
 
 def _line_count(path: Path) -> int:
@@ -26,6 +33,17 @@ def _line_count(path: Path) -> int:
 def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     digest = hashlib.sha256()
     digest.update(f"train-schema:{TRAIN_SCHEMA_VERSION}".encode())
+    model_contract = {
+        "irodori_source_revision": IRODORI_REVISION,
+        "irodori_model_sha256": IRODORI_MODEL_SHA256,
+        "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
+        "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
+        "lfm_revision": LFM_MODEL_REVISION,
+        "seed_vc_source_revision": SEED_VC_REVISION,
+    }
+    digest.update(
+        json.dumps(model_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
     for path in (
         paths.dataset / "irodori_source.jsonl",
         paths.dataset / "lfm_train.jsonl",
