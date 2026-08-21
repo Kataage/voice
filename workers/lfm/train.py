@@ -103,8 +103,8 @@ def main() -> None:
     )
     resume = True if list(output.glob("checkpoint-*")) else None
     trainer.train(resume_from_checkpoint=resume)
-    trainer.save_model(output)
-    tokenizer.save_pretrained(output)
+    trainer.save_model(str(output))
+    tokenizer.save_pretrained(str(output))
     if not (output / "adapter_config.json").is_file() or _adapter_weight(output) is None:
         raise RuntimeError("LFM fine-tuning completed without a complete PEFT adapter")
     (output / ADAPTER_REVISION_MARKER).write_text(MODEL_REVISION + "\n", encoding="utf-8")
