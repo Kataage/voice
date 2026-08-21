@@ -7,6 +7,7 @@ from pathlib import Path
 
 from personavoice.hardware import hardware_report
 from personavoice.process import run
+from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.workers import local_model_env, worker
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
@@ -39,6 +40,40 @@ def _irodori_device(backend: str | None) -> str:
     if backend == "xpu":
         return "xpu"
     return "cpu"
+
+
+def _vendor_integrity(repo_root: Path, relative: str, expected_revision: str) -> dict:
+    directory = repo_root / "vendor" / relative
+    if not (directory / ".git").exists():
+        return {
+            "ok": False,
+            "expected_revision": expected_revision,
+            "error": "vendor checkout is missing or is not a git repository",
+        }
+    try:
+        head = run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=directory,
+            capture=True,
+        ).stdout.strip()
+        status = run(
+            ["git", "status", "--porcelain"],
+            cwd=directory,
+            capture=True,
+        ).stdout.strip()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "expected_revision": expected_revision,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "ok": head == expected_revision and not status,
+        "head": head,
+        "expected_revision": expected_revision,
+        "clean": not status,
+        "status": status,
+    }
 
 
 def _irodori_health(repo_root: Path, setup: dict) -> dict:
@@ -130,6 +165,10 @@ def report(
         name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc"
     )
     setup = _setup_state(repo_root)
+    vendor_integrity = {
+        "irodori": _vendor_integrity(repo_root, "Irodori-TTS", IRODORI_REVISION),
+        "seed_vc": _vendor_integrity(repo_root, "seed-vc", SEED_VC_REVISION),
+    }
     worker_health: dict[str, dict] = {}
     if deep:
         for name in active_workers:
@@ -181,16 +220,23 @@ def report(
         "sense",
         "irodori_vendor",
     }
+    required_vendor_keys = {"irodori"}
     required_worker_keys = set(active_workers)
     required_lock_keys = {"root", "asr", "diarization", "sense", "lfm", "irodori_managed"}
     if require_seed_vc:
         required_model_keys.update({"seed_vc_models", "seed_vc_vendor"})
+        required_vendor_keys.add("seed_vc")
         required_lock_keys.add("seed_vc")
 
+    locks_ready = all(lockfiles[key] for key in required_lock_keys)
+    vendors_ready = all(vendor_integrity[key].get("ok") for key in required_vendor_keys)
     base_ready = (
         all(required.values())
+        and bool(setup)
         and all(models[key] for key in required_model_keys)
         and all(workers[key] for key in required_worker_keys)
+        and locks_ready
+        and vendors_ready
     )
     deep_ready = all(bool(value.get("ok")) for value in worker_health.values()) if deep else True
     return {
@@ -202,8 +248,9 @@ def report(
         "models": models,
         "workers": workers,
         "worker_health": worker_health if deep else None,
+        "vendor_integrity": vendor_integrity,
         "lockfiles": lockfiles,
-        "reproducible_environment": all(lockfiles[key] for key in required_lock_keys),
+        "reproducible_environment": locks_ready,
         "ready_offline": base_ready and deep_ready,
         "seed_vc_required": require_seed_vc,
     }
