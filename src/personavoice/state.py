@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from collections.abc import Iterator
@@ -8,10 +9,37 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-# Increment this whenever the semantics of cached prepare artifacts change.
-# Keeping it here lets us invalidate old caches even when the user-facing
-# prepare configuration itself did not change.
-PREPARE_CACHE_POLICY_VERSION = 3
+from personavoice.model_assets import (
+    ASR_MODEL_REVISION,
+    PYANNOTE_MODEL_REVISION,
+    SENSE_MODEL_CMVN_SHA256,
+    SENSE_MODEL_TOKENIZER_SHA256,
+    SENSE_MODEL_WEIGHT_SHA256,
+)
+
+
+def _prepare_cache_policy() -> str:
+    """Return a compact prepare-semantics/model contract identifier.
+
+    Changing a preprocessing model pin must invalidate derived ASR, diarization,
+    identity, SenseVoice, and clip caches even when the raw files and user config
+    are unchanged. The explicit schema prefix covers code-level cache semantics.
+    """
+
+    contract = {
+        "schema": 4,
+        "asr_revision": ASR_MODEL_REVISION,
+        "pyannote_revision": PYANNOTE_MODEL_REVISION,
+        "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
+        "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
+        "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"4-{hashlib.sha256(encoded).hexdigest()[:20]}"
+
+
+# Cached prepare artifacts are valid only for this exact preprocessing contract.
+PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
 
 
 def _now() -> str:
@@ -53,9 +81,9 @@ class StateStore:
 
         The lossless source-audio cache is intentionally retained because it is
         content-addressed by source SHA. ASR/diarization/Sense caches and cut
-        clips are not safe to reuse across arbitrary prepare-setting or code
-        changes, so they are rebuilt when the prepare fingerprint/policy changes
-        or the caller explicitly forces a rebuild.
+        clips are not safe to reuse across arbitrary prepare-setting, model, or
+        code changes, so they are rebuilt when the prepare fingerprint/policy
+        changes or the caller explicitly forces a rebuild.
         """
 
         persona_root = self.path.parent
