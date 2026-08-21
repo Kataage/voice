@@ -71,21 +71,40 @@ def _write_json_atomic(path: Path, value: Any) -> None:
         temp.unlink(missing_ok=True)
 
 
-def _publish_skipped_sources(master_db: Path, rows: list[dict[str, Any]]) -> None:
-    """Record source recordings that yielded no authorized target segments.
+def _source_inventory(path: Path) -> list[dict[str, Any]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        return []
+    return value
 
-    With explicit identity references, a recording can legitimately contain no
-    authorized speaker. The speaker selector returns a non-matching sentinel in
-    that case, so every row for the source remains non-target. Keep those rows in
-    the canonical transcript for provenance/conversation context, but publish a
-    source-level report so automated runs make the exclusion visible.
+
+def _publish_skipped_sources(master_db: Path, rows: list[dict[str, Any]]) -> None:
+    """Record every source recording that yielded no authorized target segment.
+
+    The canonical source inventory is included so recordings that yield zero
+    utterance rows (for example silence or an empty ASR/diarization result) are
+    still visible. The pipeline later enriches entries rejected by speaker
+    identity with the measured similarity and configured threshold.
     """
 
     by_source: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_source.setdefault(str(row["source_id"]), []).append(row)
+
+    source_paths: dict[str, Any] = {}
+    for source in _source_inventory(master_db.parent / "source_inventory.json"):
+        digest = source.get("sha256")
+        if not isinstance(digest, str) or len(digest) < 16:
+            continue
+        source_paths[digest[:16]] = source.get("path")
+
+    source_ids = sorted(set(by_source) | set(source_paths))
     skipped = []
-    for source_id, source_rows in sorted(by_source.items()):
+    for source_id in source_ids:
+        source_rows = by_source.get(source_id, [])
         if any(bool(row.get("target")) for row in source_rows):
             continue
         speakers = sorted(
@@ -94,8 +113,16 @@ def _publish_skipped_sources(master_db: Path, rows: list[dict[str, Any]]) -> Non
         skipped.append(
             {
                 "source_id": source_id,
-                "source_path": source_rows[0].get("source_path"),
-                "reason": "authorized_speaker_not_selected",
+                "source_path": (
+                    source_rows[0].get("source_path")
+                    if source_rows
+                    else source_paths.get(source_id)
+                ),
+                "reason": (
+                    "authorized_speaker_not_selected"
+                    if source_rows
+                    else "no_utterances"
+                ),
                 "detected_speakers": speakers,
                 "utterances": len(source_rows),
             }
@@ -279,9 +306,6 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
         for index, block in enumerate(blocks):
             if not block["target"] or index == 0:
                 continue
-            # After collapsing same-side segments, a valid persona response must
-            # begin directly after another speaker. This excludes monologues and
-            # avoids manufacturing a user prompt from the persona's own speech.
             if blocks[index - 1]["target"]:
                 continue
             context = blocks[max(0, index - 4) : index]
