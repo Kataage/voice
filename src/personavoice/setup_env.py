@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -41,6 +42,41 @@ def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
     return destination
 
 
+def _worker_extras(selected_backend: str) -> dict[str, str | None]:
+    """Map the Irodori backend to compatible isolated worker backends.
+
+    The modern Torch workers use CUDA 12.8. Archived Seed-VC is pinned to
+    Torch 2.4.0, whose newest official Windows/Linux CUDA wheel is CUDA 12.4.
+    ROCm/XPU support is currently limited to Irodori; the other workers use CPU
+    rather than silently resolving an arbitrary PyPI Torch build.
+    """
+
+    if selected_backend == "cu128":
+        return {
+            "asr": None,
+            "diarization": "cu128",
+            "sense": "cu128",
+            "lfm": "cu128",
+            "seed_vc": "cu124",
+        }
+    return {
+        "asr": None,
+        "diarization": "cpu",
+        "sense": "cpu",
+        "lfm": "cpu",
+        "seed_vc": "cpu",
+    }
+
+
+def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
+    managed_lock = repo_root / "locks" / "Irodori-TTS.uv.lock"
+    args: list[str | Path] = ["uv", "sync", "--project", irodori, "--extra", backend]
+    if managed_lock.exists():
+        shutil.copy2(managed_lock, irodori / "uv.lock")
+        args.append("--locked")
+    run(args, cwd=repo_root)
+
+
 def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:
     if not shutil.which("uv"):
         raise RuntimeError("uv was not found in PATH")
@@ -54,18 +90,28 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     )
     seed = _clone_pinned(repo_root, "seed-vc", SEED_VC_REPO, SEED_VC_REVISION)
     selected_backend = backend or detect_irodori_backend()
-    run(
-        ["uv", "sync", "--project", irodori, "--extra", selected_backend],
-        cwd=repo_root,
-    )
+    _install_irodori(repo_root, irodori, selected_backend)
+
+    worker_extras = _worker_extras(selected_backend)
     synced = []
     for name in ("asr", "diarization", "sense", "lfm", "seed_vc"):
-        worker(repo_root, name).sync(repo_root)
+        worker(repo_root, name).sync(repo_root, extra=worker_extras[name])
         synced.append(name)
-    return {
+
+    runtime = repo_root / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    setup_state = {
+        "irodori_backend": selected_backend,
+        "worker_backends": worker_extras,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
-        "irodori_backend": selected_backend,
+    }
+    (runtime / "setup.json").write_text(
+        json.dumps(setup_state, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        **setup_state,
         "workers": synced,
         "vendor": {"irodori": str(irodori), "seed_vc": str(seed)},
     }
@@ -175,8 +221,10 @@ def download_models(
         snapshot_download(repo_id=model_id, cache_dir=hub_cache)
         downloaded.append(model_id)
 
-    sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
-    if sense_dir.exists() and any(sense_dir.iterdir()):
+    runtime = repo_root / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    sense_marker = runtime / "sense-model-ready"
+    if sense_marker.exists():
         reused.append("iic/SenseVoiceSmall")
     else:
         worker(repo_root, "sense").call(
@@ -185,13 +233,14 @@ def download_models(
             {"online": True},
             offline=False,
         )
+        sense_marker.write_text("ready\n", encoding="utf-8")
         downloaded.append("iic/SenseVoiceSmall")
 
     if include_seed_vc:
         # Seed-VC has several transitive pretrained assets. Loading the wrapper online once
         # is the upstream-compatible way to materialize all of them; deep doctor verifies
         # the exact same load path in offline mode afterwards.
-        seed_marker = repo_root / ".runtime" / "seed-vc-models-ready"
+        seed_marker = runtime / "seed-vc-models-ready"
         if seed_marker.exists():
             reused.append("Seed-VC-v2-default-checkpoints")
         else:
@@ -201,7 +250,6 @@ def download_models(
                 {"online": True},
                 offline=False,
             )
-            seed_marker.parent.mkdir(parents=True, exist_ok=True)
             seed_marker.write_text("ready\n", encoding="utf-8")
             downloaded.append("Seed-VC-v2-default-checkpoints")
 
