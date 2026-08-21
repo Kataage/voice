@@ -38,6 +38,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+  "E501", # embedded local UI contains long HTML/JS lines
+  "B008", # Typer intentionally uses Option(...) in command signatures
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"
