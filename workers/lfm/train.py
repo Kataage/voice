@@ -9,11 +9,26 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
+MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
+REVISION_MARKER = ".personavoice-revision"
+
 
 def _model_dtype() -> torch.dtype:
     if not torch.cuda.is_available():
         return torch.float32
     return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+
+def _verify_base(base: Path) -> None:
+    if not (base / "config.json").is_file():
+        raise FileNotFoundError(f"Pinned LFM base model is missing: {base}")
+    marker = base / REVISION_MARKER
+    actual = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    if actual != MODEL_REVISION:
+        raise RuntimeError(
+            "LFM fine-tuning base does not match the audited revision: "
+            f"expected {MODEL_REVISION}, got {actual!r}. Run `persona setup --download-models`."
+        )
 
 
 def main() -> None:
@@ -27,12 +42,14 @@ def main() -> None:
     parser.add_argument("--lora-alpha", type=int, default=32)
     args = parser.parse_args()
 
+    base = Path(args.base).resolve()
+    _verify_base(base)
     dataset = load_dataset("json", data_files=args.dataset, split="train")
     if len(dataset) < 2:
         raise RuntimeError("LFM fine-tuning needs at least two conversational examples")
-    tokenizer = AutoTokenizer.from_pretrained(args.base, local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.base,
+        base,
         dtype=_model_dtype(),
         local_files_only=True,
     )
