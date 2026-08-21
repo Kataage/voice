@@ -102,6 +102,7 @@ def main() -> None:
         save_strategy="epoch",
         save_total_limit=2,
         max_length=2048,
+        completion_only_loss=True,
         report_to="none",
         gradient_checkpointing=True,
     )
