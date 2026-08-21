@@ -258,7 +258,7 @@ workers/seed_vc/.venv      Seed-VC compatible Python 3.10
 vendor/Irodori-TTS/.venv   pinned official Irodori environment
 ```
 
-lock生成:
+各`uv sync`は対象プロジェクトの`uv.lock`をローカル生成・更新します。GPU/backend固有の依存を実機で解決したlockをまとめて確認する場合:
 
 ```powershell
 .\scripts\lock_all.ps1
