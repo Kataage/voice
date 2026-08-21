@@ -15,6 +15,7 @@ from personavoice.inference import reenact as reenact_audio
 from personavoice.inference import repeat as repeat_audio
 from personavoice.pipeline import prepare_persona
 from personavoice.project import find_repo_root, get_persona, init_persona
+from personavoice.repair import repair_failed_model_materializations
 from personavoice.setup_env import download_models, install_environments
 from personavoice.training import train_persona
 
@@ -84,20 +85,25 @@ def setup(
             deep=True,
             require_seed_vc=not skip_seed_vc_models,
         )
-        # Seed-VC owns several transitive HF assets. Its deep worker invalidates
-        # this readiness marker only when model loading itself failed. Retry once
-        # in the same setup invocation so a stale marker/cache can self-heal;
-        # CUDA/backend mismatches leave the marker intact and are not mistaken
-        # for missing assets.
-        seed_marker = root / ".runtime" / "seed-vc-models-ready"
-        if (
-            download
-            and not skip_seed_vc_models
-            and not verification["ready_offline"]
-            and not seed_marker.exists()
-        ):
-            result["seed_vc_recovery"] = download_models(root, include_seed_vc=True)
-            verification = doctor_report(root, deep=True, require_seed_vc=True)
+        if download and not verification["ready_offline"]:
+            repaired = repair_failed_model_materializations(
+                root,
+                verification,
+                include_seed_vc=not skip_seed_vc_models,
+            )
+            if repaired:
+                result["model_recovery"] = {
+                    "discarded_materializations": repaired,
+                    "download": download_models(
+                        root,
+                        include_seed_vc=not skip_seed_vc_models,
+                    ),
+                }
+                verification = doctor_report(
+                    root,
+                    deep=True,
+                    require_seed_vc=not skip_seed_vc_models,
+                )
         result["verification"] = verification
         if not verification["ready_offline"]:
             _print(result)
