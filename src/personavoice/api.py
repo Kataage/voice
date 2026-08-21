@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import quote
 
@@ -12,6 +13,10 @@ from personavoice.inference import chat_turn, reenact, repeat, synthesize
 from personavoice.project import find_repo_root, get_persona
 
 app = FastAPI(title="PersonaVoice", version="0.3.0")
+# All current heavyweight backends target the same local accelerator. Running
+# independent TTS/VC/LLM requests concurrently is far more likely to OOM than to
+# improve latency, so the server uses a safe single-flight default.
+_GENERATION_LOCK = asyncio.Lock()
 
 
 class TTSRequest(BaseModel):
@@ -91,58 +96,73 @@ def output_audio(persona: str, relative_path: str):
 
 
 @app.post("/v1/tts")
-def tts(request: TTSRequest) -> dict:
+async def tts(request: TTSRequest) -> dict:
     try:
         root, paths, cfg = _load(request.persona)
-        outputs = synthesize(
-            root,
-            paths,
-            cfg,
-            request.text,
-            style=request.style,
-            emotion=request.emotion,
-            events=request.events,
-            ref=request.ref,
-            candidates=request.candidates,
-            seed=request.seed,
-        )
+        async with _GENERATION_LOCK:
+            outputs = await asyncio.to_thread(
+                synthesize,
+                root,
+                paths,
+                cfg,
+                request.text,
+                style=request.style,
+                emotion=request.emotion,
+                events=request.events,
+                ref=request.ref,
+                candidates=request.candidates,
+                seed=request.seed,
+            )
         return {"outputs": [_output_item(request.persona, paths, path) for path in outputs]}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/v1/voice-convert")
-def voice_convert(request: AudioRequest) -> dict:
+async def voice_convert(request: AudioRequest) -> dict:
     try:
         root, paths, cfg = _load(request.persona)
-        output = reenact(
-            root,
-            paths,
-            cfg,
-            _source_file(request.source),
-            ref=request.ref,
-            transfer_style=request.transfer_style,
-        )
+        source = _source_file(request.source)
+        async with _GENERATION_LOCK:
+            output = await asyncio.to_thread(
+                reenact,
+                root,
+                paths,
+                cfg,
+                source,
+                ref=request.ref,
+                transfer_style=request.transfer_style,
+            )
         return {"output": _output_item(request.persona, paths, output)}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/v1/repeat")
-def repeat_endpoint(request: AudioRequest) -> dict:
+async def repeat_endpoint(request: AudioRequest) -> dict:
     try:
         root, paths, cfg = _load(request.persona)
-        outputs = repeat(root, paths, cfg, _source_file(request.source))
+        source = _source_file(request.source)
+        async with _GENERATION_LOCK:
+            outputs = await asyncio.to_thread(repeat, root, paths, cfg, source)
         return {"outputs": [_output_item(request.persona, paths, path) for path in outputs]}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/v1/chat")
-def chat_endpoint(request: ChatRequest) -> dict:
+async def chat_endpoint(request: ChatRequest) -> dict:
     try:
         root, paths, cfg = _load(request.persona)
-        result = chat_turn(root, paths, cfg, request.prompt, request.history)
+        async with _GENERATION_LOCK:
+            result = await asyncio.to_thread(
+                chat_turn,
+                root,
+                paths,
+                cfg,
+                request.prompt,
+                request.history,
+            )
         audio_path = Path(str(result["audio"]))
         result["audio"] = _output_item(request.persona, paths, audio_path)
         return result
