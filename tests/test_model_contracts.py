@@ -51,3 +51,5 @@ def test_workers_enforce_audited_local_model_contracts():
     assert "833ca2dcfdf8ec91bd4f31cfac36d6124e0c459074d5e909aec9cabe6204a3ea" in sense
     assert "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5" in sense
     assert "aa87f86064c3730d799ddf7af3c04659151102cba548bce325cf06ba4da4e6a8" in sense
+    assert 'sense-model-ready' in sense
+    assert 'write_text("verified\\n"' in sense
