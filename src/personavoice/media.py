@@ -41,32 +41,50 @@ def media_files(root: Path) -> list[Path]:
 
 
 def inventory(raw_dir: Path) -> list[dict[str, Any]]:
+    """Return one canonical source row per unique media content hash.
+
+    Copying the same recording into `raw/` under multiple filenames must not
+    duplicate the conversation in training or create colliding utterance IDs.
+    Duplicate paths are retained as provenance on the canonical row.
+    """
+
     rows: list[dict[str, Any]] = []
+    by_sha: dict[str, dict[str, Any]] = {}
     for path in media_files(raw_dir):
-        rows.append(
-            {
-                "path": path.relative_to(raw_dir).as_posix(),
-                "absolute_path": str(path.resolve()),
-                "size_bytes": path.stat().st_size,
-                "sha256": sha256_file(path),
-                "probe": ffprobe(path),
-            }
-        )
+        relative = path.relative_to(raw_dir).as_posix()
+        digest = sha256_file(path)
+        existing = by_sha.get(digest)
+        if existing is not None:
+            existing["duplicate_paths"].append(relative)
+            continue
+        row = {
+            "path": relative,
+            "duplicate_paths": [],
+            "absolute_path": str(path.resolve()),
+            "size_bytes": path.stat().st_size,
+            "sha256": digest,
+            "probe": ffprobe(path),
+        }
+        by_sha[digest] = row
+        rows.append(row)
     return rows
 
 
 def inventory_fingerprint(raw_dir: Path) -> str:
-    """Hash the actual media contents, not mutable filesystem metadata.
+    """Hash media contents, logical paths, and the materialization location.
 
-    mtime/size fingerprints can miss a same-size replacement whose timestamp was
-    preserved by a copy/restore tool. Preparation correctness is more important
-    than avoiding a sequential read of the source files at command startup.
+    The exported canonical datasets intentionally contain absolute local audio
+    paths for downstream tools. Moving a persona/repository must therefore make
+    a completed prepare stage stale so those paths are rebuilt at the new root.
+    Including every logical path also means adding/removing a duplicate source
+    is observable even though `inventory` suppresses duplicate training input.
     """
 
     digest = hashlib.sha256()
+    digest.update(str(raw_dir.resolve()).encode("utf-8"))
     for path in media_files(raw_dir):
-        digest.update(path.relative_to(raw_dir).as_posix().encode())
-        digest.update(sha256_file(path).encode())
+        digest.update(path.relative_to(raw_dir).as_posix().encode("utf-8"))
+        digest.update(sha256_file(path).encode("ascii"))
     return digest.hexdigest()
 
 
