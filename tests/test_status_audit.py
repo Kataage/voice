@@ -6,8 +6,8 @@ from pathlib import Path
 from personavoice.config import PersonaConfig
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.project import init_persona
-from personavoice.status import persona_status
 from personavoice.state import StateStore
+from personavoice.status import persona_status
 
 
 def test_status_reports_unreadable_state_without_crashing(tmp_path: Path):
