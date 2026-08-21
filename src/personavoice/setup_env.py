@@ -22,6 +22,12 @@ from personavoice.model_assets import (
     IRODORI_TEXT_ENCODER_REVISION,
     LFM_MODEL_ID,
     LFM_MODEL_REVISION,
+    PYANNOTE_MODEL_ID,
+    PYANNOTE_MODEL_REVISION,
+    SENSE_MODEL_CMVN_SHA256,
+    SENSE_MODEL_ID,
+    SENSE_MODEL_TOKENIZER_SHA256,
+    SENSE_MODEL_WEIGHT_SHA256,
 )
 from personavoice.process import CommandError, run
 from personavoice.workers import local_model_env, worker
@@ -31,6 +37,7 @@ IRODORI_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 SEED_VC_REPO = "https://github.com/Plachtaa/seed-vc.git"
 SEED_VC_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
 REVISION_MARKER = ".personavoice-revision"
+SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
 
 
 def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
@@ -110,6 +117,11 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         raise RuntimeError("uv was not found in PATH")
     if not shutil.which("git"):
         raise RuntimeError("git was not found in PATH")
+    selected_backend = backend or detect_irodori_backend()
+    if selected_backend not in SUPPORTED_IRODORI_BACKENDS:
+        expected = ", ".join(sorted(SUPPORTED_IRODORI_BACKENDS))
+        raise ValueError(f"Unsupported Irodori backend {selected_backend!r}; choose one of: {expected}")
+
     irodori = _clone_pinned(
         repo_root,
         "Irodori-TTS",
@@ -117,7 +129,6 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         IRODORI_REVISION,
     )
     seed = _clone_pinned(repo_root, "seed-vc", SEED_VC_REPO, SEED_VC_REVISION)
-    selected_backend = backend or detect_irodori_backend()
     _install_irodori(repo_root, irodori, selected_backend)
 
     worker_extras = _worker_extras(selected_backend)
@@ -139,6 +150,10 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
             "lfm_revision": LFM_MODEL_REVISION,
             "asr_revision": ASR_MODEL_REVISION,
+            "pyannote_revision": PYANNOTE_MODEL_REVISION,
+            "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
+            "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
+            "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
         },
     }
     (runtime / "setup.json").write_text(
@@ -195,8 +210,21 @@ def _snapshot_if_missing(
     token: str | None = None,
     revision: str | None = None,
 ) -> bool:
-    if marker.exists():
+    revision_path = local_dir / REVISION_MARKER
+    current_revision = (
+        revision_path.read_text(encoding="utf-8").strip()
+        if revision_path.is_file()
+        else None
+    )
+    if marker.exists() and (revision is None or current_revision == revision):
         return False
+
+    # A materialized directory without the expected revision marker came from a
+    # floating/older setup. Replace only PersonaVoice's local view; HF cache blobs
+    # are retained and can be reused by snapshot_download.
+    if local_dir.exists():
+        shutil.rmtree(local_dir)
+    local_dir.mkdir(parents=True, exist_ok=True)
     snapshot_download(
         repo_id=model_id,
         revision=revision,
@@ -208,6 +236,8 @@ def _snapshot_if_missing(
         raise FileNotFoundError(
             f"Model download for {model_id} completed but expected marker is missing: {marker}"
         )
+    if revision is not None:
+        revision_path.write_text(revision + "\n", encoding="utf-8")
     return True
 
 
@@ -324,37 +354,60 @@ def download_models(
 
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
     pyannote_marker = pyannote_dir / "config.yaml"
-    if not pyannote_marker.exists() and not token:
+    pyannote_revision_marker = pyannote_dir / REVISION_MARKER
+    pyannote_is_pinned = (
+        pyannote_marker.is_file()
+        and pyannote_revision_marker.is_file()
+        and pyannote_revision_marker.read_text(encoding="utf-8").strip()
+        == PYANNOTE_MODEL_REVISION
+    )
+    if not pyannote_is_pinned and not token:
         raise RuntimeError(
-            "HF_TOKEN is required for the first download of "
-            "pyannote/speaker-diarization-community-1. Accept its Hugging Face usage terms, "
-            "then set HF_TOKEN in the environment. The token is never stored by PersonaVoice."
+            f"HF_TOKEN is required to materialize the audited {PYANNOTE_MODEL_ID} snapshot. "
+            "Accept its Hugging Face usage terms, then set HF_TOKEN in the environment. "
+            "The token is never stored by PersonaVoice."
         )
     if _snapshot_if_missing(
-        model_id="pyannote/speaker-diarization-community-1",
+        model_id=PYANNOTE_MODEL_ID,
+        revision=PYANNOTE_MODEL_REVISION,
         local_dir=pyannote_dir,
         marker=pyannote_marker,
         cache_dir=hub_cache,
         token=token,
     ):
-        downloaded.append("pyannote/speaker-diarization-community-1")
+        downloaded.append(f"{PYANNOTE_MODEL_ID}@{PYANNOTE_MODEL_REVISION}")
     else:
-        reused.append("pyannote/speaker-diarization-community-1")
+        reused.append(f"{PYANNOTE_MODEL_ID}@{PYANNOTE_MODEL_REVISION}")
 
     runtime = repo_root / ".runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     sense_marker = runtime / "sense-model-ready"
+    sense_local = repo_root / "models" / "sense" / "SenseVoiceSmall"
+    sense_worker = worker(repo_root, "sense")
+    sense_verified = False
     if sense_marker.exists():
-        reused.append("iic/SenseVoiceSmall")
+        try:
+            sense_worker.call(
+                repo_root,
+                "verify",
+                {},
+                offline=True,
+            )
+            sense_verified = True
+        except Exception:
+            sense_marker.unlink(missing_ok=True)
+            shutil.rmtree(sense_local, ignore_errors=True)
+    if sense_verified:
+        reused.append(SENSE_MODEL_ID)
     else:
-        worker(repo_root, "sense").call(
+        sense_worker.call(
             repo_root,
             "download",
             {"online": True},
             offline=False,
         )
-        sense_marker.write_text("ready\n", encoding="utf-8")
-        downloaded.append("iic/SenseVoiceSmall")
+        sense_marker.write_text("verified\n", encoding="utf-8")
+        downloaded.append(SENSE_MODEL_ID)
 
     if include_seed_vc:
         # Seed-VC has several transitive pretrained assets. Loading the wrapper online once
