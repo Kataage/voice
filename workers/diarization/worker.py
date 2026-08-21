@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 import torch
 from huggingface_hub import snapshot_download
@@ -18,16 +19,44 @@ def read_request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _read_marker(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip() if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 def local_source() -> str:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "pyannote" / "community-1"
     config = local / "config.yaml"
     marker = local / REVISION_MARKER
-    if not config.is_file():
+    if not _nonempty_file(config):
         raise FileNotFoundError(
-            f"Pinned pyannote model is missing: {config}. Run `persona setup --download-models`."
+            f"Pinned pyannote model is missing or incomplete: {config}. "
+            "Run `persona setup --download-models`."
         )
-    actual_revision = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    actual_revision = _read_marker(marker)
     if actual_revision != MODEL_REVISION:
         raise RuntimeError(
             "Local pyannote snapshot does not match the audited revision: "
@@ -129,7 +158,12 @@ def download(payload: dict) -> dict:
         cache_dir=Path(os.environ["HF_HOME"]),
         token=token,
     )
-    (local / REVISION_MARKER).write_text(MODEL_REVISION + "\n", encoding="utf-8")
+    config = local / "config.yaml"
+    if not _nonempty_file(config):
+        raise FileNotFoundError(
+            f"Pinned pyannote download completed without a valid config: {config}"
+        )
+    _atomic_write_text(local / REVISION_MARKER, MODEL_REVISION + "\n")
     return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}
 
 
