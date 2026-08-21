@@ -52,12 +52,20 @@ def _load_diarization_worker(monkeypatch):
     return module
 
 
+def _write_complete_asr_files(local: Path, worker) -> None:
+    local.mkdir(parents=True, exist_ok=True)
+    for name in worker.REQUIRED_MODEL_FILES:
+        if name.endswith(".json"):
+            (local / name).write_text("{}\n", encoding="utf-8")
+        else:
+            (local / name).write_bytes(b"weights")
+
+
 def test_asr_model_path_requires_nonempty_required_files_and_revision(tmp_path: Path, monkeypatch):
     worker = _load_asr_worker(monkeypatch)
     monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
     local = tmp_path / "models" / "asr" / worker.PINNED_MODEL_NAME
-    local.mkdir(parents=True)
-    (local / "config.json").write_text("{}\n", encoding="utf-8")
+    _write_complete_asr_files(local, worker)
     (local / "model.bin").write_bytes(b"")
     (local / worker.REVISION_MARKER).write_text(worker.PINNED_MODEL_REVISION + "\n", encoding="utf-8")
 
@@ -82,25 +90,29 @@ def test_asr_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monk
         worker.download({})
 
     local = tmp_path / "models" / "asr" / worker.PINNED_MODEL_NAME
-    local.mkdir(parents=True, exist_ok=True)
-    (local / "config.json").write_text("{}\n", encoding="utf-8")
-    (local / "model.bin").write_bytes(b"weights")
+    _write_complete_asr_files(local, worker)
     result = worker.download({})
     assert result["revision"] == worker.PINNED_MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.PINNED_MODEL_REVISION
 
 
-def test_doctor_asr_static_check_requires_config_and_weights(tmp_path: Path):
-    local = tmp_path / "models" / "asr" / "large-v3"
+def test_doctor_asr_static_check_requires_full_offline_snapshot(tmp_path: Path, monkeypatch):
+    worker = _load_asr_worker(monkeypatch)
+    local = tmp_path / "models" / "asr" / worker.PINNED_MODEL_NAME
     local.mkdir(parents=True)
     (local / "model.bin").write_bytes(b"weights")
+    (local / "config.json").write_text("{}\n", encoding="utf-8")
 
     result = doctor_report(tmp_path, require_seed_vc=False)
     assert result["models"]["asr"] is False
 
-    (local / "config.json").write_text("{}\n", encoding="utf-8")
+    _write_complete_asr_files(local, worker)
     result = doctor_report(tmp_path, require_seed_vc=False)
     assert result["models"]["asr"] is True
+
+    (local / "tokenizer.json").unlink()
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["asr"] is False
 
 
 def test_pyannote_local_source_requires_nonempty_config_and_revision(tmp_path: Path, monkeypatch):
