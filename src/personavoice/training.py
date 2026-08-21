@@ -12,6 +12,8 @@ from personavoice.project import PersonaPaths
 from personavoice.state import StateStore
 from personavoice.workers import local_model_env
 
+TRAIN_SCHEMA_VERSION = 2
+
 
 def _line_count(path: Path) -> int:
     if not path.exists():
@@ -21,14 +23,31 @@ def _line_count(path: Path) -> int:
 
 
 def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
-    source = paths.dataset / "irodori_source.jsonl"
-    brain = paths.dataset / "lfm_train.jsonl"
     digest = hashlib.sha256()
-    for path in (source, brain):
+    digest.update(f"train-schema:{TRAIN_SCHEMA_VERSION}".encode())
+    for path in (
+        paths.dataset / "irodori_source.jsonl",
+        paths.dataset / "lfm_train.jsonl",
+        paths.dataset / "seed_vc" / "manifest.jsonl",
+    ):
         if path.exists():
+            digest.update(path.name.encode())
             digest.update(path.read_bytes())
-    digest.update(json.dumps(cfg.training.model_dump(), sort_keys=True).encode())
+    digest.update(json.dumps(cfg.training.model_dump(mode="json"), sort_keys=True).encode())
     return digest.hexdigest()
+
+
+def _invalidate_training_artifacts(paths: PersonaPaths) -> None:
+    for target in (
+        paths.models / "irodori",
+        paths.models / "lfm",
+        paths.models / "seed_vc",
+        paths.cache / "irodori_latents",
+    ):
+        shutil.rmtree(target, ignore_errors=True)
+    (paths.dataset / "irodori_manifest.jsonl").unlink(missing_ok=True)
+    for config in paths.cache.glob("irodori_*.yaml"):
+        config.unlink(missing_ok=True)
 
 
 def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str | None:
@@ -46,16 +65,33 @@ def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str |
     env = local_model_env(repo_root)
     run(
         [
-            "uv", "run", "--project", project, "--no-sync", "python", project / "train.py",
-            "--base", base, "--dataset", dataset, "--output", output,
-            "--epochs", str(cfg.training.lfm_epochs),
-            "--learning-rate", str(cfg.training.lfm_learning_rate),
-            "--lora-r", str(cfg.training.lfm_lora_r),
-            "--lora-alpha", str(cfg.training.lfm_lora_alpha),
+            "uv",
+            "run",
+            "--project",
+            project,
+            "--no-sync",
+            "python",
+            project / "train.py",
+            "--base",
+            base,
+            "--dataset",
+            dataset,
+            "--output",
+            output,
+            "--epochs",
+            str(cfg.training.lfm_epochs),
+            "--learning-rate",
+            str(cfg.training.lfm_learning_rate),
+            "--lora-r",
+            str(cfg.training.lfm_lora_r),
+            "--lora-alpha",
+            str(cfg.training.lfm_lora_alpha),
         ],
         cwd=repo_root,
         env=env,
     )
+    if not (output / "adapter_config.json").exists():
+        raise RuntimeError("LFM fine-tuning completed without adapter_config.json")
     return str(output)
 
 
@@ -71,16 +107,32 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
     run_name = f"personavoice_{cfg.name}"
     run(
         [
-            "uv", "run", "--project", project, "--no-sync", "accelerate", "launch",
-            "--num_processes", "1", "--mixed_precision", "fp16",
+            "uv",
+            "run",
+            "--project",
+            project,
+            "--no-sync",
+            "accelerate",
+            "launch",
+            "--num_processes",
+            "1",
+            "--mixed_precision",
+            "fp16",
             vendor / "train_v2.py",
-            "--dataset-dir", audio_dir,
-            "--run-name", run_name,
-            "--batch-size", "2",
-            "--max-steps", str(cfg.training.seed_vc_max_steps),
-            "--max-epochs", "1000",
-            "--save-every", str(max(100, cfg.training.seed_vc_max_steps // 2)),
-            "--num-workers", "0",
+            "--dataset-dir",
+            audio_dir,
+            "--run-name",
+            run_name,
+            "--batch-size",
+            "2",
+            "--max-steps",
+            str(cfg.training.seed_vc_max_steps),
+            "--max-epochs",
+            "1000",
+            "--save-every",
+            str(max(100, cfg.training.seed_vc_max_steps // 2)),
+            "--num-workers",
+            "0",
             "--train-cfm",
         ],
         cwd=vendor,
@@ -97,22 +149,41 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
 
 
 def train_persona(
-    repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, *, force: bool = False
+    repo_root: Path,
+    paths: PersonaPaths,
+    cfg: PersonaConfig,
+    *,
+    force: bool = False,
 ) -> dict:
     if not cfg.consent.authorized:
         raise PermissionError("Training is blocked because consent.authorized is not true.")
     source = paths.dataset / "irodori_source.jsonl"
     if _line_count(source) < 2:
-        raise RuntimeError("Prepared Irodori dataset is missing or too small. Run `persona prepare` first.")
+        raise RuntimeError(
+            "Prepared Irodori dataset is missing or too small. Run `persona prepare` first."
+        )
+
     store = StateStore(paths.state)
     fingerprint = _fingerprint(paths, cfg)
+    previous = store.stage("train")
     if not force and store.is_complete("train", fingerprint):
-        return store.stage("train").get("result", {})
+        return previous.get("result", {})
+
+    previous_fingerprint = previous.get("fingerprint")
+    inputs_changed = bool(previous_fingerprint and previous_fingerprint != fingerprint)
+    if force or inputs_changed:
+        _invalidate_training_artifacts(paths)
+        if cfg.training.seed_vc_finetune:
+            shutil.rmtree(
+                repo_root / "vendor" / "seed-vc" / "runs" / f"personavoice_{cfg.name}",
+                ignore_errors=True,
+            )
+
     with store.running("train", fingerprint):
         base_checkpoint(repo_root)
         manifest = paths.dataset / "irodori_manifest.jsonl"
         latents = paths.cache / "irodori_latents"
-        if force or not manifest.exists():
+        if not manifest.exists():
             prepare_manifest(repo_root, source, manifest, latents)
         irodori = train_irodori(
             repo_root,
@@ -126,6 +197,12 @@ def train_persona(
         )
         lfm = train_lfm(repo_root, paths, cfg) if cfg.training.lfm_lora else None
         seed = train_seed_vc(repo_root, paths, cfg)
-        result = {"irodori": irodori, "lfm_adapter": lfm, "seed_vc_cfm": seed}
+        result = {
+            "train_schema": TRAIN_SCHEMA_VERSION,
+            "fingerprint": fingerprint,
+            "irodori": irodori,
+            "lfm_adapter": lfm,
+            "seed_vc_cfm": seed,
+        }
         store.set_result("train", result)
         return result
