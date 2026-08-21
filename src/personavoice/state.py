@@ -11,7 +11,7 @@ from typing import Any
 # Increment this whenever the semantics of cached prepare artifacts change.
 # Keeping it here lets us invalidate old caches even when the user-facing
 # prepare configuration itself did not change.
-PREPARE_CACHE_POLICY_VERSION = 2
+PREPARE_CACHE_POLICY_VERSION = 3
 
 
 def _now() -> str:
