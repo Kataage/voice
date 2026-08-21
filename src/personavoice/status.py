@@ -75,6 +75,7 @@ def persona_status(
 
     prepare = _stage_audit(store, state, "prepare")
     train = _stage_audit(store, state, "train")
+    train["blocked_by_prepare"] = None
     if verify_inputs:
         try:
             current_prepare = _prepare_fingerprint(paths, cfg)
@@ -99,6 +100,18 @@ def persona_status(
                 train["current_complete"] = store.is_complete("train", current_train)
             except (OSError, ValueError, TypeError):
                 train["current_complete"] = False
+
+        # Training has the same hard dependency in train_persona: a current,
+        # complete prepare stage is required before a trained artifact can be
+        # considered valid for the current raw/identity inputs. A still-matching
+        # dataset fingerprint must not mask stale source media in status output.
+        prepare_ready = (
+            prepare.get("fingerprint_current") is True
+            and prepare.get("current_complete") is True
+        )
+        train["blocked_by_prepare"] = not prepare_ready
+        if not prepare_ready:
+            train["current_complete"] = False
 
     return {
         "config": cfg.model_dump(mode="json"),
