@@ -8,14 +8,37 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 from huggingface_hub import snapshot_download
 
+PINNED_MODEL_NAME = "large-v3"
+PINNED_MODEL_ID = "Systran/faster-whisper-large-v3"
+PINNED_MODEL_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
+REVISION_MARKER = ".personavoice-revision"
+
 
 def request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _read_revision(local: Path) -> str | None:
+    marker = local / REVISION_MARKER
+    return marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+
+
 def model_path(model: str) -> str:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "asr" / model
+    if model == PINNED_MODEL_NAME:
+        if not local.is_dir():
+            raise FileNotFoundError(
+                f"Pinned ASR model is missing: {local}. Run `persona setup --download-models`."
+            )
+        actual_revision = _read_revision(local)
+        if actual_revision != PINNED_MODEL_REVISION:
+            raise RuntimeError(
+                "Local ASR snapshot does not match the audited revision: "
+                f"expected {PINNED_MODEL_REVISION}, got {actual_revision!r}. "
+                "Re-run `persona setup --download-models`."
+            )
+        return str(local)
     return str(local) if local.exists() else model
 
 
@@ -76,14 +99,14 @@ def transcribe_with_model(model: WhisperModel, audio: str, *, language: str) -> 
 
 
 def transcribe(payload: dict) -> dict:
-    name = payload.get("model", "large-v3")
+    name = payload.get("model", PINNED_MODEL_NAME)
     model = make_model(name, payload.get("compute_type", "auto"))
     return transcribe_with_model(model, payload["audio"], language=payload.get("language") or "ja")
 
 
 def batch_transcribe(payload: dict) -> dict:
     items = payload.get("items") or []
-    name = payload.get("model", "large-v3")
+    name = payload.get("model", PINNED_MODEL_NAME)
     model = make_model(name, payload.get("compute_type", "auto"))
     language = payload.get("language") or "ja"
     results = []
@@ -99,18 +122,26 @@ def batch_transcribe(payload: dict) -> dict:
 
 def download(payload: dict) -> dict:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
-    name = payload.get("model", "large-v3")
+    name = payload.get("model", PINNED_MODEL_NAME)
     repo_id = f"Systran/faster-whisper-{name}"
     local = root / "models" / "asr" / name
-    snapshot_download(repo_id, local_dir=local, cache_dir=Path(os.environ["HF_HOME"]))
-    return {"model": repo_id, "path": str(local)}
+    revision = PINNED_MODEL_REVISION if name == PINNED_MODEL_NAME else None
+    snapshot_download(
+        repo_id,
+        revision=revision,
+        local_dir=local,
+        cache_dir=Path(os.environ["HF_HOME"]),
+    )
+    if revision is not None:
+        (local / REVISION_MARKER).write_text(revision + "\n", encoding="utf-8")
+    return {"model": repo_id, "revision": revision, "path": str(local)}
 
 
 def health(payload: dict) -> dict:
     has_cuda = cuda_available()
     result = {"ok": True, "cuda": has_cuda, "device": "cuda" if has_cuda else "cpu"}
     if payload.get("deep"):
-        model = make_model(payload.get("model", "large-v3"), payload.get("compute_type", "auto"))
+        model = make_model(payload.get("model", PINNED_MODEL_NAME), payload.get("compute_type", "auto"))
         result["model_loaded"] = model is not None
     return result
 
