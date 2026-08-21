@@ -12,6 +12,7 @@ from trl import SFTConfig, SFTTrainer
 
 MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
 REVISION_MARKER = ".personavoice-revision"
+ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 
 
 def _model_dtype() -> torch.dtype:
@@ -32,6 +33,14 @@ def _verify_base(base: Path) -> None:
         )
 
 
+def _adapter_weight(output: Path) -> Path | None:
+    for name in ("adapter_model.safetensors", "adapter_model.bin"):
+        candidate = output / name
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -44,6 +53,7 @@ def main() -> None:
     args = parser.parse_args()
 
     base = Path(args.base).resolve()
+    output = Path(args.output).resolve()
     _verify_base(base)
     dataset = load_dataset("json", data_files=args.dataset, split="train")
     if len(dataset) < 2:
@@ -69,7 +79,7 @@ def main() -> None:
     )
     grad_accum = 8 if batch == 1 else 4
     config = SFTConfig(
-        output_dir=args.output,
+        output_dir=str(output),
         num_train_epochs=args.epochs,
         per_device_train_batch_size=batch,
         gradient_accumulation_steps=grad_accum,
@@ -91,10 +101,13 @@ def main() -> None:
         processing_class=tokenizer,
         peft_config=peft_config,
     )
-    resume = True if list(Path(args.output).glob("checkpoint-*")) else None
+    resume = True if list(output.glob("checkpoint-*")) else None
     trainer.train(resume_from_checkpoint=resume)
-    trainer.save_model(args.output)
-    tokenizer.save_pretrained(args.output)
+    trainer.save_model(output)
+    tokenizer.save_pretrained(output)
+    if not (output / "adapter_config.json").is_file() or _adapter_weight(output) is None:
+        raise RuntimeError("LFM fine-tuning completed without a complete PEFT adapter")
+    (output / ADAPTER_REVISION_MARKER).write_text(MODEL_REVISION + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
