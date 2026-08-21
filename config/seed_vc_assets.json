@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "snapshots": {
+    "seed_vc": {
+      "repo_id": "Plachta/Seed-VC",
+      "revision": "4105b66f617cedef76c18288a479036773562e36",
+      "local_dir": "seed-vc-v2",
+      "required_files": [
+        "v2/ar_base.pth",
+        "v2/cfm_small.pth"
+      ],
+      "sha256": {
+        "v2/ar_base.pth": "42e2afabf97e5d856580af1f81a9705423b4fb21bb9475cece9925b62355cc5c",
+        "v2/cfm_small.pth": "73ae18615dc8cb01710086629973198226dedc63ebeaab0aee17863d767b3474"
+      }
+    },
+    "astral": {
+      "repo_id": "Plachta/ASTRAL-quantization",
+      "revision": "4a2e9679f76eb03753adc8c503e3c23bb9c22f26",
+      "local_dir": "astral",
+      "required_files": [
+        "bsq32/bsq32_light.pth",
+        "bsq2048/bsq2048_light.pth"
+      ],
+      "sha256": {
+        "bsq32/bsq32_light.pth": "b01d6ba14a7af57ecc02b3eb5897a7e2abdaefab06b3f218d6709dc98b0e83a3",
+        "bsq2048/bsq2048_light.pth": "d7953115a60609c72a50bc79e88aa7248ffd4444b3912f89e8375ec1c6485fc6"
+      }
+    },
+    "campplus": {
+      "repo_id": "funasr/campplus",
+      "revision": "e4b6ede7ce16997aff4ae69fbca1f0175e2afede",
+      "local_dir": "campplus",
+      "required_files": [
+        "campplus_cn_common.bin"
+      ],
+      "sha256": {
+        "campplus_cn_common.bin": "3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8"
+      }
+    },
+    "whisper_small": {
+      "repo_id": "openai/whisper-small",
+      "revision": "973afd24965f72e36ca33b3055d56a652f456b4d",
+      "local_dir": "whisper-small-tokenizer",
+      "required_files": [
+        "added_tokens.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "normalizer.json",
+        "preprocessor_config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "sha256": {}
+    },
+    "hubert": {
+      "repo_id": "facebook/hubert-large-ll60k",
+      "revision": "ff022d095678a2995f3c49bab18a96a9e553f782",
+      "local_dir": "hubert-large-ll60k",
+      "required_files": [
+        "config.json",
+        "preprocessor_config.json",
+        "pytorch_model.bin"
+      ],
+      "sha256": {
+        "pytorch_model.bin": "45a299050945479a68cffe2ab7a63fd08931718ba18f05a42dbb86a5164178e0"
+      }
+    },
+    "bigvgan": {
+      "repo_id": "nvidia/bigvgan_v2_22khz_80band_256x",
+      "revision": "633ff708ed5b74903e86ff1298cf4a98e921c513",
+      "local_dir": "bigvgan-v2-22khz-80band-256x",
+      "required_files": [
+        "config.json",
+        "bigvgan_generator.pt"
+      ],
+      "sha256": {
+        "bigvgan_generator.pt": "e95ba25972d3de0628d99cd156e9315a9c018899bf739988959ebe3544080ced"
+      }
+    }
+  }
+}
