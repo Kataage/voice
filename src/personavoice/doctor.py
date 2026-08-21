@@ -6,8 +6,18 @@ import sys
 from pathlib import Path
 
 from personavoice.hardware import hardware_report
+from personavoice.media import sha256_file
+from personavoice.model_assets import (
+    ASR_MODEL_REVISION,
+    IRODORI_DACVAE_FILENAME,
+    IRODORI_DACVAE_SHA256,
+    IRODORI_MODEL_FILENAME,
+    IRODORI_MODEL_SHA256,
+    IRODORI_TEXT_ENCODER_REVISION,
+    LFM_MODEL_REVISION,
+)
 from personavoice.process import run
-from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
+from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_REVISION
 from personavoice.workers import local_model_env, worker
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
@@ -76,13 +86,74 @@ def _vendor_integrity(repo_root: Path, relative: str, expected_revision: str) ->
     }
 
 
+def _read_revision(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip() if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
+    expected_setup = {
+        "irodori_model_sha256": IRODORI_MODEL_SHA256,
+        "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
+        "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
+        "lfm_revision": LFM_MODEL_REVISION,
+        "asr_revision": ASR_MODEL_REVISION,
+    }
+    recorded = setup.get("model_assets") if isinstance(setup.get("model_assets"), dict) else {}
+    irodori = repo_root / "models" / "irodori" / "v4.1-small" / IRODORI_MODEL_FILENAME
+    dacvae = repo_root / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
+    lfm_revision = _read_revision(repo_root / "models" / "lfm" / "base" / REVISION_MARKER)
+    asr_revision = _read_revision(repo_root / "models" / "asr" / "large-v3" / REVISION_MARKER)
+
+    result = {
+        "ok": True,
+        "setup_matches": recorded == expected_setup,
+        "expected": expected_setup,
+        "recorded": recorded,
+        "lfm_revision": lfm_revision,
+        "asr_revision": asr_revision,
+        "irodori_sha256": None,
+        "dacvae_sha256": None,
+    }
+    if recorded != expected_setup:
+        result["ok"] = False
+        result["error"] = "setup model asset pins do not match this PersonaVoice revision"
+    if not irodori.is_file() or not dacvae.is_file():
+        result["ok"] = False
+        result["error"] = "Irodori base checkpoint or DACVAE checkpoint is missing"
+    if lfm_revision != LFM_MODEL_REVISION:
+        result["ok"] = False
+        result["error"] = "LFM materialized revision does not match the audited revision"
+    if asr_revision != ASR_MODEL_REVISION:
+        result["ok"] = False
+        result["error"] = "ASR materialized revision does not match the audited revision"
+
+    if deep and irodori.is_file() and dacvae.is_file():
+        irodori_sha = sha256_file(irodori)
+        dacvae_sha = sha256_file(dacvae)
+        result["irodori_sha256"] = irodori_sha
+        result["dacvae_sha256"] = dacvae_sha
+        if irodori_sha != IRODORI_MODEL_SHA256:
+            result["ok"] = False
+            result["error"] = "Irodori checkpoint checksum mismatch"
+        if dacvae_sha != IRODORI_DACVAE_SHA256:
+            result["ok"] = False
+            result["error"] = "Irodori DACVAE checksum mismatch"
+    return result
+
+
 def _irodori_health(repo_root: Path, setup: dict) -> dict:
     vendor = repo_root / "vendor" / "Irodori-TTS"
-    checkpoint = repo_root / "models" / "irodori" / "v4.1-small" / "model.safetensors"
+    checkpoint = repo_root / "models" / "irodori" / "v4.1-small" / IRODORI_MODEL_FILENAME
+    codec = repo_root / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
     if not (vendor / "infer.py").exists():
         return {"ok": False, "error": "Irodori vendor checkout is missing"}
     if not checkpoint.exists():
         return {"ok": False, "error": "Irodori base checkpoint is missing"}
+    if not codec.exists():
+        return {"ok": False, "error": "Irodori DACVAE checkpoint is missing"}
 
     backend = setup.get("irodori_backend") or hardware_report().get("irodori_backend")
     device = _irodori_device(str(backend))
@@ -102,6 +173,8 @@ def _irodori_health(repo_root: Path, setup: dict) -> dict:
                 vendor / "infer.py",
                 "--checkpoint",
                 checkpoint,
+                "--codec-repo",
+                codec,
                 "--text",
                 "動作確認です。",
                 "--no-ref",
@@ -149,6 +222,7 @@ def report(
     runtime = repo_root / ".runtime"
     models = {
         "irodori": (repo_root / "models/irodori/v4.1-small/model.safetensors").exists(),
+        "irodori_dacvae": (repo_root / "models/irodori/dacvae/weights.pth").exists(),
         "lfm": (repo_root / "models/lfm/base/config.json").exists(),
         "asr": (repo_root / "models/asr/large-v3/model.bin").exists(),
         "pyannote": (repo_root / "models/pyannote/community-1/config.yaml").exists(),
@@ -165,6 +239,7 @@ def report(
         name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc"
     )
     setup = _setup_state(repo_root)
+    model_assets = _model_asset_integrity(repo_root, setup, deep=deep)
     vendor_integrity = {
         "irodori": _vendor_integrity(repo_root, "Irodori-TTS", IRODORI_REVISION),
         "seed_vc": _vendor_integrity(repo_root, "seed-vc", SEED_VC_REVISION),
@@ -214,6 +289,7 @@ def report(
     }
     required_model_keys = {
         "irodori",
+        "irodori_dacvae",
         "lfm",
         "asr",
         "pyannote",
@@ -233,6 +309,7 @@ def report(
     base_ready = (
         all(required.values())
         and bool(setup)
+        and bool(model_assets.get("ok"))
         and all(models[key] for key in required_model_keys)
         and all(workers[key] for key in required_worker_keys)
         and locks_ready
@@ -246,11 +323,12 @@ def report(
         "hardware": hardware_report(),
         "setup": setup,
         "models": models,
+        "model_asset_integrity": model_assets,
         "workers": workers,
         "worker_health": worker_health if deep else None,
         "vendor_integrity": vendor_integrity,
         "lockfiles": lockfiles,
-        "reproducible_environment": locks_ready,
+        "reproducible_environment": locks_ready and bool(model_assets.get("ok")),
         "ready_offline": base_ready and deep_ready,
         "seed_vc_required": require_seed_vc,
     }
