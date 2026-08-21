@@ -9,6 +9,7 @@ import pytest
 
 from personavoice import media
 from personavoice.config import PersonaConfig
+from personavoice.dataset import replace_utterances
 from personavoice.media import inventory_fingerprint
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.project import init_persona
@@ -64,10 +65,35 @@ def test_extract_audio_atomically_publishes_success(tmp_path: Path, monkeypatch)
 
 def _write_minimal_complete_prepare_artifacts(paths) -> dict:
     dataset = paths.dataset
+    clip = dataset / "clips" / "u.flac"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"audio")
+    replace_utterances(
+        dataset / "master.sqlite3",
+        [
+            {
+                "id": "source_000001",
+                "source_id": "source",
+                "source_path": "source.wav",
+                "start": 0.0,
+                "end": 1.0,
+                "speaker": "SPEAKER_00",
+                "target": True,
+                "speaker_similarity": 0.9,
+                "speaker_coverage": 1.0,
+                "overlap_ratio": 0.0,
+                "text": "a",
+                "text_annotated": "a",
+                "emotion": "NEUTRAL",
+                "events": [],
+                "caption": "",
+                "audio_path": str(clip.resolve()),
+                "quality": 1.0,
+            }
+        ],
+    )
     (dataset / "source_inventory.json").write_text("[]\n", encoding="utf-8")
-    (dataset / "skipped_sources.json").write_text("[]\n", encoding="utf-8")
     (dataset / "master.json").write_text("[]\n", encoding="utf-8")
-    (dataset / "master.sqlite3").write_bytes(b"sqlite-placeholder")
     (dataset / "irodori_source.jsonl").write_text("", encoding="utf-8")
     (dataset / "lfm_train.jsonl").write_text("", encoding="utf-8")
     seed_manifest = dataset / "seed_vc" / "manifest.jsonl"
