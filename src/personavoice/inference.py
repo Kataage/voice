@@ -127,10 +127,11 @@ def synthesize(
     if requested < 1:
         raise ValueError("candidates must be at least 1")
     gpus = nvidia_gpus()
-    if not gpus or max(gpu.total_mib for gpu in gpus) < 16000:
-        requested = 1
-    else:
-        requested = min(requested, 4)
+    requested = (
+        1
+        if not gpus or max(gpu.total_mib for gpu in gpus) < 16000
+        else min(requested, 4)
+    )
 
     args: list[str | Path] = [
         "uv",
