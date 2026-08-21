@@ -68,8 +68,8 @@ def environment_contract_status(repo_root: Path, recorded: Any) -> dict[str, Any
         )
     elif not contract_matches:
         error = (
-            "installed environments were created for a different dependency/model-asset "
-            "contract; run `persona setup` to resync the audited local environments"
+            "installed environments were created for a different dependency contract "
+            "or model-asset contract; run `persona setup` to resync the audited local environments"
         )
     else:
         error = None
