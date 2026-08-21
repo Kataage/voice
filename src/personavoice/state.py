@@ -21,6 +21,7 @@ from personavoice.model_assets import (
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
 )
+from personavoice.worker_contracts import purge_invalid_prepare_caches
 
 PREPARE_RESULT_SCHEMA = 4
 TRAIN_RESULT_SCHEMA = 8
@@ -44,7 +45,7 @@ def _prepare_cache_policy() -> str:
 
     repo = _repo_root()
     contract = {
-        "schema": 11,
+        "schema": 12,
         "prepare_result_schema": PREPARE_RESULT_SCHEMA,
         "dataset_schema": DATASET_SCHEMA_VERSION,
         "asr_revision": ASR_MODEL_REVISION,
@@ -62,6 +63,10 @@ def _prepare_cache_policy() -> str:
         "speaker_code_sha256": _file_contract(repo / "src" / "personavoice" / "speaker.py"),
         "captions_code_sha256": _file_contract(repo / "src" / "personavoice" / "captions.py"),
         "dataset_code_sha256": _file_contract(repo / "src" / "personavoice" / "dataset.py"),
+        "worker_client_code_sha256": _file_contract(repo / "src" / "personavoice" / "workers.py"),
+        "worker_contracts_code_sha256": _file_contract(
+            repo / "src" / "personavoice" / "worker_contracts.py"
+        ),
         "asr_worker_code_sha256": _file_contract(repo / "workers" / "asr" / "worker.py"),
         "diarization_worker_code_sha256": _file_contract(
             repo / "workers" / "diarization" / "worker.py"
@@ -69,7 +74,7 @@ def _prepare_cache_policy() -> str:
         "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"11-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"12-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
@@ -473,6 +478,7 @@ class StateStore:
             )
             if must_invalidate:
                 self._invalidate_prepare_derived()
+            purge_invalid_prepare_caches(self.path.parent)
 
         stage.update(
             {
