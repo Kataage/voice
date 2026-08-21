@@ -69,6 +69,22 @@ def _invalidate_training_artifacts(paths: PersonaPaths) -> None:
         config.unlink(missing_ok=True)
 
 
+def _has_training_artifacts(paths: PersonaPaths) -> bool:
+    """Return True when derived training state exists without relying on directories alone."""
+
+    markers = (
+        paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors",
+        paths.models / "irodori" / "lora" / "checkpoint_final",
+        paths.models / "lfm" / "adapter" / "adapter_config.json",
+        paths.models / "seed_vc" / "cfm.pth",
+        paths.dataset / "irodori_manifest.jsonl",
+    )
+    if any(path.exists() for path in markers):
+        return True
+    latents = paths.cache / "irodori_latents"
+    return latents.is_dir() and any(latents.iterdir())
+
+
 def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str | None:
     dataset = paths.dataset / "lfm_train.jsonl"
     if _line_count(dataset) < 2:
@@ -207,7 +223,8 @@ def train_persona(
 
     previous_fingerprint = previous.get("fingerprint")
     inputs_changed = bool(previous_fingerprint and previous_fingerprint != fingerprint)
-    if force or inputs_changed:
+    untracked_artifacts = previous_fingerprint is None and _has_training_artifacts(paths)
+    if force or inputs_changed or untracked_artifacts:
         _invalidate_training_artifacts(paths)
         if cfg.training.seed_vc_finetune:
             shutil.rmtree(
