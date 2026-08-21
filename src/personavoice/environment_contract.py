@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-ENVIRONMENT_CONTRACT_SCHEMA = 1
+ENVIRONMENT_CONTRACT_SCHEMA = 2
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -24,12 +24,12 @@ def _sha256(path: Path) -> str:
 
 
 def environment_contract(repo_root: Path) -> dict[str, Any]:
-    """Fingerprint every dependency declaration used by a completed setup.
+    """Fingerprint every dependency and immutable asset declaration used by setup.
 
     `persona setup` records this value only after all isolated environments sync
     successfully. Consumers recompute it from the current checkout. A mismatch
-    means the installed environments belong to a different repository dependency
-    generation and must be resynced before they can be used safely.
+    means the installed environments or pinned transitive model contract belong
+    to a different repository generation and must be resynced before use.
     """
 
     workers = {}
@@ -48,6 +48,9 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
         "irodori": {
             "managed_lock_sha256": _sha256(repo_root / "locks" / "Irodori-TTS.uv.lock"),
         },
+        "seed_vc": {
+            "asset_contract_sha256": _sha256(repo_root / "config" / "seed_vc_assets.json"),
+        },
         "workers": workers,
     }
 
@@ -65,8 +68,8 @@ def environment_contract_status(repo_root: Path, recorded: Any) -> dict[str, Any
         )
     elif not contract_matches:
         error = (
-            "installed environments were created for a different dependency contract; "
-            "run `persona setup` to resync the audited local environments"
+            "installed environments were created for a different dependency/model-asset "
+            "contract; run `persona setup` to resync the audited local environments"
         )
     else:
         error = None
@@ -83,10 +86,9 @@ def require_current_environment(repo_root: Path) -> dict[str, Any]:
     """Return setup state only when it matches a completed dependency transaction.
 
     Runtime code must not silently execute an older or partially replaced `.venv`
-    after the repository, worker projects, audited lockfiles, or selected backend
-    changes. This check is intentionally independent from `persona doctor` so
-    direct prepare/train/inference commands fail closed even when doctor was not
-    run first.
+    after the repository, worker projects, audited lockfiles, selected backend,
+    or immutable model-asset contract changes. This check is intentionally
+    independent from `persona doctor` so direct model commands fail closed.
     """
 
     setup_path = repo_root / ".runtime" / "setup.json"
