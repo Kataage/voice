@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from personavoice import inference, setup_env
-from personavoice.environment_contract import environment_contract, environment_contract_status
+from personavoice.environment_contract import (
+    environment_contract,
+    environment_contract_status,
+    require_current_environment,
+)
 from personavoice.project import PersonaPaths
 
 
@@ -25,6 +29,20 @@ def _dependency_tree(root: Path) -> None:
         _write(root / "workers" / name / "uv.lock", f"{name}-lock".encode())
 
 
+def _record_setup(root: Path, *, backend: str = "cpu") -> None:
+    runtime = root / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    (runtime / "setup.json").write_text(
+        json.dumps(
+            {
+                "irodori_backend": backend,
+                "environment_contract": environment_contract(root),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_environment_contract_detects_dependency_generation_change(tmp_path: Path):
     _dependency_tree(tmp_path)
     recorded = environment_contract(tmp_path)
@@ -34,6 +52,23 @@ def test_environment_contract_detects_dependency_generation_change(tmp_path: Pat
     status = environment_contract_status(tmp_path, recorded)
     assert not status["ok"]
     assert "different dependency contract" in status["error"]
+
+
+def test_runtime_environment_contract_accepts_current_rejects_stale_and_recovers(
+    tmp_path: Path,
+):
+    _dependency_tree(tmp_path)
+    _record_setup(tmp_path)
+    assert require_current_environment(tmp_path)["irodori_backend"] == "cpu"
+
+    # A dependency declaration changing after setup must invalidate every --no-sync runtime.
+    (tmp_path / "workers" / "lfm" / "uv.lock").write_bytes(b"new-lock")
+    with pytest.raises(RuntimeError, match="environments are stale"):
+        require_current_environment(tmp_path)
+
+    # A successful setup records the new exact generation and restores runtime readiness.
+    _record_setup(tmp_path)
+    assert require_current_environment(tmp_path)["irodori_backend"] == "cpu"
 
 
 def test_irodori_install_refuses_missing_managed_lock(tmp_path: Path):
