@@ -10,12 +10,9 @@ from rich.console import Console
 from personavoice.config import PersonaConfig
 from personavoice.doctor import report as doctor_report
 from personavoice.evaluation import evaluate
-from personavoice.inference import (
-    chat_turn,
-    reenact as reenact_audio,
-    repeat as repeat_audio,
-    synthesize,
-)
+from personavoice.inference import chat_turn, synthesize
+from personavoice.inference import reenact as reenact_audio
+from personavoice.inference import repeat as repeat_audio
 from personavoice.pipeline import prepare_persona
 from personavoice.project import find_repo_root, get_persona, init_persona
 from personavoice.setup_env import download_models, install_environments
