@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import yaml
 from huggingface_hub import hf_hub_download
 
-from personavoice.hardware import safe_batch_profile
+from personavoice.hardware import detect_irodori_backend, safe_batch_profile
 from personavoice.process import run
 from personavoice.workers import local_model_env
 
 MODEL_ID = "Aratako/Irodori-TTS-v4.1-Small"
+SUPPORTED_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
 
 
 def vendor_dir(repo_root: Path) -> Path:
@@ -19,6 +19,31 @@ def vendor_dir(repo_root: Path) -> Path:
     if not (path / "infer.py").exists():
         raise FileNotFoundError("Irodori-TTS is not installed. Run `persona setup` first.")
     return path
+
+
+def configured_backend(repo_root: Path) -> str:
+    setup = repo_root / ".runtime" / "setup.json"
+    if setup.exists():
+        try:
+            value = json.loads(setup.read_text(encoding="utf-8")).get("irodori_backend")
+        except (json.JSONDecodeError, OSError):
+            value = None
+        if value is not None:
+            backend = str(value)
+            if backend not in SUPPORTED_BACKENDS:
+                raise RuntimeError(f"Unsupported recorded Irodori backend: {backend!r}")
+            return backend
+    return detect_irodori_backend()
+
+
+def backend_device(backend: str) -> str:
+    if backend in {"cu128", "rocm"}:
+        return "cuda"
+    if backend == "xpu":
+        return "xpu"
+    if backend == "cpu":
+        return "cpu"
+    raise ValueError(f"Unsupported Irodori backend: {backend!r}")
 
 
 def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
@@ -37,7 +62,7 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
         repo_id=MODEL_ID,
         filename="model.safetensors",
         local_dir=local_dir,
-        cache_dir=Path(env["HF_HOME"]),
+        cache_dir=Path(env["HUGGINGFACE_HUB_CACHE"]),
     )
     if not expected.exists():
         raise FileNotFoundError(f"Irodori download completed but {expected} was not created")
@@ -55,7 +80,8 @@ def prepare_manifest(
     latent_dir: Path,
 ) -> None:
     vendor = vendor_dir(repo_root)
-    device = "cuda" if shutil.which("nvidia-smi") else "cpu"
+    backend = configured_backend(repo_root)
+    device = backend_device(backend)
     env = local_model_env(repo_root)
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     latent_dir.mkdir(parents=True, exist_ok=True)
@@ -94,10 +120,20 @@ def prepare_manifest(
         raise RuntimeError("Irodori manifest preparation produced no training examples")
 
 
-def _patched_config(source: Path, destination: Path, *, max_steps: int) -> Path:
+def _patched_config(
+    source: Path,
+    destination: Path,
+    *,
+    max_steps: int,
+    backend: str,
+) -> Path:
     data = yaml.safe_load(source.read_text(encoding="utf-8"))
-    profile = safe_batch_profile()
+    if not isinstance(data, dict):
+        raise ValueError(f"Irodori training config is not a YAML mapping: {source}")
+    profile = safe_batch_profile(backend=backend)
     train_cfg = data.setdefault("train", {})
+    if not isinstance(train_cfg, dict):
+        raise ValueError(f"Irodori training config has invalid train section: {source}")
     train_cfg["batch_size"] = int(profile["batch_size"])
     train_cfg["gradient_accumulation_steps"] = int(profile["gradient_accumulation_steps"])
     train_cfg["num_workers"] = int(profile["num_workers"])
@@ -140,6 +176,7 @@ def train_irodori(
 ) -> dict:
     vendor = vendor_dir(repo_root)
     base = base_checkpoint(repo_root)
+    backend = configured_backend(repo_root)
     env = local_model_env(repo_root)
     outputs: dict[str, str] = {"base": str(base)}
     if do_speaker:
@@ -150,6 +187,7 @@ def train_irodori(
                 vendor / "configs" / "train_v4_small_speaker_inversion.yaml",
                 cache_dir / "irodori_speaker.yaml",
                 max_steps=speaker_steps,
+                backend=backend,
             )
             args = [
                 "uv",
@@ -187,6 +225,7 @@ def train_irodori(
                 vendor / "configs" / "train_v4_small_lora.yaml",
                 cache_dir / "irodori_lora.yaml",
                 max_steps=lora_steps,
+                backend=backend,
             )
             args = [
                 "uv",
