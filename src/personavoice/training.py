@@ -23,6 +23,7 @@ from personavoice.workers import local_model_env, worker
 
 TRAIN_SCHEMA_VERSION = 6
 _SEED_VC_STEP_RE = re.compile(r"_step_(\d+)\.pth$")
+_LFM_ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 
 
 def _line_count(path: Path) -> int:
@@ -110,6 +111,26 @@ def _has_training_artifacts(paths: PersonaPaths) -> bool:
     return latents.is_dir() and any(latents.iterdir())
 
 
+def _lfm_adapter_weight(output: Path) -> Path | None:
+    for name in ("adapter_model.safetensors", "adapter_model.bin"):
+        candidate = output / name
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _lfm_adapter_complete(output: Path) -> bool:
+    if not (output / "adapter_config.json").is_file() or _lfm_adapter_weight(output) is None:
+        return False
+    marker = output / _LFM_ADAPTER_REVISION_MARKER
+    if not marker.is_file():
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == LFM_MODEL_REVISION
+    except OSError:
+        return False
+
+
 def _seed_vc_checkpoint_step(path: Path) -> int | None:
     match = _SEED_VC_STEP_RE.search(path.name)
     return int(match.group(1)) if match else None
@@ -181,7 +202,7 @@ def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
         raise FileNotFoundError("LFM base model is missing. Run `persona setup --download-models`.")
     output = paths.models / "lfm" / "adapter"
     output.parent.mkdir(parents=True, exist_ok=True)
-    if (output / "adapter_config.json").exists():
+    if _lfm_adapter_complete(output):
         return str(output)
     project = repo_root / "workers" / "lfm"
     env = local_model_env(repo_root)
@@ -212,8 +233,10 @@ def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
         cwd=repo_root,
         env=env,
     )
-    if not (output / "adapter_config.json").exists():
-        raise RuntimeError("LFM fine-tuning completed without adapter_config.json")
+    if not _lfm_adapter_complete(output):
+        raise RuntimeError(
+            "LFM fine-tuning completed without a complete adapter for the audited base revision"
+        )
     return str(output)
 
 
