@@ -2,13 +2,24 @@
 
 許可を得た話者の動画・音声素材から、ローカルだけで **専用音声 + 会話スタイル + Voice Conversion** を構築・実行するためのオーケストレーターです。
 
-## できること
+詳細なセットアップと操作方法はこのREADMEに集約しています。基本フローは次の通りです。
 
-- 動画/音声を`raw/`へ置き、`persona build NAME`でprepare → train → eval
+```powershell
+.\scripts\bootstrap.ps1
+$env:HF_TOKEN="hf_..."  # pyannote Community-1初回取得時のみ
+uv run persona setup
+uv run persona init alice --authorized
+# personas/alice/raw/ と personas/alice/identity/ に素材を配置
+uv run persona build alice
+uv run persona ui
+```
+
+## 主要機能
+
 - faster-whisper: 日本語ASR + word timestamps
 - pyannote Community-1: regular/exclusive diarization + speaker embeddings
-- `identity/`の本人音声から対象話者を自動選択
-- SenseVoiceSmall: 感情 + 笑い・泣き・息・咳・くしゃみ等のイベント解析
+- `identity/`本人参照による対象話者自動選択
+- SenseVoiceSmall: 感情 + 笑い・泣き・息・咳・くしゃみ等の音響イベント解析
 - Irodori-TTS v4.1 Small: reference voice + VoiceDesign + Speaker Inversion + LoRA
 - LFM2.5-1.2B-JP-202606: 会話/口調LoRA + 発話スタイル計画
 - Seed-VC v2: 入力音声の間・抑揚・演技を使ったVoice Conversion
@@ -16,14 +27,9 @@
 - canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidaton
 - rootと各ML stackを独立した`uv`環境に隔離
 
-## 1. 初回セットアップ
+## セットアップ
 
-必要なシステムツール:
-
-- `uv`
-- Git
-- FFmpeg / ffprobe
-- NVIDIA GPU推奨
+必要なシステムツールは`uv`, Git, FFmpeg/ffprobeです。NVIDIA GPUを推奨します。
 
 Windows:
 
@@ -41,24 +47,9 @@ export HF_TOKEN=hf_...
 uv run persona setup
 ```
 
-`HF_TOKEN`は`pyannote/speaker-diarization-community-1`の**初回取得時だけ**必要です。Hugging Face上で利用条件に同意してから設定してください。PersonaVoiceはtokenを設定ファイルへ保存しません。
+`HF_TOKEN`は`pyannote/speaker-diarization-community-1`の初回取得時のみ必要です。Hugging Face上で利用条件に同意してから設定してください。tokenはプロジェクトへ保存しません。
 
-`persona setup`は次を実行します。
-
-1. Irodori-TTS / Seed-VCを固定revisionで`vendor/`へ取得
-2. rootとは別に各workerを`uv sync`
-3. 必要モデルをローカルへ取得
-4. 各workerでモデルをoffline loadして検証
-
-再実行時は取得済みモデルを再利用します。
-
-環境だけ先に作る場合:
-
-```bash
-uv run persona setup --skip-models --no-verify
-```
-
-診断:
+`persona setup`は、固定したIrodori-TTS/Seed-VC revisionの取得、各独立`uv`環境のsync、モデル取得、offline model load検証まで行います。取得済みモデルは再利用します。
 
 ```bash
 uv run persona doctor
@@ -67,28 +58,16 @@ uv run persona doctor --deep
 
 `--deep`はASR / pyannote / SenseVoice / LFM / Seed-VCを実際にoffline loadします。
 
-## 2. 人物作成
+## 人物作成と一発ビルド
 
 ```bash
 uv run persona init alice --authorized
 ```
 
-配置するのは基本的に次の2箇所です。
-
 ```text
-personas/alice/raw/
-  video01.mp4
-  stream02.mkv
-  audio03.wav
-
-personas/alice/identity/
-  clean_target_01.wav
-  clean_target_02.wav
+personas/alice/raw/       # 動画・音声素材
+personas/alice/identity/  # 本人だけが話す綺麗な参照音声を1〜3本以上推奨
 ```
-
-`identity/`には本人だけが話している綺麗な短い音声を1〜3本以上置くことを推奨します。複数話者素材から本人を自動選択する基準になります。
-
-## 3. 一発ビルド
 
 ```bash
 uv run persona build alice
@@ -102,21 +81,21 @@ raw media
   -> 48kHz mono lossless FLAC cache
   -> faster-whisper word timestamps
   -> pyannote regular + exclusive diarization + embeddings
-  -> identity embeddingとの照合
-  -> word boundaryに沿った発話分割
+  -> identity embedding照合
+  -> word boundary発話分割
   -> overlap / speaker / ASR quality filtering
-  -> target clip生成
+  -> target clips
   -> SenseVoice emotion / non-verbal event batch analysis
   -> master.sqlite3 + master.json
-  -> Irodori / LFM / Seed-VC dataset export
-  -> default / emotion別 reference bank
+  -> Irodori / LFM / Seed-VC datasets
+  -> default / emotion reference banks
   -> Irodori Speaker Inversion + LoRA
   -> LFM LoRA
-  -> Seed-VC FT（設定で有効化した場合）
+  -> optional Seed-VC FT
   -> evaluation report
 ```
 
-ASR・diarization・SenseVoiceは素材/clipごとにモデルを再ロードせず、batch workerとして処理します。
+ASR・diarization・SenseVoiceはbatch workerとしてモデルを1回ロードして処理します。同じfingerprintで中断した場合はcache/checkpointから再開し、`raw/`, `identity/`, prepare設定、training dataset/設定が変化した場合は関連artifactを自動的に無効化します。
 
 個別実行:
 
@@ -125,73 +104,30 @@ uv run persona prepare alice
 uv run persona train alice
 uv run persona eval alice
 uv run persona status alice
-```
-
-中断した場合は同じコマンドを再実行してください。同じfingerprintならcache/checkpointから再開します。
-
-`raw/`, `identity/`, prepare設定、training dataset/設定が変化した場合は、古いspeaker判定・Irodori latent・adapter等を完成済みと誤認せず、関連artifactを自動的に作り直します。
-
-明示的に再構築:
-
-```bash
 uv run persona build alice --force
 ```
 
-## 4. 音声生成
-
-通常:
+## 生成
 
 ```bash
 uv run persona say alice "おはよう"
-```
-
-VoiceDesign:
-
-```bash
 uv run persona say alice "えっ、本当に？" --style surprised
-uv run persona say alice "大丈夫？" --style "かなり心配しながら優しく"
-```
-
-感情:
-
-```bash
 uv run persona say alice "やった！" --emotion happy
-```
-
-非言語cue:
-
-```bash
 uv run persona say alice "ふぅ……疲れた" --event sigh
-uv run persona say alice "" --event laugh
-```
-
-prepareが作った感情別reference:
-
-```bash
 uv run persona say alice "こんにちは" --ref happy
-```
-
-任意reference:
-
-```bash
 uv run persona say alice "こんにちは" --ref C:\path\to\reference.wav
 ```
 
-## 5. Audio → Persona
+## Audio → Persona
 
-入力音声の演技・間・抑揚をできる限り維持:
+演技・間・抑揚を維持するVoice Conversion:
 
 ```bash
 uv run persona reenact alice acting.wav
-```
-
-音色寄りに変換:
-
-```bash
 uv run persona reenact alice acting.wav --timbre-only
 ```
 
-同じ内容を解析し、本人としてIrodoriで再演:
+内容・感情を解析してIrodoriで本人として再演:
 
 ```bash
 uv run persona repeat alice input.wav
@@ -199,42 +135,25 @@ uv run persona repeat alice input.wav
 
 文字起こしできない非言語音だけが検出された場合はVoice Conversionへフォールバックします。
 
-## 6. 会話
+## 会話
 
 ```bash
 uv run persona chat alice
-```
-
-1ターン:
-
-```bash
 uv run persona chat alice "今日は何してた？"
 ```
 
-LFMは本文だけでなく`voice.caption`, `voice.emotion`, `voice.events`をJSONで計画し、その条件をIrodoriへ渡します。
+LFMは本文と`voice.caption`, `voice.emotion`, `voice.events`をJSONで計画し、その条件をIrodoriへ渡します。
 
-## 7. Web UI / API
+## Web UI / API
 
 ```bash
 uv run persona ui
-```
-
-ブラウザから以下を操作できます。
-
-- Talk / Voice Design
-- emotion / non-verbal events / reference
-- Reenact
-- Repeat
-- Chat
-- 生成WAV再生
-
-API:
-
-```bash
 uv run persona serve --host 127.0.0.1 --port 8848
 ```
 
-主なendpoint:
+UIからTalk/Voice Design、emotion/non-verbal/reference、Reenact、Repeat、Chat、生成WAV再生を操作できます。
+
+API endpoint:
 
 - `GET /health`
 - `GET /v1/personas`
@@ -244,7 +163,7 @@ uv run persona serve --host 127.0.0.1 --port 8848
 - `POST /v1/repeat`
 - `POST /v1/chat`
 
-認証を持たないためデフォルトはloopback限定です。非loopback bindは`--allow-remote`を明示しない限り拒否します。
+認証を持たないため非loopback bindは`--allow-remote`を明示しない限り拒否します。
 
 ## uv環境
 
@@ -258,7 +177,7 @@ workers/seed_vc/.venv      Seed-VC compatible Python 3.10
 vendor/Irodori-TTS/.venv   pinned official Irodori environment
 ```
 
-各`uv sync`は対象プロジェクトの`uv.lock`をローカル生成・更新します。GPU/backend固有の依存を実機で解決したlockをまとめて確認する場合:
+各`uv sync`は対象プロジェクトの`uv.lock`をローカル生成/更新します。まとめてlockを更新する場合:
 
 ```powershell
 .\scripts\lock_all.ps1
@@ -270,27 +189,15 @@ vendor/Irodori-TTS/.venv   pinned official Irodori environment
 ./scripts/lock_all.sh
 ```
 
-IrodoriのPyTorch backendは`persona setup --backend auto|cu128|cpu|rocm|xpu`で選べます。
+Irodori backendは`persona setup --backend auto|cu128|cpu|rocm|xpu`で選択できます。
 
 ## テスト
 
-GitHub Actions `core-ci` はLinux/Windowsの両方で以下を検証します。
-
-```text
-uv sync
-ruff
-pytest
-compileall
-persona --help
-```
-
-数GB級weight/GPUをCIへ持ち込む代わりに、実機では`persona setup`が最後に`persona doctor --deep`相当のoffline model loadを行います。
+GitHub Actions `core-ci` はLinux/Windowsの双方で`uv sync`, Ruff, pytest, compileall, CLI smokeを実行します。重いモデルは対象実機上の`persona setup` + `persona doctor --deep`でoffline load検証します。
 
 ## ローカルデータ / 同意
 
-素材、学習データ、モデル、出力、vendor checkout、runtime requestはgitignore対象です。
-
-`consent.authorized: true`でないpersonaではprepare/train/voice generationを拒否します。ローカル利用、第三者配布、公開、商用利用などの許可範囲は別々に管理してください。
+素材、学習データ、モデル、出力、vendor checkout、runtime requestはgitignore対象です。`consent.authorized: true`でないpersonaではprepare/train/voice generationを拒否します。ローカル利用、配布、公開、商用利用の許可範囲は別々に管理してください。
 
 詳細:
 
