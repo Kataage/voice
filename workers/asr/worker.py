@@ -13,7 +13,13 @@ PINNED_MODEL_NAME = "large-v3"
 PINNED_MODEL_ID = "Systran/faster-whisper-large-v3"
 PINNED_MODEL_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
 REVISION_MARKER = ".personavoice-revision"
-REQUIRED_MODEL_FILES = ("config.json", "model.bin")
+REQUIRED_MODEL_FILES = (
+    "config.json",
+    "model.bin",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "vocabulary.json",
+)
 
 
 def request(path: str) -> dict:
