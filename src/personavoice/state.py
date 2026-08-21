@@ -31,6 +31,11 @@ class StateStore:
         stage = self.stage(name)
         return stage.get("status") == "complete" and stage.get("fingerprint") == fingerprint
 
+    def set_result(self, name: str, result: dict[str, Any]) -> None:
+        state = self.load()
+        state.setdefault("stages", {}).setdefault(name, {})["result"] = result
+        self.save(state)
+
     @contextmanager
     def running(self, name: str, fingerprint: str) -> Iterator[dict[str, Any]]:
         state = self.load()

@@ -1,147 +1,63 @@
 # Architecture
 
-## Design principles
+## Design goals
 
-1. **Local first.** Persona data, derived clips, checkpoints, caches, logs, and model outputs stay local by default.
-2. **One canonical dataset.** Source media is parsed once into a model-neutral master dataset. Backend-specific manifests are generated from it.
-3. **Replaceable workers.** Orchestration code does not import heavy model stacks directly. Each model family gets its own isolated uv project and process boundary.
-4. **Resumable stages.** Every expensive stage is content-addressed where practical and records status/provenance in persona state.
-5. **Explicit consent state.** Training/inference entry points will refuse destructive or publish-like flows when authorization metadata is incomplete.
-6. **No silent quality loss.** Raw sources are never discarded. Rejected/low-confidence segments remain traceable through metadata.
+1. 素材を置いて `persona build NAME` だけで学習まで到達する。
+2. root環境を軽く保ち、Torch/Transformers競合をworkerごとのuv環境へ隔離する。
+3. 一度作ったcanonical datasetはモデル交換後も再利用する。
+4. 初回download後は通常処理をoffline modeで行う。
+5. 途中停止を前提に、素材fingerprint・中間cache・upstream checkpointで再開する。
+6. consent gate、local bind、secret非保存をデフォルトにする。
 
-## Repository layers
-
-```text
-src/personavoice/        lightweight orchestration and CLI
-workers/                 isolated model environments
-personas/<name>/         local persona data and artifacts
-schemas/                  canonical interchange schemas (planned)
-docs/                     architecture and operating contracts
-```
-
-## Worker boundary
-
-A worker is an independent uv project:
+## Runtime layout
 
 ```text
-workers/irodori/
-  pyproject.toml
-  uv.lock
-  .venv/
-  worker.py
+root (.venv, Python 3.12)
+  orchestration / CLI / API / SQLite
+
+workers/asr          faster-whisper
+workers/diarization  pyannote.audio Community-1
+workers/sense        SenseVoiceSmall
+workers/lfm          Transformers + TRL + PEFT
+workers/seed_vc      Seed-VC compatible Python 3.10 stack
+
+vendor/Irodori-TTS   pinned upstream, own uv env
+vendor/seed-vc       pinned archived upstream source
 ```
 
-The orchestrator launches workers as subprocesses and communicates over newline-delimited JSON on stdin/stdout initially. This keeps setup simple and avoids managing ports. Long-running UI/API mode may later promote hot workers to local HTTP/IPC while preserving the same request/response schema.
+Worker calls use JSON files in `.runtime/requests/`. Root launches them via `uv run --project ... --no-sync`, so a worker can pin a different Torch version without affecting the others.
 
-### Common request envelope
+## Canonical data
 
-```json
-{
-  "request_id": "uuid",
-  "operation": "synthesize",
-  "persona": "alice",
-  "payload": {},
-  "options": {}
-}
-```
+`dataset/master.sqlite3` is the source of truth. Every utterance stores source/time span, speaker, target flag, identity similarity, overlap, transcript, annotated text, emotion, events, caption, audio path and quality score. Export adapters create:
 
-### Common response envelope
+- `irodori_source.jsonl`
+- `irodori_manifest.jsonl` + DACVAE latents
+- `lfm_train.jsonl`
+- `seed_vc/audio/`
+- `references/`
 
-```json
-{
-  "request_id": "uuid",
-  "ok": true,
-  "result": {},
-  "error": null,
-  "metrics": {}
-}
-```
+## Speaker resolution
 
-Workers must write machine-readable protocol messages to stdout and human logs to stderr/files.
+Community-1 returns regular diarization (overlap retained), exclusive diarization (one speaker at a time), and one embedding per speaker. `identity/` clips are forced through `num_speakers=1`, averaged, and compared by cosine similarity against every source speaker. Multi-speaker material without identity references intentionally fails rather than guessing.
 
-## Planned workers
+## Expressive labels
 
-- `media`: ffmpeg/ffprobe normalization and media inventory
-- `vad`: speech/non-speech segmentation
-- `diarization`: pyannote-based speaker segmentation
-- `speaker`: target-speaker verification against `identity/`
-- `asr`: Japanese transcription and timestamps
-- `separation`: optional vocal/BGM/source separation
-- `prosody`: pitch/energy/rate/acoustic descriptors
-- `caption`: emotion/style/non-verbal annotations
-- `irodori`: TTS, reference-guided synthesis, speaker inversion, LoRA training
-- `seed_vc`: speech-to-speech reenactment / voice conversion
-- `lfm`: persona-response and delivery-plan LoRA/inference
-- `evaluation`: speaker similarity, intelligibility, quality and regression suite
+SenseVoiceSmall is used acoustically, not from transcript sentiment. It provides emotion labels and events such as laughter, cry, breath, cough, sneeze and applause. These are stored model-neutrally in the master dataset. The Irodori adapter maps them to caption language and supported emoji cues.
 
-Workers are enabled by capability discovery; missing optional workers must not make unrelated features unusable.
+## Training
 
-## Canonical preparation pipeline
+- Irodori: upstream `prepare_manifest.py`, v4 Small LoRA config, v4 Small Speaker Inversion config.
+- LFM: TRL SFT + PEFT LoRA on q/k/v/o projections.
+- Seed-VC: zero-shot V2 is default; CFM fine-tuning is opt-in because upstream is archived and FT can trade WER for similarity.
 
-```text
-source inventory
-  -> media probe/hash
-  -> audio extraction/normalization
-  -> optional source separation
-  -> VAD
-  -> diarization
-  -> target-speaker verification
-  -> overlap/music/clipping/quality analysis
-  -> ASR + timestamps
-  -> segment reconstruction
-  -> prosody extraction
-  -> emotion/style/non-verbal captioning
-  -> canonical dataset
-  -> train/validation/test split
-  -> reference-bank selection
-  -> backend manifest adapters
-```
+## Inference modes
 
-Every derived segment keeps source file hash, original time range, processing versions, and confidence values.
+- `say`: text -> Irodori
+- `reenact`: source audio -> Seed-VC style conversion -> target voice
+- `repeat`: source audio -> ASR/SenseVoice -> Irodori
+- `chat`: user text -> LFM structured voice plan -> Irodori
 
-## Canonical dataset fields
+## Offline behavior
 
-The exact schema will be versioned, but it must cover:
-
-- stable segment ID
-- source path + content hash
-- start/end timestamps
-- target-speaker probability
-- raw and normalized transcript
-- ASR confidence
-- overlap/music/noise/clipping flags
-- signal-quality metrics
-- structured emotion/style/prosody values
-- free-form natural-language delivery caption
-- non-verbal events with temporal positions
-- split assignment
-- derived audio path + derivation metadata
-
-Backend-specific tokens/emoji must **not** be stored as canonical labels. Adapters translate neutral events into backend-specific controls.
-
-## Inference routing
-
-- text -> Irodori TTS
-- text + style/caption -> Irodori VoiceDesign-style conditioning
-- source audio + preserve performance -> Seed-VC reenactment
-- source audio + re-perform as persona -> ASR/caption -> Irodori
-- mixed verbal/non-verbal source -> hybrid router (planned)
-- conversation -> LFM persona planner -> TTS
-
-## Training plan
-
-`persona train <name>` will eventually generate an automatic plan from usable data statistics. Initial target order:
-
-1. Irodori speaker inversion
-2. Irodori persona/style LoRA
-3. LFM persona/delivery-plan LoRA
-4. optional Seed-VC speaker fine-tune
-5. regression evaluation
-6. best-checkpoint selection
-7. voicepack manifest generation
-
-Each phase is resumable and independently rerunnable.
-
-## Local storage policy
-
-Large/raw/generated artifacts are gitignored. Git should contain code, schemas, configs, tests, and small deterministic fixtures only. Model downloads should use explicit local cache directories under the repository or a user-configured local path; worker code must not scatter caches across the OS by default.
+After `persona setup`, root passes `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` to workers. Model snapshots are materialized under `models/`. Seed-VC keeps its upstream-downloaded checkpoints inside ignored local vendor storage.

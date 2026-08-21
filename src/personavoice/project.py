@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,13 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def safe_name(value: str) -> str:
+    value = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
+        raise ValueError("persona name must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+    return value
+
+
 @dataclass(frozen=True)
 class PersonaPaths:
     root: Path
@@ -35,15 +43,47 @@ class PersonaPaths:
     def state(self) -> Path:
         return self.root / "state.json"
 
+    @property
+    def raw(self) -> Path:
+        return self.root / "raw"
+
+    @property
+    def identity(self) -> Path:
+        return self.root / "identity"
+
+    @property
+    def dataset(self) -> Path:
+        return self.root / "dataset"
+
+    @property
+    def references(self) -> Path:
+        return self.root / "references"
+
+    @property
+    def models(self) -> Path:
+        return self.root / "models"
+
+    @property
+    def outputs(self) -> Path:
+        return self.root / "outputs"
+
+    @property
+    def cache(self) -> Path:
+        return self.root / "cache"
+
+    @property
+    def logs(self) -> Path:
+        return self.root / "logs"
+
 
 def init_persona(repo_root: Path, name: str, *, authorized: bool = False) -> PersonaPaths:
+    name = safe_name(name)
     root = repo_root / "personas" / name
     root.mkdir(parents=True, exist_ok=True)
     for dirname in PERSONA_DIRS:
         directory = root / dirname
         directory.mkdir(exist_ok=True)
-        marker = directory / ".gitkeep"
-        marker.touch(exist_ok=True)
+        (directory / ".gitkeep").touch(exist_ok=True)
 
     config = PersonaConfig(name=name, consent=ConsentConfig(authorized=authorized))
     if not (root / "persona.yaml").exists():
@@ -51,7 +91,7 @@ def init_persona(repo_root: Path, name: str, *, authorized: bool = False) -> Per
 
     if not (root / "state.json").exists():
         state = {
-            "schema_version": 1,
+            "schema_version": 2,
             "persona": name,
             "created_at": utc_now(),
             "updated_at": utc_now(),
@@ -61,7 +101,14 @@ def init_persona(repo_root: Path, name: str, *, authorized: bool = False) -> Per
             json.dumps(state, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+    return PersonaPaths(root=root)
 
+
+def get_persona(repo_root: Path, name: str) -> PersonaPaths:
+    name = safe_name(name)
+    root = repo_root / "personas" / name
+    if not root.exists():
+        raise FileNotFoundError(f"Unknown persona {name!r}. Run `persona init {name}` first.")
     return PersonaPaths(root=root)
 
 

@@ -1,152 +1,190 @@
 from __future__ import annotations
 
 import json
-import shutil
-import sys
 from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 from personavoice.config import PersonaConfig
-from personavoice.media import inventory, inventory_fingerprint
-from personavoice.project import find_repo_root, init_persona
-from personavoice.state import StateStore
+from personavoice.doctor import report as doctor_report
+from personavoice.evaluation import evaluate
+from personavoice.inference import chat_turn, reenact as reenact_audio, repeat as repeat_audio, synthesize
+from personavoice.pipeline import prepare_persona
+from personavoice.project import find_repo_root, get_persona, init_persona
+from personavoice.setup_env import download_models, install_environments
+from personavoice.training import train_persona
 
-app = typer.Typer(no_args_is_help=True, help="PersonaVoice local orchestration CLI")
+app = typer.Typer(no_args_is_help=True, help="PersonaVoice local-first voice persona toolkit")
 console = Console()
 
 
-def _persona_root(name: str) -> Path:
-    root = find_repo_root() / "personas" / name
-    if not root.exists():
-        raise typer.BadParameter(f"Unknown persona: {name!r}. Run `persona init {name}` first.")
-    return root
+def _load(name: str):
+    root = find_repo_root()
+    paths = get_persona(root, name)
+    return root, paths, PersonaConfig.load(paths.config)
+
+
+def _print(value) -> None:
+    console.print_json(data=value)
 
 
 @app.command()
-def doctor() -> None:
-    """Check local prerequisites without downloading anything."""
-    checks = {
-        "python": sys.version.split()[0],
-        "uv": shutil.which("uv") or "NOT FOUND",
-        "ffmpeg": shutil.which("ffmpeg") or "NOT FOUND",
-        "ffprobe": shutil.which("ffprobe") or "NOT FOUND",
-        "nvidia-smi": shutil.which("nvidia-smi") or "not found (optional)",
-    }
-    table = Table(title="PersonaVoice doctor")
-    table.add_column("Check")
-    table.add_column("Result")
-    for key, value in checks.items():
-        table.add_row(key, value)
-    console.print(table)
+def doctor(deep: bool = typer.Option(False, help="Include local model/worker readiness.")) -> None:
+    result = doctor_report(find_repo_root(), deep=deep)
+    _print(result)
+    if not result["commands_ok"]:
+        raise typer.Exit(1)
 
-    missing_required = [key for key in ("uv", "ffmpeg", "ffprobe") if checks[key] == "NOT FOUND"]
-    if missing_required:
-        raise typer.Exit(code=1)
+
+@app.command()
+def setup(
+    backend: str = typer.Option("auto", help="Irodori backend: auto/cu128/cpu/rocm/xpu"),
+    download: bool = typer.Option(True, "--download-models/--skip-models"),
+    skip_seed_vc_models: bool = typer.Option(False),
+) -> None:
+    """Install pinned local uv environments and model snapshots."""
+    root = find_repo_root()
+    result = install_environments(root, backend=None if backend == "auto" else backend)
+    if download:
+        result["models"] = download_models(root, include_seed_vc=not skip_seed_vc_models)
+    _print(result)
 
 
 @app.command("init")
 def init_command(
     name: str,
-    authorized: bool = typer.Option(False, "--authorized", help="Record that voice use is authorized."),
+    authorized: bool = typer.Option(False, "--authorized", help="Record that local voice use is authorized."),
 ) -> None:
-    """Create a local persona workspace."""
     paths = init_persona(find_repo_root(), name, authorized=authorized)
-    console.print(f"Created persona workspace: [bold]{paths.root}[/bold]")
-    if not authorized:
-        console.print("[yellow]Consent is not marked authorized yet in persona.yaml.[/yellow]")
+    console.print(f"Created: [bold]{paths.root}[/bold]")
+    console.print(f"Put videos/audio in {paths.raw} and clean target-speaker clips in {paths.identity}.")
+
+
+@app.command()
+def consent(name: str, authorized: bool = typer.Option(True, "--authorized/--not-authorized")) -> None:
+    _, paths, cfg = _load(name)
+    cfg.consent.authorized = authorized
+    cfg.save(paths.config)
+    console.print(f"consent.authorized = {authorized}")
 
 
 @app.command()
 def status(name: str) -> None:
-    """Show persona configuration and resumable stage state."""
-    root = _persona_root(name)
-    config = PersonaConfig.load(root / "persona.yaml")
-    state = json.loads((root / "state.json").read_text(encoding="utf-8"))
-    console.print_json(
-        data={
-            "config": config.model_dump(mode="json"),
-            "state": state,
-            "raw_files": sum(1 for path in (root / "raw").rglob("*") if path.is_file() and path.name != ".gitkeep"),
-            "identity_files": sum(1 for path in (root / "identity").rglob("*") if path.is_file() and path.name != ".gitkeep"),
-        }
-    )
-
-
-def _reserved(command: str) -> None:
-    console.print(
-        f"[yellow]{command} is part of the stable CLI contract but its model worker is not wired yet.[/yellow]"
-    )
-    raise typer.Exit(code=2)
+    _, paths, cfg = _load(name)
+    state = json.loads(paths.state.read_text(encoding="utf-8"))
+    _print({"config": cfg.model_dump(mode="json"), "state": state})
 
 
 @app.command()
-def prepare(name: str, force: bool = typer.Option(False, "--force")) -> None:
-    """Inventory raw media and record reproducible source metadata."""
-    root = _persona_root(name)
-    config = PersonaConfig.load(root / "persona.yaml")
-    if not config.consent.authorized:
-        console.print("[red]Training preparation is blocked until consent.authorized=true.[/red]")
-        raise typer.Exit(code=3)
+def prepare(name: str, force: bool = False) -> None:
+    root, paths, cfg = _load(name)
+    _print(prepare_persona(root, paths, cfg, force=force))
 
-    raw_dir = root / "raw"
-    fingerprint = inventory_fingerprint(raw_dir)
-    state = StateStore(root / "state.json")
-    if not force and state.is_complete("media_inventory", fingerprint):
-        console.print("Media inventory is unchanged; skipping.")
+
+@app.command()
+def train(name: str, force: bool = False) -> None:
+    root, paths, cfg = _load(name)
+    _print(train_persona(root, paths, cfg, force=force))
+
+
+@app.command()
+def build(name: str, force: bool = False, evaluate_after: bool = typer.Option(True, "--eval/--no-eval")) -> None:
+    """One-command prepare + train + evaluation."""
+    root, paths, cfg = _load(name)
+    result = {"prepare": prepare_persona(root, paths, cfg, force=force)}
+    result["train"] = train_persona(root, paths, cfg, force=force)
+    if evaluate_after:
+        result["evaluation"] = evaluate(root, paths, cfg)["summary"]
+    _print(result)
+
+
+@app.command()
+def say(
+    name: str,
+    text: str,
+    style: str | None = None,
+    emotion: str | None = None,
+    event: list[str] | None = typer.Option(None, "--event"),
+    ref: str | None = None,
+    candidates: int | None = None,
+    seed: int | None = None,
+) -> None:
+    root, paths, cfg = _load(name)
+    outputs = synthesize(
+        root, paths, cfg, text, style=style, emotion=emotion, events=event or [], ref=ref,
+        candidates=candidates, seed=seed,
+    )
+    _print({"outputs": [str(path) for path in outputs]})
+
+
+@app.command()
+def reenact(
+    name: str,
+    source: Path,
+    ref: str | None = None,
+    transfer_style: bool = typer.Option(True, "--transfer-style/--timbre-only"),
+) -> None:
+    root, paths, cfg = _load(name)
+    _print({"output": str(reenact_audio(root, paths, cfg, source, ref=ref, transfer_style=transfer_style))})
+
+
+@app.command()
+def repeat(name: str, source: Path) -> None:
+    root, paths, cfg = _load(name)
+    _print({"outputs": [str(path) for path in repeat_audio(root, paths, cfg, source)]})
+
+
+@app.command()
+def chat(name: str, prompt: str | None = None) -> None:
+    root, paths, cfg = _load(name)
+    history: list[dict[str, str]] = []
+    if prompt is not None:
+        _print(chat_turn(root, paths, cfg, prompt, history))
         return
-
-    with state.running("media_inventory", fingerprint):
-        rows = inventory(raw_dir)
-        destination = root / "dataset" / "source_inventory.json"
-        destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    console.print(f"Inventoried [bold]{len(rows)}[/bold] media files -> {destination}")
-
-
-@app.command()
-def train(name: str) -> None:
-    _persona_root(name)
-    _reserved("train")
-
-
-@app.command()
-def say(name: str, text: str) -> None:
-    _persona_root(name)
-    _reserved("say")
+    console.print("Interactive chat. Ctrl+C to exit.")
+    while True:
+        try:
+            message = console.input("[bold cyan]You> [/bold cyan]").strip()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if not message:
+            continue
+        result = chat_turn(root, paths, cfg, message, history)
+        console.print(f"[bold green]{name}>[/bold green] {result.get('text','')}")
+        console.print(f"audio: {result.get('audio')}")
+        history.extend([
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": json.dumps({"text": result.get("text"), "voice": result.get("voice", {})}, ensure_ascii=False)},
+        ])
+        history = history[-12:]
 
 
-@app.command()
-def reenact(name: str, audio: Path) -> None:
-    _persona_root(name)
-    _reserved("reenact")
+@app.command("eval")
+def eval_command(name: str) -> None:
+    root, paths, cfg = _load(name)
+    _print(evaluate(root, paths, cfg))
 
 
 @app.command()
-def repeat(name: str, audio: Path) -> None:
-    _persona_root(name)
-    _reserved("repeat")
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8848,
+) -> None:
+    import uvicorn
+    uvicorn.run("personavoice.api:app", host=host, port=port, reload=False)
 
 
 @app.command()
-def chat(name: str) -> None:
-    _persona_root(name)
-    _reserved("chat")
+def ui(port: int = 8848) -> None:
+    import threading
+    import time
+    import webbrowser
+    import uvicorn
 
-
-@app.command()
-def ui(name: str) -> None:
-    _persona_root(name)
-    _reserved("ui")
-
-
-@app.command()
-def serve(name: str | None = None) -> None:
-    if name is not None:
-        _persona_root(name)
-    _reserved("serve")
+    url = f"http://127.0.0.1:{port}/"
+    threading.Thread(target=lambda: (time.sleep(1.0), webbrowser.open(url)), daemon=True).start()
+    uvicorn.run("personavoice.api:app", host="127.0.0.1", port=port, reload=False)
 
 
 if __name__ == "__main__":
