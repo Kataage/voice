@@ -106,6 +106,7 @@ def test_online_base_materialization_replaces_corruption_and_rehashes(
     assert irodori.base_checkpoint(tmp_path, online=True) == base
     assert base.read_bytes() == b"audited"
     assert len(calls) == 1
+    assert calls[0]["revision"] == IRODORI_MODEL_REVISION
 
 
 def test_runtime_hash_constants_and_source_pins_stay_aligned():
