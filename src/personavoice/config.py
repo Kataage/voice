@@ -64,11 +64,15 @@ class PersonaConfig(BaseModel):
     brain_backend: str = "lfm2.5-1.2b-jp-202606"
 
     @classmethod
-    def load(cls, path: Path) -> "PersonaConfig":
+    def load(cls, path: Path) -> PersonaConfig:
         return cls.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
     def save(self, path: Path) -> None:
         path.write_text(
-            yaml.safe_dump(self.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
+            yaml.safe_dump(
+                self.model_dump(mode="json"),
+                allow_unicode=True,
+                sort_keys=False,
+            ),
             encoding="utf-8",
         )
