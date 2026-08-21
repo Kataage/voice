@@ -20,6 +20,7 @@ from personavoice.training import train_persona
 
 app = typer.Typer(no_args_is_help=True, help="PersonaVoice local-first voice persona toolkit")
 console = Console()
+SETUP_BACKENDS = {"auto", "cu128", "cpu", "rocm", "xpu"}
 
 
 def _load(name: str):
@@ -67,6 +68,12 @@ def setup(
     verify: bool = typer.Option(True, "--verify/--no-verify"),
 ) -> None:
     """Install pinned local uv environments and model snapshots."""
+    backend = backend.strip().lower()
+    if backend not in SETUP_BACKENDS:
+        raise typer.BadParameter(
+            f"Unsupported Irodori backend {backend!r}; choose one of "
+            f"{', '.join(sorted(SETUP_BACKENDS))}."
+        )
     root = find_repo_root()
     result = install_environments(root, backend=None if backend == "auto" else backend)
     if download:
