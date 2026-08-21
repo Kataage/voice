@@ -26,6 +26,13 @@ from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_RE
 from personavoice.workers import local_model_env, worker
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
+_ASR_REQUIRED_FILES = (
+    "config.json",
+    "model.bin",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "vocabulary.json",
+)
 
 
 def _setup_state(repo_root: Path) -> dict:
@@ -259,7 +266,7 @@ def report(
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
         "lfm": _nonempty_file(repo_root / "models/lfm/base/config.json"),
-        "asr": _nonempty_file(asr_dir / "config.json") and _nonempty_file(asr_dir / "model.bin"),
+        "asr": all(_nonempty_file(asr_dir / name) for name in _ASR_REQUIRED_FILES),
         "pyannote": _nonempty_file(repo_root / "models/pyannote/community-1/config.yaml"),
         "sense": _nonempty_file(runtime / "sense-model-ready"),
         "seed_vc_models": _nonempty_file(runtime / "seed-vc-models-ready"),
