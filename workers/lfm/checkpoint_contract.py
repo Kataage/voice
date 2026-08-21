@@ -44,9 +44,7 @@ def checkpoint_complete(path: Path) -> bool:
         return False
     if not any(_nonempty(path / name) for name in _ADAPTER_WEIGHTS):
         return False
-    if not any(_nonempty(candidate) for candidate in path.glob("rng_state*.pth")):
-        return False
-    return True
+    return any(_nonempty(candidate) for candidate in path.glob("rng_state*.pth"))
 
 
 def latest_complete_checkpoint(output: Path) -> Path | None:
