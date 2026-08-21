@@ -38,6 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        worker: [asr, diarization, sense, lfm, seed_vc]
         include:
           - worker: asr
             extra: ''
