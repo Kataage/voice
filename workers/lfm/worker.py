@@ -14,6 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"
 MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
 REVISION_MARKER = ".personavoice-revision"
+ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 
 
 def read_request(path: str) -> dict:
@@ -58,15 +59,32 @@ def load_base():
     return tokenizer, model
 
 
+def _adapter_weight(adapter: Path) -> Path | None:
+    for name in ("adapter_model.safetensors", "adapter_model.bin"):
+        candidate = adapter / name
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def verify_adapter(adapter: Path) -> None:
+    if not (adapter / "adapter_config.json").is_file() or _adapter_weight(adapter) is None:
+        raise FileNotFoundError(f"LFM adapter is incomplete: {adapter}")
+    marker = adapter / ADAPTER_REVISION_MARKER
+    revision = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    if revision != MODEL_REVISION:
+        raise RuntimeError(
+            "LFM adapter was not finalized against the audited JP-202606 base revision: "
+            f"expected {MODEL_REVISION}, got {revision!r}. Retrain the persona adapter."
+        )
+
+
 def infer(payload: dict) -> dict:
     tokenizer, model = load_base()
     adapter = payload.get("adapter")
     if adapter:
         adapter_path = Path(adapter)
-        if not (adapter_path / "adapter_config.json").is_file():
-            raise FileNotFoundError(
-                f"LFM adapter is incomplete or missing adapter_config.json: {adapter_path}"
-            )
+        verify_adapter(adapter_path)
         model = PeftModel.from_pretrained(model, adapter_path)
         model.eval()
     messages = payload["messages"]
