@@ -16,6 +16,7 @@ from personavoice.model_assets import (
     IRODORI_DACVAE_SHA256,
     IRODORI_MODEL_FILENAME,
     IRODORI_MODEL_ID,
+    IRODORI_MODEL_REVISION,
     IRODORI_MODEL_SHA256,
     IRODORI_SOURCE_REVISION,
     IRODORI_TEXT_ENCODER_ID,
@@ -152,6 +153,7 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
     hf_hub_download(
         repo_id=IRODORI_MODEL_ID,
         filename=IRODORI_MODEL_FILENAME,
+        revision=IRODORI_MODEL_REVISION,
         local_dir=local_dir,
         cache_dir=Path(env["HUGGINGFACE_HUB_CACHE"]),
     )
