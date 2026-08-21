@@ -71,12 +71,15 @@ def test_prepare_cache_purge_removes_semantically_invalid_json_only(tmp_path: Pa
 
     removed = purge_invalid_prepare_caches(tmp_path)
 
-    assert len(removed) == 8
+    assert len(removed) == 4
     for name in valid_values:
         directory = cache / name
         assert (directory / "valid.json").is_file()
         assert not (directory / "empty.json").exists()
-        assert not (directory / "truncated.json").exists()
+        # Syntax corruption is preserved at this stage so a same-fingerprint
+        # resume does not eagerly discard expensive cache state. The existing
+        # per-cache pipeline reader removes this file when it is actually read.
+        assert (directory / "truncated.json").is_file()
 
 
 def test_worker_batch_contract_rejects_invalid_success_payload():
