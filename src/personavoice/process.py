@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 class CommandError(RuntimeError):
@@ -19,10 +20,10 @@ def run(
     capture: bool = False,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    argv = [str(x) for x in args]
+    argv = [str(value) for value in args]
     merged_env = os.environ.copy()
     if env:
-        merged_env.update({k: str(v) for k, v in env.items()})
+        merged_env.update({key: str(value) for key, value in env.items()})
     completed = subprocess.run(
         argv,
         cwd=cwd,
@@ -42,7 +43,10 @@ def run(
 
 
 def run_json(
-    args: Iterable[str | Path], *, cwd: Path | None = None, env: dict[str, str] | None = None
+    args: Iterable[str | Path],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> Any:
     completed = run(args, cwd=cwd, env=env, capture=True)
     lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
