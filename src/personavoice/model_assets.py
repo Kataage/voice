@@ -4,6 +4,9 @@ from __future__ import annotations
 # preparation, training, inference, and doctor all agree on the exact assets
 # PersonaVoice was audited against.
 
+IRODORI_SOURCE_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
+SEED_VC_SOURCE_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
+
 IRODORI_MODEL_ID = "Aratako/Irodori-TTS-v4.1-Small"
 IRODORI_MODEL_FILENAME = "model.safetensors"
 IRODORI_MODEL_SHA256 = "c85de88c01700cb53538e706f128ebcb1b8513ad21d7d0e75f58bc82cdbf89f6"
