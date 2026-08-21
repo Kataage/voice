@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from personavoice import status as status_module
 from personavoice.config import PersonaConfig
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.project import init_persona
@@ -49,6 +50,7 @@ def test_status_exposes_incomplete_recorded_stage_artifacts(tmp_path: Path):
     assert result["audit"]["prepare"]["artifact_complete"] is False
     assert result["audit"]["train"]["artifact_complete"] is False
     assert result["audit"]["prepare"]["current_complete"] is None
+    assert result["audit"]["train"]["blocked_by_prepare"] is None
 
 
 def test_status_verify_detects_stale_prepare_fingerprint(tmp_path: Path):
@@ -73,7 +75,51 @@ def test_status_verify_detects_stale_prepare_fingerprint(tmp_path: Path):
     result = persona_status(tmp_path, paths, cfg, verify_inputs=True)
 
     prepare = result["audit"]["prepare"]
+    train = result["audit"]["train"]
     assert result["audit"]["inputs_verified"] is True
     assert prepare["current_fingerprint"] != recorded
     assert prepare["fingerprint_current"] is False
     assert prepare["current_complete"] is False
+    assert train["blocked_by_prepare"] is True
+    assert train["current_complete"] is False
+
+
+def test_status_never_reports_train_current_when_prepare_is_stale(
+    tmp_path: Path,
+    monkeypatch,
+):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    state = json.loads(paths.state.read_text(encoding="utf-8"))
+    state["stages"] = {
+        "prepare": {
+            "status": "complete",
+            "fingerprint": "old-prepare",
+            "cache_policy_version": "stale-policy",
+            "result": {},
+        },
+        "train": {
+            "status": "complete",
+            "fingerprint": "same-train",
+            "result": {},
+        },
+    }
+    StateStore(paths.state).save(state)
+
+    monkeypatch.setattr(status_module, "_prepare_fingerprint", lambda _paths, _cfg: "new-prepare")
+    monkeypatch.setattr(status_module, "_training_fingerprint", lambda _paths, _cfg: "same-train")
+
+    original = StateStore.is_complete
+
+    def fake_complete(self, name: str, fingerprint: str) -> bool:
+        if name == "train" and fingerprint == "same-train":
+            return True
+        return original(self, name, fingerprint)
+
+    monkeypatch.setattr(StateStore, "is_complete", fake_complete)
+    result = persona_status(tmp_path, paths, cfg, verify_inputs=True)
+
+    train = result["audit"]["train"]
+    assert train["fingerprint_current"] is True
+    assert train["blocked_by_prepare"] is True
+    assert train["current_complete"] is False
