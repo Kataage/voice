@@ -33,26 +33,32 @@ The materialized local snapshot contains `.personavoice-revision`. Setup does no
 
 ## Diarization
 
-- `pyannote/speaker-diarization-community-1`
+- Model: `pyannote/speaker-diarization-community-1`
+- Pinned snapshot revision: `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`
 - Uses regular + exclusive diarization and speaker embeddings.
-- Gated download: user must accept Hugging Face conditions and provide `HF_TOKEN` for initial setup.
-- The pipeline is copied into `models/pyannote/community-1` and subsequently loaded from that local directory in offline mode.
+- Gated download: user must accept Hugging Face conditions and provide `HF_TOKEN` when the audited snapshot must be materialized.
+- The pipeline is copied into `models/pyannote/community-1`, tagged with `.personavoice-revision`, and loaded from that local directory in offline mode.
 
-Because this is a gated multi-component pipeline, PersonaVoice currently relies on the locally materialized pipeline plus `doctor --deep` model loading rather than claiming a checksum pin for assets it cannot independently fetch without the user's accepted access token.
+Both setup and the isolated diarization worker reject an absent/mismatched revision marker. A legacy floating-revision directory is therefore never silently reused for dataset preparation.
 
 ## ASR
 
-- `Systran/faster-whisper-large-v3`
+- Model: `Systran/faster-whisper-large-v3`
 - Pinned snapshot revision: `edaa852ec7e145841d8ffdb056a99866b5f0a478`
 - Word timestamps enabled; built-in Silero VAD filter enabled.
 - The local snapshot carries the same `.personavoice-revision` contract as LFM.
+- The isolated ASR worker refuses the default `large-v3` local model unless that marker matches the audited revision.
 
 ## Acoustic emotion / events
 
-- `iic/SenseVoiceSmall`
+- Model: `iic/SenseVoiceSmall`
 - Japanese supported.
+- `model.pt` SHA256: `833ca2dcfdf8ec91bd4f31cfac36d6124e0c459074d5e909aec9cabe6204a3ea`
+- `am.mvn` SHA256: `29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5`
+- `chn_jpn_yue_eng_ko_spectok.bpe.model` SHA256: `aa87f86064c3730d799ddf7af3c04659151102cba548bce325cf06ba4da4e6a8`
 - Emotion/event tags are parsed before rich post-processing so the labels are not discarded.
-- ModelScope/FunASR materialization is validated by loading the same worker in `persona doctor --deep` with network access disabled where applicable.
+
+SenseVoice is currently materialized through ModelScope, whose `master` label is not treated as a reproducible revision. Instead, the isolated worker verifies the inference-critical weight, CMVN, and SentencePiece assets before reuse and before model loading. It also uses `trust_remote_code=False`, so model Python comes from the uv-locked FunASR environment rather than executing mutable repository code. Setup writes `sense-model-ready=verified` only after those checks succeed; `persona doctor --deep` re-enters the same verified load path with network access disabled.
 
 ## Voice conversion
 
@@ -61,6 +67,12 @@ Because this is a gated multi-component pipeline, PersonaVoice currently relies 
 - Upstream was archived in 2025, so it is isolated in a Python 3.10 environment.
 - V2 style conversion is used for `reenact`.
 - Fine-tuning is disabled by default and can be enabled in `persona.yaml`.
+
+## Cache/training reproducibility
+
+Prepare cache validity is bound to the audited ASR revision, pyannote revision, and SenseVoice asset hashes in addition to raw/identity/config fingerprints. Updating any of those contracts invalidates ASR/diarization/identity/Sense-derived caches before rebuilding the dataset.
+
+Training fingerprints include the pinned Irodori source revision, Irodori base/DACVAE hashes, ModernBERT revision, LFM base revision, and Seed-VC source revision. A base/source update therefore invalidates old persona adapters/checkpoints even if exported dataset bytes are unchanged. If training artifacts exist without a recorded train-stage fingerprint, PersonaVoice treats them as untracked and rebuilds them instead of guessing their provenance.
 
 ## Backend contract
 
