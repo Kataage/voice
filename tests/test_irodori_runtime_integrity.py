@@ -57,10 +57,10 @@ def test_vendor_runtime_requires_pinned_clean_checkout(tmp_path: Path, monkeypat
     def dirty_run(args, **_kwargs):
         if args[:3] == ["git", "rev-parse", "HEAD"]:
             return _git_result(IRODORI_SOURCE_REVISION + "\n")
-        return _git_result(" M infer.py\n")
+        return _git_result("?? shadow_module.py\n")
 
     monkeypatch.setattr(irodori, "run", dirty_run)
-    with pytest.raises(RuntimeError, match="tracked local modifications"):
+    with pytest.raises(RuntimeError, match="local modifications or untracked files"):
         irodori.vendor_dir(tmp_path)
 
 
