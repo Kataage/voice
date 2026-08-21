@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from personavoice.state import StateStore
 from personavoice.workers import local_model_env, worker
 
 TRAIN_SCHEMA_VERSION = 4
+_SEED_VC_STEP_RE = re.compile(r"_step_(\d+)\.pth$")
 
 
 def _line_count(path: Path) -> int:
@@ -96,6 +98,15 @@ def _has_training_artifacts(paths: PersonaPaths) -> bool:
         return True
     latents = paths.cache / "irodori_latents"
     return latents.is_dir() and any(latents.iterdir())
+
+
+def _latest_seed_vc_checkpoint(source_dir: Path) -> Path | None:
+    candidates: list[tuple[int, Path]] = []
+    for path in source_dir.glob("CFM_*_step_*.pth"):
+        match = _SEED_VC_STEP_RE.search(path.name)
+        if match:
+            candidates.append((int(match.group(1)), path))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
@@ -206,12 +217,12 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
         env=local_model_env(repo_root),
     )
     source_dir = vendor / "runs" / run_name
-    checkpoints = sorted(source_dir.glob("CFM_*_step_*.pth"))
-    if not checkpoints:
+    checkpoint = _latest_seed_vc_checkpoint(source_dir)
+    if checkpoint is None:
         raise RuntimeError("Seed-VC fine-tuning completed without a CFM checkpoint")
     target = paths.models / "seed_vc" / "cfm.pth"
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(checkpoints[-1], target)
+    shutil.copy2(checkpoint, target)
     return str(target)
 
 
