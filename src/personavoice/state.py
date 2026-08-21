@@ -38,7 +38,7 @@ def _prepare_cache_policy() -> str:
 
     repo = _repo_root()
     contract = {
-        "schema": 7,
+        "schema": 8,
         "asr_revision": ASR_MODEL_REVISION,
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
@@ -61,7 +61,7 @@ def _prepare_cache_policy() -> str:
         "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"7-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"8-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
@@ -142,11 +142,46 @@ def _jsonl_contract(path: Path, *, path_key: str | None = None) -> int | None:
 def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     if not isinstance(result, dict):
         return False
+    required_keys = {
+        "prepare_schema",
+        "sources",
+        "skipped_sources",
+        "utterances",
+        "target_utterances",
+        "usable_tts_utterances",
+        "usable_seconds",
+        "references",
+        "irodori_examples",
+        "lfm_examples",
+        "seed_vc_examples",
+        "master_db",
+    }
+    if not required_keys.issubset(result):
+        return False
+    for key in (
+        "prepare_schema",
+        "sources",
+        "skipped_sources",
+        "utterances",
+        "target_utterances",
+        "usable_tts_utterances",
+        "references",
+        "irodori_examples",
+        "lfm_examples",
+        "seed_vc_examples",
+    ):
+        value = _safe_int(result.get(key))
+        if value is None or value < 0:
+            return False
+    if _safe_int(result.get("usable_tts_utterances")) == 0:
+        return False
+
     dataset = persona_root / "dataset"
     if not all(
         _nonempty_file(path)
         for path in (
             dataset / "source_inventory.json",
+            dataset / "skipped_sources.json",
             dataset / "master.json",
             dataset / "master.sqlite3",
         )
@@ -173,6 +208,14 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         if expected is None or expected < 0 or actual is None or actual != expected:
             return False
 
+    try:
+        skipped = json.loads((dataset / "skipped_sources.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    expected_skipped = _safe_int(result.get("skipped_sources"))
+    if not isinstance(skipped, list) or expected_skipped is None or len(skipped) != expected_skipped:
+        return False
+
     bank = persona_root / "references" / "bank.json"
     try:
         bank_value = json.loads(bank.read_text(encoding="utf-8"))
@@ -190,11 +233,16 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     return True
 
 
-def _train_artifacts_complete(result: Any) -> bool:
+def _train_artifacts_complete(result: Any, *, expected_fingerprint: str) -> bool:
     if not isinstance(result, dict):
         return False
+    if not {"train_schema", "fingerprint", "irodori", "lfm_adapter", "seed_vc_cfm"}.issubset(result):
+        return False
+    train_schema = _safe_int(result.get("train_schema"))
+    if train_schema is None or train_schema <= 0 or result.get("fingerprint") != expected_fingerprint:
+        return False
     irodori = result.get("irodori")
-    if not isinstance(irodori, dict):
+    if not isinstance(irodori, dict) or "base" not in irodori:
         return False
     base = irodori.get("base")
     if not isinstance(base, str) or not base or not _nonempty_file(Path(base)):
@@ -209,12 +257,12 @@ def _train_artifacts_complete(result: Any) -> bool:
         not isinstance(lora, str) or not lora or not _irodori_lora_complete(Path(lora))
     ):
         return False
-    lfm = result.get("lfm_adapter")
+    lfm = result["lfm_adapter"]
     if lfm is not None and (
         not isinstance(lfm, str) or not lfm or not _lfm_adapter_complete(Path(lfm))
     ):
         return False
-    seed = result.get("seed_vc_cfm")
+    seed = result["seed_vc_cfm"]
     return seed is None or (
         isinstance(seed, str) and bool(seed) and _nonempty_file(Path(seed))
     )
@@ -243,7 +291,7 @@ class StateStore:
         if name == "prepare":
             return _prepare_artifacts_complete(self.path.parent, stage.get("result"))
         if name == "train":
-            return _train_artifacts_complete(stage.get("result"))
+            return _train_artifacts_complete(stage.get("result"), expected_fingerprint=fingerprint)
         return True
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
