@@ -101,8 +101,10 @@ def download_models(
     include_seed_vc: bool = True,
 ) -> dict:
     env = local_model_env(repo_root, offline=False)
-    cache_dir = Path(env["HF_HOME"])
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    hf_home = Path(env["HF_HOME"])
+    hub_cache = Path(env["HUGGINGFACE_HUB_CACHE"])
+    hf_home.mkdir(parents=True, exist_ok=True)
+    hub_cache.mkdir(parents=True, exist_ok=True)
     token = hf_token or os.getenv("HF_TOKEN")
     downloaded: list[str] = []
     reused: list[str] = []
@@ -117,7 +119,7 @@ def download_models(
             repo_id="Aratako/Irodori-TTS-v4.1-Small",
             filename="model.safetensors",
             local_dir=irodori_dir,
-            cache_dir=cache_dir,
+            cache_dir=hub_cache,
         )
         if not irodori_model.exists():
             raise FileNotFoundError(f"Expected Irodori checkpoint was not created: {irodori_model}")
@@ -128,7 +130,7 @@ def download_models(
         model_id="LiquidAI/LFM2.5-1.2B-JP-202606",
         local_dir=lfm_dir,
         marker=lfm_dir / "config.json",
-        cache_dir=cache_dir,
+        cache_dir=hub_cache,
     ):
         downloaded.append("LiquidAI/LFM2.5-1.2B-JP-202606")
     else:
@@ -139,7 +141,7 @@ def download_models(
         model_id="Systran/faster-whisper-large-v3",
         local_dir=asr_dir,
         marker=asr_dir / "model.bin",
-        cache_dir=cache_dir,
+        cache_dir=hub_cache,
     ):
         downloaded.append("Systran/faster-whisper-large-v3")
     else:
@@ -157,19 +159,20 @@ def download_models(
         model_id="pyannote/speaker-diarization-community-1",
         local_dir=pyannote_dir,
         marker=pyannote_marker,
-        cache_dir=cache_dir,
+        cache_dir=hub_cache,
         token=token,
     ):
         downloaded.append("pyannote/speaker-diarization-community-1")
     else:
         reused.append("pyannote/speaker-diarization-community-1")
 
-    # Irodori loads these by model id at runtime. Cache them once for offline use.
+    # Irodori resolves these by repo id at runtime, so they must be placed in the
+    # exact cache directory used by HF_HUB_OFFLINE/HUGGINGFACE_HUB_CACHE.
     for model_id in (
         "Aratako/Semantic-DACVAE-Japanese-32dim",
         "sbintuitions/modernbert-ja-310m",
     ):
-        snapshot_download(repo_id=model_id, cache_dir=cache_dir)
+        snapshot_download(repo_id=model_id, cache_dir=hub_cache)
         downloaded.append(model_id)
 
     sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
@@ -205,5 +208,6 @@ def download_models(
     return {
         "downloaded": downloaded,
         "reused": reused,
-        "cache": str(cache_dir),
+        "hf_home": str(hf_home),
+        "hub_cache": str(hub_cache),
     }
