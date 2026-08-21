@@ -19,6 +19,9 @@ from personavoice.model_assets import (
     SENSE_MODEL_WEIGHT_SHA256,
 )
 
+PREPARE_RESULT_SCHEMA = 4
+TRAIN_RESULT_SCHEMA = 8
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -38,7 +41,8 @@ def _prepare_cache_policy() -> str:
 
     repo = _repo_root()
     contract = {
-        "schema": 8,
+        "schema": 9,
+        "prepare_result_schema": PREPARE_RESULT_SCHEMA,
         "asr_revision": ASR_MODEL_REVISION,
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
@@ -61,7 +65,7 @@ def _prepare_cache_policy() -> str:
         "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"8-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"9-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
@@ -158,8 +162,9 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     }
     if not required_keys.issubset(result):
         return False
+    if _safe_int(result.get("prepare_schema")) != PREPARE_RESULT_SCHEMA:
+        return False
     for key in (
-        "prepare_schema",
         "sources",
         "skipped_sources",
         "utterances",
@@ -238,8 +243,9 @@ def _train_artifacts_complete(result: Any, *, expected_fingerprint: str) -> bool
         return False
     if not {"train_schema", "fingerprint", "irodori", "lfm_adapter", "seed_vc_cfm"}.issubset(result):
         return False
-    train_schema = _safe_int(result.get("train_schema"))
-    if train_schema is None or train_schema <= 0 or result.get("fingerprint") != expected_fingerprint:
+    if _safe_int(result.get("train_schema")) != TRAIN_RESULT_SCHEMA:
+        return False
+    if result.get("fingerprint") != expected_fingerprint:
         return False
     irodori = result.get("irodori")
     if not isinstance(irodori, dict) or "base" not in irodori:
@@ -311,6 +317,7 @@ class StateStore:
     def _invalidate_prepare_derived(self) -> None:
         persona_root = self.path.parent
         for relative in (
+            Path("cache/audio"),
             Path("cache/asr"),
             Path("cache/diarization"),
             Path("cache/identity"),
