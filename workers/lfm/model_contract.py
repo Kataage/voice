@@ -14,6 +14,16 @@ def audited_attention_lora_targets(model) -> list[str]:
     the convolutional projection with an endswith match.
     """
 
+    layer_types = getattr(getattr(model, "config", None), "layer_types", None)
+    if not isinstance(layer_types, (list, tuple)):
+        raise RuntimeError(
+            "Pinned LFM config no longer exposes layer_types. Update/re-audit PersonaVoice "
+            "before fine-tuning."
+        )
+    expected_attention_layers = sum(layer_type == "full_attention" for layer_type in layer_types)
+    if expected_attention_layers <= 0:
+        raise RuntimeError("Pinned LFM config exposes no full_attention layers.")
+
     found: dict[str, list[str]] = {suffix: [] for suffix in ATTENTION_LORA_SUFFIXES}
     for name, _module in model.named_modules():
         if ".self_attn." not in name:
@@ -30,10 +40,11 @@ def audited_attention_lora_targets(model) -> list[str]:
         )
 
     counts = {suffix: len(names) for suffix, names in found.items()}
-    if len(set(counts.values())) != 1:
+    if any(count != expected_attention_layers for count in counts.values()):
         raise RuntimeError(
-            "Pinned LFM attention projection counts are inconsistent: "
-            f"{counts}. Update/re-audit PersonaVoice before fine-tuning."
+            "Pinned LFM attention projection counts do not match config.layer_types: "
+            f"expected_each={expected_attention_layers}, actual={counts}. "
+            "Update/re-audit PersonaVoice before fine-tuning."
         )
 
     return sorted(name for names in found.values() for name in names)
