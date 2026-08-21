@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from personavoice import inference, media, state, training
+from personavoice import dataset, inference, media, speaker, state, training
 from personavoice.config import PersonaConfig
 from personavoice.project import init_persona
 
@@ -45,6 +46,23 @@ def test_inventory_deduplicates_identical_media_but_records_provenance(
     assert rows[0]["duplicate_paths"] == ["copy.wav"]
 
 
+def test_inventory_rejects_truncated_source_id_collision(tmp_path: Path, monkeypatch):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    first = raw / "a.wav"
+    second = raw / "b.wav"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+    monkeypatch.setattr(media, "ffprobe", lambda _path: {"ok": True})
+    digests = {
+        first: "0123456789abcdef" + "0" * 48,
+        second: "0123456789abcdef" + "1" * 48,
+    }
+    monkeypatch.setattr(media, "sha256_file", lambda path: digests[path])
+    with pytest.raises(RuntimeError, match="truncated source ID"):
+        media.inventory(raw)
+
+
 def test_inventory_fingerprint_changes_when_materialization_root_changes(tmp_path: Path):
     first = tmp_path / "one" / "raw"
     second = tmp_path / "two" / "raw"
@@ -81,6 +99,88 @@ def test_training_fingerprint_changes_when_training_lock_changes(tmp_path: Path)
     before = training._fingerprint(paths, cfg)
     (tmp_path / "workers" / "lfm" / "uv.lock").write_text("two", encoding="utf-8")
     assert training._fingerprint(paths, cfg) != before
+
+
+def test_target_speaker_absence_returns_non_matching_sentinel():
+    label, score = speaker.select_target_speaker(
+        {"SPEAKER_00": [1.0, 0.0], "SPEAKER_01": [0.8, 0.2]},
+        [[0.0, 1.0]],
+        threshold=0.5,
+    )
+    assert label == speaker.TARGET_NOT_FOUND
+    assert score < 0.5
+
+
+def test_target_speaker_structural_errors_still_fail_loud():
+    with pytest.raises(ValueError, match="no speaker embeddings"):
+        speaker.select_target_speaker({}, [[1.0]], threshold=0.5)
+    with pytest.raises(ValueError, match="Multiple speakers"):
+        speaker.select_target_speaker(
+            {"A": [1.0, 0.0], "B": [0.0, 1.0]},
+            [],
+            threshold=0.5,
+        )
+
+
+def test_dataset_records_sources_without_selected_target(tmp_path: Path):
+    master = tmp_path / "dataset" / "master.sqlite3"
+    dataset.replace_utterances(
+        master,
+        [
+            {
+                "id": "source_000001",
+                "source_id": "source",
+                "source_path": "other-speakers.wav",
+                "start": 0.0,
+                "end": 1.0,
+                "speaker": "SPEAKER_00",
+                "target": False,
+                "speaker_similarity": None,
+                "speaker_coverage": 1.0,
+                "overlap_ratio": 0.0,
+                "text": "hello",
+                "text_annotated": "hello",
+                "emotion": "NEUTRAL",
+                "events": [],
+                "caption": "自然に話している。",
+                "audio_path": None,
+                "quality": 1.0,
+            }
+        ],
+    )
+    skipped = json.loads((master.parent / "skipped_sources.json").read_text(encoding="utf-8"))
+    assert skipped == [
+        {
+            "source_id": "source",
+            "source_path": "other-speakers.wav",
+            "reason": "authorized_speaker_not_selected",
+            "detected_speakers": ["SPEAKER_00"],
+            "utterances": 1,
+        }
+    ]
+
+
+def test_prepare_result_with_no_usable_target_audio_fails(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    store = state.StateStore(paths.state)
+    with pytest.raises(RuntimeError, match="no usable authorized-speaker"):
+        store.set_result("prepare", {"usable_tts_utterances": 0})
+
+
+def test_enabled_lfm_training_rejects_silent_data_shortage(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    (paths.dataset / "lfm_train.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="fewer than two valid conversational"):
+        training.train_lfm(tmp_path, paths, cfg)
+
+
+def test_enabled_seed_vc_training_rejects_silent_data_shortage(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.training.seed_vc_finetune = True
+    with pytest.raises(RuntimeError, match="fewer than two target-speaker"):
+        training.train_seed_vc(tmp_path, paths, cfg)
 
 
 def test_worker_sources_fail_closed_on_audited_local_models():
