@@ -2,7 +2,7 @@ name: core-ci
 
 on:
   push:
-    branches: [main, feat/personavoice-foundation]
+    branches: [main, feat/personavoice-foundation, fix/deep-audit-hardening]
   pull_request:
 
 permissions:
@@ -16,19 +16,55 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install uv
-        run: python -m pip install --disable-pip-version-check uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.5
       - name: Sync core environment
-        run: uv sync --dev
+        run: uv sync --dev --locked
       - name: Ruff
-        run: uv run ruff check src tests
+        run: uv run --locked ruff check src tests
       - name: Unit tests
-        run: uv run pytest
+        run: uv run --locked pytest
       - name: Compile
-        run: uv run python -m compileall -q src tests
+        run: uv run --locked python -m compileall -q src tests
       - name: CLI smoke test
-        run: uv run persona --help
+        run: uv run --locked persona --help
+
+  worker-envs:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - worker: asr
+            extra: ''
+          - worker: diarization
+            extra: '--extra cpu'
+          - worker: sense
+            extra: '--extra cpu'
+          - worker: lfm
+            extra: '--extra cpu'
+          - worker: seed_vc
+            extra: '--extra cpu'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.5
+      - name: Install compatible Python runtimes
+        shell: bash
+        run: uv python install 3.10 3.12
+      - name: Sync locked worker environment
+        shell: bash
+        run: uv sync --project "workers/${{ matrix.worker }}" --locked ${{ matrix.extra }}
+      - name: Compile worker entrypoints
+        shell: bash
+        run: |
+          project="workers/${{ matrix.worker }}"
+          uv run --project "$project" --no-sync python -m compileall -q "$project"
