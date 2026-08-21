@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from huggingface_hub import snapshot_download
@@ -39,10 +39,22 @@ def contract_digest(repo_root: Path) -> str:
 def _safe_relative(value: Any, *, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must be a non-empty relative path")
+    if "\\" in value:
+        raise ValueError(f"{label} must use canonical forward-slash separators: {value!r}")
     path = Path(value)
-    if path.is_absolute() or ".." in path.parts or value.startswith(("/", "\\")):
+    windows = PureWindowsPath(value)
+    if (
+        path.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or ".." in path.parts
+        or value.startswith(("/", "\\"))
+    ):
         raise ValueError(f"{label} must stay inside the Seed-VC asset root: {value!r}")
-    return path.as_posix()
+    normalized = path.as_posix()
+    if normalized in {"", "."}:
+        raise ValueError(f"{label} must name a file or directory below the asset root")
+    return normalized
 
 
 def load_contract(repo_root: Path) -> dict[str, Any]:
@@ -80,12 +92,23 @@ def load_contract(repo_root: Path) -> dict[str, Any]:
             raise ValueError(f"{name}.required_files contains duplicates")
         if not isinstance(hashes, dict):
             raise ValueError(f"{name}.sha256 must be an object")
+        normalized_hashes: dict[str, str] = {}
         for relative, digest in hashes.items():
             normalized_hash_path = _safe_relative(relative, label=f"{name}.sha256 key")
             if normalized_hash_path not in normalized:
                 raise ValueError(f"{name}.sha256 references an undeclared file: {relative}")
+            if normalized_hash_path in normalized_hashes:
+                raise ValueError(f"{name}.sha256 contains duplicate canonical paths")
             if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
                 raise ValueError(f"{name}.sha256[{relative!r}] must be a SHA256 hex digest")
+            normalized_hashes[normalized_hash_path] = digest
+
+        # Downstream setup/doctor/runtime all consume one canonical representation.
+        # This prevents equivalent spellings such as './weights.bin' from bypassing
+        # a checksum lookup that was declared as 'weights.bin'.
+        raw["local_dir"] = local_dir
+        raw["required_files"] = normalized
+        raw["sha256"] = normalized_hashes
     return value
 
 
@@ -98,6 +121,18 @@ def _nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _remove_snapshot_view(directory: Path) -> None:
+    """Remove only the materialized view, never a symlink target."""
+
+    try:
+        if directory.is_symlink():
+            directory.unlink(missing_ok=True)
+            return
+    except OSError:
+        pass
+    shutil.rmtree(directory, ignore_errors=True)
 
 
 def _snapshot_errors(
@@ -210,35 +245,46 @@ def materialize(
             reused.append(name)
             continue
 
-        shutil.rmtree(directory, ignore_errors=True)
+        # Any mutation invalidates the previously proven runtime state first.
+        # If download/setup is interrupted after this point, runtime remains
+        # fail-closed instead of trusting a marker from the pre-repair assets.
+        ready_marker(repo_root).unlink(missing_ok=True)
+        _remove_snapshot_view(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        snapshot_download(
-            repo_id=str(snapshot["repo_id"]),
-            revision=str(snapshot["revision"]),
-            local_dir=directory,
-            cache_dir=cache_dir,
-            allow_patterns=[str(value) for value in snapshot["required_files"]],
-            token=token,
-        )
-        atomic_write_text(directory / REVISION_MARKER, str(snapshot["revision"]) + "\n")
-        errors = _snapshot_errors(
-            repo_root,
-            name,
-            snapshot,
-            verify_hashes=True,
-        )
-        if errors:
-            shutil.rmtree(directory, ignore_errors=True)
-            raise RuntimeError(
-                "Pinned Seed-VC asset materialization failed: " + "; ".join(errors)
+        try:
+            snapshot_download(
+                repo_id=str(snapshot["repo_id"]),
+                revision=str(snapshot["revision"]),
+                local_dir=directory,
+                cache_dir=cache_dir,
+                allow_patterns=[str(value) for value in snapshot["required_files"]],
+                token=token,
             )
+            atomic_write_text(directory / REVISION_MARKER, str(snapshot["revision"]) + "\n")
+            errors = _snapshot_errors(
+                repo_root,
+                name,
+                snapshot,
+                verify_hashes=True,
+            )
+            if errors:
+                raise RuntimeError(
+                    "Pinned Seed-VC asset materialization failed: " + "; ".join(errors)
+                )
+        except Exception:
+            _remove_snapshot_view(directory)
+            raise
         downloaded.append(name)
 
     return {"downloaded": downloaded, "reused": reused}
 
 
 def purge_materialization(repo_root: Path) -> None:
-    shutil.rmtree(asset_root(repo_root), ignore_errors=True)
+    root = asset_root(repo_root)
+    if root.is_symlink():
+        root.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(root, ignore_errors=True)
     ready_marker(repo_root).unlink(missing_ok=True)
 
 
