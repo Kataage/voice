@@ -40,6 +40,11 @@ _PYANNOTE_REQUIRED_FILES = (
     "plda/plda.npz",
     "plda/xvec_transform.npz",
 )
+_SENSE_REQUIRED_FILES = (
+    "model.pt",
+    "am.mvn",
+    "chn_jpn_yue_eng_ko_spectok.bpe.model",
+)
 
 
 def _setup_state(repo_root: Path) -> dict:
@@ -270,6 +275,7 @@ def report(
     runtime = repo_root / ".runtime"
     asr_dir = repo_root / "models" / "asr" / "large-v3"
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
+    sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
@@ -278,7 +284,8 @@ def report(
         "pyannote": all(
             _nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES
         ),
-        "sense": _nonempty_file(runtime / "sense-model-ready"),
+        "sense": all(_nonempty_file(sense_dir / name) for name in _SENSE_REQUIRED_FILES)
+        and _read_revision(runtime / "sense-model-ready") == "verified",
         "seed_vc_models": _nonempty_file(runtime / "seed-vc-models-ready"),
         "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
         "irodori_vendor": _nonempty_file(repo_root / "vendor/Irodori-TTS/infer.py"),
