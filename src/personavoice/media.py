@@ -45,11 +45,15 @@ def inventory(raw_dir: Path) -> list[dict[str, Any]]:
 
     Copying the same recording into `raw/` under multiple filenames must not
     duplicate the conversation in training or create colliding utterance IDs.
-    Duplicate paths are retained as provenance on the canonical row.
+    Duplicate paths are retained as provenance on the canonical row. The current
+    pipeline uses the first 16 SHA256 hex characters as its compact source ID, so
+    a different full digest with the same prefix is rejected instead of silently
+    colliding in downstream utterance IDs.
     """
 
     rows: list[dict[str, Any]] = []
     by_sha: dict[str, dict[str, Any]] = {}
+    by_source_prefix: dict[str, str] = {}
     for path in media_files(raw_dir):
         relative = path.relative_to(raw_dir).as_posix()
         digest = sha256_file(path)
@@ -57,6 +61,13 @@ def inventory(raw_dir: Path) -> list[dict[str, Any]]:
         if existing is not None:
             existing["duplicate_paths"].append(relative)
             continue
+        prefix = digest[:16]
+        previous_digest = by_source_prefix.get(prefix)
+        if previous_digest is not None and previous_digest != digest:
+            raise RuntimeError(
+                "Two different raw media files share the same truncated source ID "
+                f"{prefix}. Remove one file or update PersonaVoice to a wider source-ID scheme."
+            )
         row = {
             "path": relative,
             "duplicate_paths": [],
@@ -66,6 +77,7 @@ def inventory(raw_dir: Path) -> list[dict[str, Any]]:
             "probe": ffprobe(path),
         }
         by_sha[digest] = row
+        by_source_prefix[prefix] = digest
         rows.append(row)
     return rows
 
