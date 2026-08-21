@@ -89,7 +89,11 @@ class StateStore:
         return stage.get("status") == "complete" and stage.get("fingerprint") == fingerprint
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
-        if name == "prepare" and int(result.get("usable_tts_utterances", 0)) <= 0:
+        if (
+            name == "prepare"
+            and "usable_tts_utterances" in result
+            and int(result["usable_tts_utterances"]) <= 0
+        ):
             raise RuntimeError(
                 "Preparation found no usable authorized-speaker utterances. Sources where the "
                 "authorized speaker was not selected are listed in dataset/skipped_sources.json. "
