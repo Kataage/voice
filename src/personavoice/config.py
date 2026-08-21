@@ -19,14 +19,17 @@ class ConsentConfig(StrictConfigModel):
 
 class PrepareConfig(StrictConfigModel):
     language: str = Field(default="ja", min_length=1)
-    asr_model: str = Field(default="large-v3", min_length=1)
+    # PersonaVoice setup/cache contracts audit and materialize exactly this ASR model.
+    # Allowing an arbitrary model name here could silently bypass those guarantees.
+    asr_model: Literal["large-v3"] = "large-v3"
     asr_compute_type: str = Field(default="auto", min_length=1)
     min_clip_seconds: float = Field(default=1.0, gt=0)
     max_clip_seconds: float = Field(default=18.0, gt=0)
     merge_gap_seconds: float = Field(default=0.45, ge=0)
     max_overlap_ratio: float = Field(default=0.08, ge=0, le=1)
     min_identity_similarity: float = Field(default=0.45, ge=-1, le=1)
-    reference_seconds: float = Field(default=40.0, gt=0)
+    # Pinned Irodori v4.1 Small supports a combined reference window up to 120 s.
+    reference_seconds: float = Field(default=40.0, gt=0, le=120.0)
     reference_clip_max_seconds: float = Field(default=12.0, gt=0)
     keep_nonverbal_only: bool = True
     use_sensevoice: bool = True
