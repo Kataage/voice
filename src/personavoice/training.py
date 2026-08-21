@@ -21,7 +21,7 @@ from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.state import StateStore
 from personavoice.workers import local_model_env, worker
 
-TRAIN_SCHEMA_VERSION = 7
+TRAIN_SCHEMA_VERSION = 8
 _SEED_VC_STEP_RE = re.compile(r"_step_(\d+)\.pth$")
 _LFM_ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 
@@ -69,6 +69,9 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "training_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "training.py"),
         "irodori_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "irodori.py"),
         "lfm_train_code_sha256": _file_contract(repo_root / "workers" / "lfm" / "train.py"),
+        "lfm_checkpoint_contract_code_sha256": _file_contract(
+            repo_root / "workers" / "lfm" / "checkpoint_contract.py"
+        ),
         "lfm_model_contract_code_sha256": _file_contract(
             repo_root / "workers" / "lfm" / "model_contract.py"
         ),
