@@ -61,6 +61,17 @@ def _write_complete_asr_files(local: Path, worker) -> None:
             (local / name).write_bytes(b"weights")
 
 
+def _write_complete_pyannote_files(local: Path, worker) -> None:
+    local.mkdir(parents=True, exist_ok=True)
+    for name in worker.REQUIRED_MODEL_FILES:
+        path = local / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if name.endswith(".yaml"):
+            path.write_text("pipeline: {}\n", encoding="utf-8")
+        else:
+            path.write_bytes(b"weights")
+
+
 def test_asr_model_path_requires_nonempty_required_files_and_revision(tmp_path: Path, monkeypatch):
     worker = _load_asr_worker(monkeypatch)
     monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
@@ -115,20 +126,19 @@ def test_doctor_asr_static_check_requires_full_offline_snapshot(tmp_path: Path, 
     assert result["models"]["asr"] is False
 
 
-def test_pyannote_local_source_requires_nonempty_config_and_revision(tmp_path: Path, monkeypatch):
+def test_pyannote_local_source_requires_complete_snapshot_and_revision(tmp_path: Path, monkeypatch):
     worker = _load_diarization_worker(monkeypatch)
     monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
     local = tmp_path / "models" / "pyannote" / "community-1"
-    local.mkdir(parents=True)
-    config = local / "config.yaml"
+    _write_complete_pyannote_files(local, worker)
     marker = local / worker.REVISION_MARKER
-
-    config.write_bytes(b"")
+    (local / "embedding" / "pytorch_model.bin").write_bytes(b"")
     marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
+
     with pytest.raises(FileNotFoundError, match="missing or incomplete"):
         worker.local_source()
 
-    config.write_text("pipeline: {}\n", encoding="utf-8")
+    (local / "embedding" / "pytorch_model.bin").write_bytes(b"weights")
     marker.write_text("wrong\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="audited revision"):
         worker.local_source()
@@ -137,17 +147,34 @@ def test_pyannote_local_source_requires_nonempty_config_and_revision(tmp_path: P
     assert Path(worker.local_source()) == local
 
 
-def test_pyannote_download_does_not_finalize_empty_config(tmp_path: Path, monkeypatch):
+def test_pyannote_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monkeypatch):
     worker = _load_diarization_worker(monkeypatch)
     monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
-    with pytest.raises(FileNotFoundError, match="without a valid config"):
+    with pytest.raises(FileNotFoundError, match="required model files"):
         worker.download({})
 
     local = tmp_path / "models" / "pyannote" / "community-1"
-    local.mkdir(parents=True, exist_ok=True)
-    (local / "config.yaml").write_text("pipeline: {}\n", encoding="utf-8")
+    _write_complete_pyannote_files(local, worker)
     result = worker.download({})
     assert result["revision"] == worker.MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION
+
+
+def test_doctor_pyannote_static_check_requires_full_offline_snapshot(tmp_path: Path, monkeypatch):
+    worker = _load_diarization_worker(monkeypatch)
+    local = tmp_path / "models" / "pyannote" / "community-1"
+    local.mkdir(parents=True)
+    (local / "config.yaml").write_text("pipeline: {}\n", encoding="utf-8")
+
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["pyannote"] is False
+
+    _write_complete_pyannote_files(local, worker)
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["pyannote"] is True
+
+    (local / "plda" / "plda.npz").unlink()
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["pyannote"] is False
