@@ -1,71 +1,96 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class ConsentConfig(BaseModel):
+class StrictConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class ConsentConfig(StrictConfigModel):
     authorized: bool = False
     scope: str = "local-private"
     notes: str = ""
 
 
-class PrepareConfig(BaseModel):
-    language: str = "ja"
-    asr_model: str = "large-v3"
-    asr_compute_type: str = "auto"
-    min_clip_seconds: float = 1.0
-    max_clip_seconds: float = 18.0
-    merge_gap_seconds: float = 0.45
-    max_overlap_ratio: float = 0.08
-    min_identity_similarity: float = 0.45
-    reference_seconds: float = 40.0
-    reference_clip_max_seconds: float = 12.0
+class PrepareConfig(StrictConfigModel):
+    language: str = Field(default="ja", min_length=1)
+    asr_model: str = Field(default="large-v3", min_length=1)
+    asr_compute_type: str = Field(default="auto", min_length=1)
+    min_clip_seconds: float = Field(default=1.0, gt=0)
+    max_clip_seconds: float = Field(default=18.0, gt=0)
+    merge_gap_seconds: float = Field(default=0.45, ge=0)
+    max_overlap_ratio: float = Field(default=0.08, ge=0, le=1)
+    min_identity_similarity: float = Field(default=0.45, ge=-1, le=1)
+    reference_seconds: float = Field(default=40.0, gt=0)
+    reference_clip_max_seconds: float = Field(default=12.0, gt=0)
     keep_nonverbal_only: bool = True
     use_sensevoice: bool = True
 
+    @model_validator(mode="after")
+    def validate_clip_ranges(self) -> Self:
+        if self.max_clip_seconds < self.min_clip_seconds:
+            raise ValueError("prepare.max_clip_seconds must be >= prepare.min_clip_seconds")
+        if self.reference_clip_max_seconds < self.min_clip_seconds:
+            raise ValueError(
+                "prepare.reference_clip_max_seconds must be >= prepare.min_clip_seconds"
+            )
+        return self
 
-class TrainingConfig(BaseModel):
+
+class TrainingConfig(StrictConfigModel):
     irodori_speaker_inversion: bool = True
     irodori_lora: bool = True
     lfm_lora: bool = True
     seed_vc_finetune: bool = False
-    irodori_max_steps: int = 4000
-    speaker_inversion_max_steps: int = 2000
-    lfm_epochs: float = 3.0
-    lfm_learning_rate: float = 2e-4
-    lfm_lora_r: int = 16
-    lfm_lora_alpha: int = 32
-    seed_vc_max_steps: int = 1000
+    irodori_max_steps: int = Field(default=4000, ge=1)
+    speaker_inversion_max_steps: int = Field(default=2000, ge=1)
+    lfm_epochs: float = Field(default=3.0, gt=0)
+    lfm_learning_rate: float = Field(default=2e-4, gt=0)
+    lfm_lora_r: int = Field(default=16, ge=1)
+    lfm_lora_alpha: int = Field(default=32, ge=1)
+    seed_vc_max_steps: int = Field(default=1000, ge=1)
 
 
-class InferenceConfig(BaseModel):
-    default_candidates: int = 3
-    default_num_steps: int = 24
-    tts_cfg_scale: float = 3.0
+class InferenceConfig(StrictConfigModel):
+    default_candidates: int = Field(default=3, ge=1, le=16)
+    default_num_steps: int = Field(default=24, ge=1, le=500)
+    tts_cfg_scale: float = Field(default=3.0, ge=0, le=100)
     reference_mode: Literal["auto", "speaker-embed", "audio"] = "auto"
-    seed_vc_diffusion_steps: int = 30
-    seed_vc_similarity_cfg: float = 0.7
-    seed_vc_intelligibility_cfg: float = 0.7
+    seed_vc_diffusion_steps: int = Field(default=30, ge=1, le=500)
+    seed_vc_similarity_cfg: float = Field(default=0.7, ge=0)
+    seed_vc_intelligibility_cfg: float = Field(default=0.7, ge=0)
 
 
-class PersonaConfig(BaseModel):
-    name: str
-    language: str = "ja"
+class PersonaConfig(StrictConfigModel):
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+    language: str = Field(default="ja", min_length=1)
     consent: ConsentConfig = Field(default_factory=ConsentConfig)
     prepare: PrepareConfig = Field(default_factory=PrepareConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
-    tts_backend: str = "irodori-v4.1-small"
-    vc_backend: str = "seed-vc-v2"
-    brain_backend: str = "lfm2.5-1.2b-jp-202606"
+    tts_backend: Literal["irodori-v4.1-small"] = "irodori-v4.1-small"
+    vc_backend: Literal["seed-vc-v2"] = "seed-vc-v2"
+    brain_backend: Literal["lfm2.5-1.2b-jp-202606"] = "lfm2.5-1.2b-jp-202606"
+
+    @model_validator(mode="after")
+    def validate_language_consistency(self) -> Self:
+        if self.prepare.language != self.language:
+            raise ValueError(
+                "persona language and prepare.language must match; use one consistent language"
+            )
+        return self
 
     @classmethod
     def load(cls, path: Path) -> PersonaConfig:
-        return cls.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError(f"Persona config must contain a YAML mapping: {path}")
+        return cls.model_validate(value)
 
     def save(self, path: Path) -> None:
         path.write_text(
