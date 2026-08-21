@@ -222,6 +222,7 @@ def train_irodori(
     vendor = vendor_dir(repo_root)
     base = base_checkpoint(repo_root)
     backend = configured_backend(repo_root)
+    device = backend_device(backend)
     env = local_model_env(repo_root)
     outputs: dict[str, str] = {"base": str(base)}
     if do_speaker:
@@ -250,6 +251,8 @@ def train_irodori(
                 base,
                 "--output-dir",
                 out,
+                "--device",
+                device,
             ]
             checkpoints = (
                 sorted(out.glob("checkpoint_*.speaker.safetensors"))
@@ -288,6 +291,8 @@ def train_irodori(
                 base,
                 "--output-dir",
                 out,
+                "--device",
+                device,
             ]
             resume = _latest_resume(out)
             if resume:
