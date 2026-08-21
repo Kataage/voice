@@ -50,7 +50,9 @@ def _is_loopback_host(host: str) -> bool:
 
 
 @app.command()
-def doctor(deep: bool = typer.Option(False, help="Load local models and verify offline readiness.")) -> None:
+def doctor(
+    deep: bool = typer.Option(False, help="Load local models and verify offline readiness."),
+) -> None:
     result = doctor_report(find_repo_root(), deep=deep)
     _print(result)
     if not result["commands_ok"] or (deep and not result["ready_offline"]):
@@ -69,8 +71,12 @@ def setup(
     result = install_environments(root, backend=None if backend == "auto" else backend)
     if download:
         result["models"] = download_models(root, include_seed_vc=not skip_seed_vc_models)
-    if verify and download and not skip_seed_vc_models:
-        result["verification"] = doctor_report(root, deep=True)
+    if verify:
+        result["verification"] = doctor_report(
+            root,
+            deep=True,
+            require_seed_vc=not skip_seed_vc_models,
+        )
         if not result["verification"]["ready_offline"]:
             _print(result)
             raise typer.Exit(1)
@@ -80,15 +86,24 @@ def setup(
 @app.command("init")
 def init_command(
     name: str,
-    authorized: bool = typer.Option(False, "--authorized", help="Record that local voice use is authorized."),
+    authorized: bool = typer.Option(
+        False,
+        "--authorized",
+        help="Record that local voice use is authorized.",
+    ),
 ) -> None:
     paths = init_persona(find_repo_root(), name, authorized=authorized)
     console.print(f"Created: [bold]{paths.root}[/bold]")
-    console.print(f"Put videos/audio in {paths.raw} and clean target-speaker clips in {paths.identity}.")
+    console.print(
+        f"Put videos/audio in {paths.raw} and clean target-speaker clips in {paths.identity}."
+    )
 
 
 @app.command()
-def consent(name: str, authorized: bool = typer.Option(True, "--authorized/--not-authorized")) -> None:
+def consent(
+    name: str,
+    authorized: bool = typer.Option(True, "--authorized/--not-authorized"),
+) -> None:
     _, paths, cfg = _load(name)
     cfg.consent.authorized = authorized
     cfg.save(paths.config)
@@ -231,7 +246,10 @@ def eval_command(name: str) -> None:
 def serve(
     host: str = "127.0.0.1",
     port: int = 8848,
-    allow_remote: bool = typer.Option(False, help="Allow non-loopback binding without authentication."),
+    allow_remote: bool = typer.Option(
+        False,
+        help="Allow non-loopback binding without authentication.",
+    ),
 ) -> None:
     if not _is_loopback_host(host) and not allow_remote:
         raise typer.BadParameter(
