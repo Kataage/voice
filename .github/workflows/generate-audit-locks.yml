@@ -1,0 +1,70 @@
+name: generate-audit-locks
+
+on:
+  push:
+    branches:
+      - fix/deep-audit-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  locks:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/deep-audit-hardening
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.5
+
+      - name: Install managed Python versions
+        run: uv python install 3.10 3.12
+
+      - name: Lock root and workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv lock
+          for project in asr diarization sense lfm seed_vc; do
+            uv lock --project "workers/${project}"
+          done
+
+      - name: Lock pinned Irodori
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="${RUNNER_TEMP}/Irodori-TTS"
+          git clone --filter=blob:none https://github.com/Aratako/Irodori-TTS.git "$tmp"
+          git -C "$tmp" checkout --detach 8224dafb46d0aba89209a8f905f1cb7e3299d9c1
+          uv lock --project "$tmp"
+          mkdir -p locks
+          cp "$tmp/uv.lock" locks/Irodori-TTS.uv.lock
+
+      - name: Commit generated lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- \
+            uv.lock \
+            workers/asr/uv.lock \
+            workers/diarization/uv.lock \
+            workers/sense/uv.lock \
+            workers/lfm/uv.lock \
+            workers/seed_vc/uv.lock \
+            locks/Irodori-TTS.uv.lock
+          if git diff --cached --quiet; then
+            echo 'Lockfiles are already current.'
+            exit 0
+          fi
+          git commit -m 'chore: lock audited uv environments'
+          git push origin HEAD:fix/deep-audit-hardening
