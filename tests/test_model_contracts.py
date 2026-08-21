@@ -25,6 +25,17 @@ def test_training_fingerprint_changes_with_base_model_contract(tmp_path: Path, m
     assert training._fingerprint(paths, cfg) != original
 
 
+def test_untracked_training_artifacts_are_detected_and_invalidated(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    marker = paths.models / "lfm" / "adapter" / "adapter_config.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}", encoding="utf-8")
+
+    assert training._has_training_artifacts(paths) is True
+    training._invalidate_training_artifacts(paths)
+    assert training._has_training_artifacts(paths) is False
+
+
 def test_workers_enforce_audited_local_model_contracts():
     root = Path(__file__).resolve().parents[1]
     asr = (root / "workers" / "asr" / "worker.py").read_text(encoding="utf-8")
