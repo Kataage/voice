@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from personavoice.process import run, run_json
 
@@ -18,14 +18,22 @@ class Worker:
     def call(self, repo_root: Path, command: str, payload: dict[str, Any], *, offline: bool = True) -> Any:
         request_dir = repo_root / ".runtime" / "requests"
         request_dir.mkdir(parents=True, exist_ok=True)
-        request_path = request_dir / f"{self.name}-{os.getpid()}.json"
+        request_path = request_dir / f"{self.name}-{uuid4().hex}.json"
         request_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         try:
             env = local_model_env(repo_root, offline=offline)
             return run_json(
                 [
-                    "uv", "run", "--project", self.project_dir, "--no-sync", "python",
-                    self.project_dir / self.entrypoint, command, "--request", request_path,
+                    "uv",
+                    "run",
+                    "--project",
+                    self.project_dir,
+                    "--no-sync",
+                    "python",
+                    self.project_dir / self.entrypoint,
+                    command,
+                    "--request",
+                    request_path,
                 ],
                 cwd=repo_root,
                 env=env,
@@ -40,12 +48,15 @@ class Worker:
 def local_model_env(repo_root: Path, *, offline: bool = True) -> dict[str, str]:
     env = {
         "HF_HOME": str((repo_root / "models" / "hf-cache").resolve()),
+        "HUGGINGFACE_HUB_CACHE": str((repo_root / "models" / "hf-cache" / "hub").resolve()),
         "MODELSCOPE_CACHE": str((repo_root / "models" / "modelscope-cache").resolve()),
         "PERSONAVOICE_ROOT": str(repo_root.resolve()),
         "TOKENIZERS_PARALLELISM": "false",
     }
     if offline:
         env.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+    else:
+        env.update({"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"})
     return env
 
 
