@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 from pathlib import Path
 
@@ -9,7 +10,12 @@ from rich.console import Console
 from personavoice.config import PersonaConfig
 from personavoice.doctor import report as doctor_report
 from personavoice.evaluation import evaluate
-from personavoice.inference import chat_turn, reenact as reenact_audio, repeat as repeat_audio, synthesize
+from personavoice.inference import (
+    chat_turn,
+    reenact as reenact_audio,
+    repeat as repeat_audio,
+    synthesize,
+)
 from personavoice.pipeline import prepare_persona
 from personavoice.project import find_repo_root, get_persona, init_persona
 from personavoice.setup_env import download_models, install_environments
@@ -29,11 +35,28 @@ def _print(value) -> None:
     console.print_json(data=value)
 
 
+def _existing_file(path: Path) -> Path:
+    value = path.expanduser().resolve()
+    if not value.is_file():
+        raise typer.BadParameter(f"File does not exist: {value}")
+    return value
+
+
+def _is_loopback_host(host: str) -> bool:
+    value = host.strip().lower()
+    if value in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 @app.command()
-def doctor(deep: bool = typer.Option(False, help="Include local model/worker readiness.")) -> None:
+def doctor(deep: bool = typer.Option(False, help="Load local models and verify offline readiness.")) -> None:
     result = doctor_report(find_repo_root(), deep=deep)
     _print(result)
-    if not result["commands_ok"]:
+    if not result["commands_ok"] or (deep and not result["ready_offline"]):
         raise typer.Exit(1)
 
 
@@ -42,12 +65,18 @@ def setup(
     backend: str = typer.Option("auto", help="Irodori backend: auto/cu128/cpu/rocm/xpu"),
     download: bool = typer.Option(True, "--download-models/--skip-models"),
     skip_seed_vc_models: bool = typer.Option(False),
+    verify: bool = typer.Option(True, "--verify/--no-verify"),
 ) -> None:
     """Install pinned local uv environments and model snapshots."""
     root = find_repo_root()
     result = install_environments(root, backend=None if backend == "auto" else backend)
     if download:
         result["models"] = download_models(root, include_seed_vc=not skip_seed_vc_models)
+    if verify and download and not skip_seed_vc_models:
+        result["verification"] = doctor_report(root, deep=True)
+        if not result["verification"]["ready_offline"]:
+            _print(result)
+            raise typer.Exit(1)
     _print(result)
 
 
@@ -89,7 +118,11 @@ def train(name: str, force: bool = False) -> None:
 
 
 @app.command()
-def build(name: str, force: bool = False, evaluate_after: bool = typer.Option(True, "--eval/--no-eval")) -> None:
+def build(
+    name: str,
+    force: bool = False,
+    evaluate_after: bool = typer.Option(True, "--eval/--no-eval"),
+) -> None:
     """One-command prepare + train + evaluation."""
     root, paths, cfg = _load(name)
     result = {"prepare": prepare_persona(root, paths, cfg, force=force)}
@@ -112,8 +145,16 @@ def say(
 ) -> None:
     root, paths, cfg = _load(name)
     outputs = synthesize(
-        root, paths, cfg, text, style=style, emotion=emotion, events=event or [], ref=ref,
-        candidates=candidates, seed=seed,
+        root,
+        paths,
+        cfg,
+        text,
+        style=style,
+        emotion=emotion,
+        events=event or [],
+        ref=ref,
+        candidates=candidates,
+        seed=seed,
     )
     _print({"outputs": [str(path) for path in outputs]})
 
@@ -126,12 +167,27 @@ def reenact(
     transfer_style: bool = typer.Option(True, "--transfer-style/--timbre-only"),
 ) -> None:
     root, paths, cfg = _load(name)
-    _print({"output": str(reenact_audio(root, paths, cfg, source, ref=ref, transfer_style=transfer_style))})
+    source = _existing_file(source)
+    _print(
+        {
+            "output": str(
+                reenact_audio(
+                    root,
+                    paths,
+                    cfg,
+                    source,
+                    ref=ref,
+                    transfer_style=transfer_style,
+                )
+            )
+        }
+    )
 
 
 @app.command()
 def repeat(name: str, source: Path) -> None:
     root, paths, cfg = _load(name)
+    source = _existing_file(source)
     _print({"outputs": [str(path) for path in repeat_audio(root, paths, cfg, source)]})
 
 
@@ -151,12 +207,20 @@ def chat(name: str, prompt: str | None = None) -> None:
         if not message:
             continue
         result = chat_turn(root, paths, cfg, message, history)
-        console.print(f"[bold green]{name}>[/bold green] {result.get('text','')}")
+        console.print(f"[bold green]{name}>[/bold green] {result.get('text', '')}")
         console.print(f"audio: {result.get('audio')}")
-        history.extend([
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": json.dumps({"text": result.get("text"), "voice": result.get("voice", {})}, ensure_ascii=False)},
-        ])
+        history.extend(
+            [
+                {"role": "user", "content": message},
+                {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {"text": result.get("text"), "voice": result.get("voice", {})},
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
         history = history[-12:]
 
 
@@ -170,8 +234,15 @@ def eval_command(name: str) -> None:
 def serve(
     host: str = "127.0.0.1",
     port: int = 8848,
+    allow_remote: bool = typer.Option(False, help="Allow non-loopback binding without authentication."),
 ) -> None:
+    if not _is_loopback_host(host) and not allow_remote:
+        raise typer.BadParameter(
+            "Refusing non-loopback bind. PersonaVoice has no network authentication. "
+            "Use --allow-remote only on a trusted network and with deliberate firewall rules."
+        )
     import uvicorn
+
     uvicorn.run("personavoice.api:app", host=host, port=port, reload=False)
 
 
@@ -180,10 +251,14 @@ def ui(port: int = 8848) -> None:
     import threading
     import time
     import webbrowser
+
     import uvicorn
 
     url = f"http://127.0.0.1:{port}/"
-    threading.Thread(target=lambda: (time.sleep(1.0), webbrowser.open(url)), daemon=True).start()
+    threading.Thread(
+        target=lambda: (time.sleep(1.0), webbrowser.open(url)),
+        daemon=True,
+    ).start()
     uvicorn.run("personavoice.api:app", host="127.0.0.1", port=port, reload=False)
 
 
