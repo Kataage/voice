@@ -44,14 +44,19 @@ jobs:
         include:
           - worker: asr
             extra: ''
+            gpu_extra: ''
           - worker: diarization
             extra: '--extra cpu'
+            gpu_extra: '--extra cu128'
           - worker: sense
             extra: '--extra cpu'
+            gpu_extra: '--extra cu128'
           - worker: lfm
             extra: '--extra cpu'
+            gpu_extra: '--extra cu128'
           - worker: seed_vc
             extra: '--extra cpu'
+            gpu_extra: '--extra cu124'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -71,3 +76,7 @@ jobs:
         run: |
           project="workers/${{ matrix.worker }}"
           uv run --project "$project" --no-sync python -m compileall -q "$project"
+      - name: Validate locked GPU extra
+        if: ${{ matrix.gpu_extra != '' }}
+        shell: bash
+        run: uv sync --project "workers/${{ matrix.worker }}" --locked --dry-run ${{ matrix.gpu_extra }}
