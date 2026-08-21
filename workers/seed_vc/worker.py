@@ -35,7 +35,12 @@ def load_default_wrapper() -> dict:
         )
         wrapper = instantiate(cfg)
         wrapper.load_checkpoints(ar_checkpoint_path=None, cfm_checkpoint_path=None)
-        return {"ok": True, "cuda": torch.cuda.is_available(), "models_loaded": True}
+        return {
+            "ok": True,
+            "cuda": torch.cuda.is_available(),
+            "torch_version": torch.__version__,
+            "models_loaded": True,
+        }
     finally:
         os.chdir(old)
 
@@ -90,9 +95,17 @@ def convert(payload: dict) -> dict:
 
 
 def health(payload: dict) -> dict:
+    import torch
+
+    result = {
+        "ok": True,
+        "vendor": str(vendor()),
+        "cuda": torch.cuda.is_available(),
+        "torch_version": torch.__version__,
+    }
     if payload.get("deep"):
-        return load_default_wrapper()
-    return {"ok": True, "vendor": str(vendor())}
+        result.update(load_default_wrapper())
+    return result
 
 
 def main() -> None:
