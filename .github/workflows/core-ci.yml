@@ -81,7 +81,7 @@ jobs:
         shell: bash
         run: |
           project="workers/${{ matrix.worker }}"
-          uv run --project "$project" --no-sync python -c "from trl import SFTConfig; c=SFTConfig(output_dir='.runtime/ci-lfm', completion_only_loss=True); assert c.completion_only_loss is True"
+          uv run --project "$project" --no-sync python -c "from trl import SFTConfig; c=SFTConfig(output_dir='.runtime/ci-lfm', completion_only_loss=True, use_cpu=True, bf16=False, fp16=False); assert c.completion_only_loss is True and c.use_cpu is True"
       - name: Validate locked GPU extra
         if: ${{ matrix.gpu_extra != '' }}
         shell: bash
