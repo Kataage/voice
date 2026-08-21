@@ -67,10 +67,6 @@ def resolve_reference(paths: PersonaPaths, ref: str | Path | None) -> list[Path]
     raise FileNotFoundError(f"Reference {ref!r} is neither a file nor a known reference preset")
 
 
-def _irodori_refs(paths: PersonaPaths, ref: str | Path | None) -> list[Path]:
-    return resolve_reference(paths, ref)
-
-
 def _best_lora_adapter(paths: PersonaPaths) -> Path | None:
     root = paths.models / "irodori" / "lora"
     candidates: list[tuple[float, Path]] = []
@@ -97,6 +93,57 @@ def _verify_outputs(paths: list[Path]) -> list[Path]:
             + ", ".join(str(path) for path in missing)
         )
     return paths
+
+
+def _append_audio_reference_args(args: list[str | Path], refs: list[Path]) -> None:
+    if len(refs) == 1:
+        args += ["--ref-wav", refs[0]]
+    else:
+        args += ["--ref-wavs", *refs]
+
+
+def _append_reference_args(
+    args: list[str | Path],
+    paths: PersonaPaths,
+    cfg: PersonaConfig,
+    ref: str | Path | None,
+) -> None:
+    speaker = paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
+
+    # An explicit --ref always means audio reference and overrides the default mode.
+    if ref is not None:
+        _append_audio_reference_args(args, resolve_reference(paths, ref))
+        return
+
+    mode = cfg.inference.reference_mode
+    if mode == "speaker-embed":
+        if not speaker.is_file():
+            raise FileNotFoundError(
+                "inference.reference_mode is 'speaker-embed', but no trained speaker embedding "
+                "exists. Run `persona train` with Irodori Speaker Inversion enabled or choose "
+                "reference_mode: auto/audio."
+            )
+        args += ["--ref-embed", speaker]
+        return
+
+    refs = reference_files(paths.references)
+    if mode == "audio":
+        if not refs:
+            raise FileNotFoundError(
+                "inference.reference_mode is 'audio', but the reference bank is empty. "
+                "Run `persona prepare` or pass --ref explicitly."
+            )
+        _append_audio_reference_args(args, refs)
+        return
+
+    # auto: prefer the compact learned speaker embedding, then the prepared
+    # reference bank, and only use unconditioned synthesis when neither exists.
+    if speaker.is_file():
+        args += ["--ref-embed", speaker]
+    elif refs:
+        _append_audio_reference_args(args, refs)
+    else:
+        args += ["--no-ref"]
 
 
 def synthesize(
@@ -163,17 +210,7 @@ def synthesize(
     lora = _best_lora_adapter(paths)
     if lora is not None:
         args += ["--lora-adapter", lora]
-    speaker = paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
-    refs = _irodori_refs(paths, ref)
-    if cfg.inference.reference_mode != "audio" and speaker.exists() and ref is None:
-        args += ["--ref-embed", speaker]
-    elif refs:
-        if len(refs) == 1:
-            args += ["--ref-wav", refs[0]]
-        else:
-            args += ["--ref-wavs", *refs]
-    else:
-        args += ["--no-ref"]
+    _append_reference_args(args, paths, cfg, ref)
     if seed is not None:
         args += ["--seed", str(seed)]
     run(args, cwd=vendor, env=local_model_env(repo_root))
