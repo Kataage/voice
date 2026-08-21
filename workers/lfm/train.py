@@ -11,6 +11,18 @@ from trl import SFTConfig, SFTTrainer
 
 MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
 REVISION_MARKER = ".personavoice-revision"
+# Dense LFM2 is a hybrid of full-attention, ShortConv, and SwiGLU MLP blocks.
+# LiquidAI's published LFM2 LoRA recipes use these same module suffixes.
+LORA_TARGET_MODULES = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "out_proj",
+    "in_proj",
+    "w1",
+    "w2",
+    "w3",
+)
 
 
 def _model_dtype() -> torch.dtype:
@@ -29,6 +41,17 @@ def _verify_base(base: Path) -> None:
             "LFM fine-tuning base does not match the audited revision: "
             f"expected {MODEL_REVISION}, got {actual!r}. Run `persona setup --download-models`."
         )
+
+
+def _validate_lora_targets(model) -> list[str]:
+    suffixes = {name.rsplit(".", 1)[-1] for name, _module in model.named_modules() if name}
+    missing = [name for name in LORA_TARGET_MODULES if name not in suffixes]
+    if missing:
+        raise RuntimeError(
+            "Pinned LFM architecture no longer exposes the audited LoRA target modules: "
+            f"missing={missing}. Update/re-audit PersonaVoice before fine-tuning."
+        )
+    return list(LORA_TARGET_MODULES)
 
 
 def main() -> None:
@@ -57,7 +80,7 @@ def main() -> None:
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=0.05,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=_validate_lora_targets(model),
         task_type="CAUSAL_LM",
     )
     batch = (
