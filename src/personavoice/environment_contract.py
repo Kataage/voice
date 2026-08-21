@@ -7,6 +7,7 @@ from typing import Any
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
 ENVIRONMENT_CONTRACT_SCHEMA = 1
+SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
 def _sha256(path: Path) -> str:
@@ -54,26 +55,38 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
 def environment_contract_status(repo_root: Path, recorded: Any) -> dict[str, Any]:
     current = environment_contract(repo_root)
     valid_recorded = recorded if isinstance(recorded, dict) else {}
-    return {
-        "ok": valid_recorded == current,
-        "recorded": valid_recorded,
-        "current": current,
-        "error": None
-        if valid_recorded == current
-        else (
+    transaction = repo_root / ".runtime" / SETUP_TRANSACTION_MARKER
+    in_progress = transaction.is_file()
+    contract_matches = valid_recorded == current
+    if in_progress:
+        error = (
+            "an environment setup transaction is incomplete; rerun `persona setup` to finish "
+            "synchronizing all audited environments"
+        )
+    elif not contract_matches:
+        error = (
             "installed environments were created for a different dependency contract; "
             "run `persona setup` to resync the audited local environments"
-        ),
+        )
+    else:
+        error = None
+    return {
+        "ok": contract_matches and not in_progress,
+        "recorded": valid_recorded,
+        "current": current,
+        "setup_in_progress": in_progress,
+        "error": error,
     }
 
 
 def require_current_environment(repo_root: Path) -> dict[str, Any]:
-    """Return setup state only when it matches the current dependency contract.
+    """Return setup state only when it matches a completed dependency transaction.
 
-    Runtime code must not silently execute an older `.venv` after the repository,
-    worker projects, or audited lockfiles change. This check is intentionally
-    independent from `persona doctor` so direct prepare/train/inference commands
-    fail closed even when the user did not run doctor first.
+    Runtime code must not silently execute an older or partially replaced `.venv`
+    after the repository, worker projects, audited lockfiles, or selected backend
+    changes. This check is intentionally independent from `persona doctor` so
+    direct prepare/train/inference commands fail closed even when doctor was not
+    run first.
     """
 
     setup_path = repo_root / ".runtime" / "setup.json"
@@ -94,8 +107,5 @@ def require_current_environment(repo_root: Path) -> dict[str, Any]:
 
     status = environment_contract_status(repo_root, setup.get("environment_contract"))
     if not status["ok"]:
-        raise RuntimeError(
-            "PersonaVoice local environments are stale for the current repository dependency "
-            "contract. Run `persona setup` to resync the audited environments before model work."
-        )
+        raise RuntimeError(str(status["error"]))
     return setup
