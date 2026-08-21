@@ -11,6 +11,8 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"
+MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
+REVISION_MARKER = ".personavoice-revision"
 
 
 def read_request(path: str) -> dict:
@@ -20,7 +22,20 @@ def read_request(path: str) -> dict:
 def base_path() -> str:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "lfm" / "base"
-    return str(local) if (local / "config.json").exists() else MODEL_ID
+    config = local / "config.json"
+    marker = local / REVISION_MARKER
+    if not config.is_file():
+        raise FileNotFoundError(
+            f"Pinned LFM model is missing: {local}. Run `persona setup --download-models`."
+        )
+    actual_revision = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    if actual_revision != MODEL_REVISION:
+        raise RuntimeError(
+            "Local LFM snapshot does not match the audited revision: "
+            f"expected {MODEL_REVISION}, got {actual_revision!r}. "
+            "Re-run `persona setup --download-models`."
+        )
+    return str(local)
 
 
 def model_dtype() -> torch.dtype:
@@ -31,13 +46,12 @@ def model_dtype() -> torch.dtype:
 
 def load_base():
     base = base_path()
-    offline = os.getenv("HF_HUB_OFFLINE") == "1"
-    tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=offline)
+    tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=True)
     model = AutoModelForCausalLM.from_pretrained(
         base,
         dtype=model_dtype(),
         device_map="auto",
-        local_files_only=offline,
+        local_files_only=True,
     )
     model.eval()
     return tokenizer, model
@@ -46,8 +60,13 @@ def load_base():
 def infer(payload: dict) -> dict:
     tokenizer, model = load_base()
     adapter = payload.get("adapter")
-    if adapter and Path(adapter).exists():
-        model = PeftModel.from_pretrained(model, adapter)
+    if adapter:
+        adapter_path = Path(adapter)
+        if not (adapter_path / "adapter_config.json").is_file():
+            raise FileNotFoundError(
+                f"LFM adapter is incomplete or missing adapter_config.json: {adapter_path}"
+            )
+        model = PeftModel.from_pretrained(model, adapter_path)
         model.eval()
     messages = payload["messages"]
     input_ids = tokenizer.apply_chat_template(
@@ -59,7 +78,7 @@ def infer(payload: dict) -> dict:
     output = model.generate(
         input_ids,
         do_sample=True,
-        temperature=float(payload.get("temperature", 0.15)),
+        temperature=float(payload.get("temperature", 0.1)),
         top_k=50,
         top_p=0.9,
         repetition_penalty=1.05,
@@ -73,8 +92,14 @@ def infer(payload: dict) -> dict:
 def download_model(payload: dict) -> dict:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "lfm" / "base"
-    snapshot_download(MODEL_ID, local_dir=local, cache_dir=Path(os.environ["HF_HOME"]))
-    return {"model": MODEL_ID, "path": str(local)}
+    snapshot_download(
+        MODEL_ID,
+        revision=MODEL_REVISION,
+        local_dir=local,
+        cache_dir=Path(os.environ["HF_HOME"]),
+    )
+    (local / REVISION_MARKER).write_text(MODEL_REVISION + "\n", encoding="utf-8")
+    return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}
 
 
 def health(payload: dict) -> dict:
