@@ -173,11 +173,11 @@ def _load_wrapper(
     old = Path.cwd()
     os.chdir(root)
     try:
+        import modules.v2.vc_wrapper as vc_module
         import torch
         import yaml
         from hydra.utils import instantiate
         from omegaconf import DictConfig
-        import modules.v2.vc_wrapper as vc_module
 
         cfg_data = yaml.safe_load((root / "configs/v2/vc_wrapper.yaml").read_text(encoding="utf-8"))
         if not isinstance(cfg_data, dict):
