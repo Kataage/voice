@@ -29,17 +29,18 @@ def _file_contract(path: Path) -> str:
 
 
 def _prepare_cache_policy() -> str:
-    """Return a compact preprocessing/model/environment contract identifier.
+    """Return the exact preprocessing/model/environment implementation contract.
 
-    A prepare cache is only reproducible when both the audited model assets and
-    the isolated worker dependency graphs are unchanged. Model pins alone are
-    insufficient because ASR segmentation, diarization, and acoustic analysis
-    behavior can change when their runtime libraries change.
+    Prepared artifacts are reproducible only when model assets, dependency
+    graphs, and the code that interprets their outputs are unchanged. Including
+    implementation hashes prevents a future code fix from accidentally reusing
+    stale ASR/diarization/Sense/segmentation results when a manual schema bump is
+    forgotten.
     """
 
     repo = _repo_root()
     contract = {
-        "schema": 5,
+        "schema": 6,
         "asr_revision": ASR_MODEL_REVISION,
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
@@ -50,9 +51,19 @@ def _prepare_cache_policy() -> str:
             repo / "workers" / "diarization" / "uv.lock"
         ),
         "sense_lock_sha256": _file_contract(repo / "workers" / "sense" / "uv.lock"),
+        "pipeline_code_sha256": _file_contract(repo / "src" / "personavoice" / "pipeline.py"),
+        "media_code_sha256": _file_contract(repo / "src" / "personavoice" / "media.py"),
+        "speaker_code_sha256": _file_contract(repo / "src" / "personavoice" / "speaker.py"),
+        "captions_code_sha256": _file_contract(repo / "src" / "personavoice" / "captions.py"),
+        "dataset_code_sha256": _file_contract(repo / "src" / "personavoice" / "dataset.py"),
+        "asr_worker_code_sha256": _file_contract(repo / "workers" / "asr" / "worker.py"),
+        "diarization_worker_code_sha256": _file_contract(
+            repo / "workers" / "diarization" / "worker.py"
+        ),
+        "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"5-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"6-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 # Cached prepare artifacts are valid only for this exact preprocessing contract.
