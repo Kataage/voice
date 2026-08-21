@@ -23,33 +23,44 @@ def base_path() -> str:
     return str(local) if (local / "config.json").exists() else MODEL_ID
 
 
-def infer(payload: dict) -> dict:
+def load_base():
     base = base_path()
-    tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=os.getenv("HF_HUB_OFFLINE") == "1")
+    offline = os.getenv("HF_HUB_OFFLINE") == "1"
+    tokenizer = AutoTokenizer.from_pretrained(base, local_files_only=offline)
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "auto"
     model = AutoModelForCausalLM.from_pretrained(
         base,
         dtype=dtype,
         device_map="auto",
-        local_files_only=os.getenv("HF_HUB_OFFLINE") == "1",
+        local_files_only=offline,
     )
+    model.eval()
+    return tokenizer, model
+
+
+def infer(payload: dict) -> dict:
+    tokenizer, model = load_base()
     adapter = payload.get("adapter")
     if adapter and Path(adapter).exists():
         model = PeftModel.from_pretrained(model, adapter)
+        model.eval()
     messages = payload["messages"]
     input_ids = tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=True, return_tensors="pt"
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_tensors="pt",
     ).to(model.device)
     output = model.generate(
         input_ids,
         do_sample=True,
-        temperature=float(payload.get("temperature", 0.35)),
+        temperature=float(payload.get("temperature", 0.15)),
         top_k=50,
         top_p=0.9,
         repetition_penalty=1.05,
         max_new_tokens=int(payload.get("max_new_tokens", 384)),
     )
-    generated = output[0, input_ids.shape[-1]:]
+    generated = output[0, input_ids.shape[-1] :]
     text = tokenizer.decode(generated, skip_special_tokens=True).strip()
     return {"text": text}
 
@@ -59,6 +70,19 @@ def download_model(payload: dict) -> dict:
     local = root / "models" / "lfm" / "base"
     snapshot_download(MODEL_ID, local_dir=local, cache_dir=Path(os.environ["HF_HOME"]))
     return {"model": MODEL_ID, "path": str(local)}
+
+
+def health(payload: dict) -> dict:
+    result = {"ok": True, "cuda": torch.cuda.is_available()}
+    if payload.get("deep"):
+        tokenizer, model = load_base()
+        result.update(
+            {
+                "model_loaded": model is not None,
+                "tokenizer_loaded": tokenizer is not None,
+            }
+        )
+    return result
 
 
 def main() -> None:
@@ -72,7 +96,7 @@ def main() -> None:
     elif args.command == "download":
         result = download_model(payload)
     else:
-        result = {"ok": True, "cuda": torch.cuda.is_available()}
+        result = health(payload)
     print(json.dumps(result, ensure_ascii=False))
 
 
