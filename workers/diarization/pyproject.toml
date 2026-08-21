@@ -1,8 +1,48 @@
 [project]
 name = "personavoice-worker-diarization"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-  "pyannote.audio>=4.0.0,<5",
+  "pyannote.audio==4.0.7",
   "huggingface-hub>=0.34,<1",
+  "torch>=2.8,<2.13",
+  "torchaudio>=2.8,<2.13",
 ]
+
+[project.optional-dependencies]
+cpu = [
+  "torch>=2.8,<2.13",
+  "torchaudio>=2.8,<2.13",
+]
+cu128 = [
+  "torch>=2.8,<2.13",
+  "torchaudio>=2.8,<2.13",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu128" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+  { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
