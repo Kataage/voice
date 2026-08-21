@@ -293,6 +293,42 @@ def test_best_irodori_adapter_prefers_lowest_validation_loss(tmp_path: Path):
     assert inference._best_lora_adapter(paths) == better
 
 
+def test_speaker_embed_reference_mode_requires_embedding(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "speaker-embed"
+    with pytest.raises(FileNotFoundError, match="speaker-embed"):
+        inference._append_reference_args([], paths, cfg, None)
+
+
+def test_audio_reference_mode_requires_reference_bank(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "audio"
+    with pytest.raises(FileNotFoundError, match="reference bank"):
+        inference._append_reference_args([], paths, cfg, None)
+
+
+def test_auto_reference_mode_can_fall_back_to_no_ref(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "auto"
+    args: list[str | Path] = []
+    inference._append_reference_args(args, paths, cfg, None)
+    assert args == ["--no-ref"]
+
+
+def test_explicit_reference_overrides_reference_mode(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "speaker-embed"
+    ref = tmp_path / "reference.wav"
+    ref.write_bytes(b"RIFF" + b"0" * 64)
+    args: list[str | Path] = []
+    inference._append_reference_args(args, paths, cfg, ref)
+    assert args == ["--ref-wav", ref.resolve()]
+
+
 def test_extract_json_falls_back_on_malformed_braces():
     raw = "普通の返答 {not valid json}"
     result = inference._extract_json(raw)
@@ -309,10 +345,13 @@ def test_synthesize_forwards_cfg_and_checks_output(tmp_path: Path, monkeypatch):
     vendor.mkdir(parents=True)
     base = tmp_path / "model.safetensors"
     base.write_bytes(b"model")
+    codec = tmp_path / "weights.pth"
+    codec.write_bytes(b"codec")
     captured: dict[str, list[str]] = {}
 
     monkeypatch.setattr(inference, "vendor_dir", lambda _root: vendor)
     monkeypatch.setattr(inference, "base_checkpoint", lambda _root: base)
+    monkeypatch.setattr(inference, "codec_checkpoint", lambda _root: codec)
     monkeypatch.setattr(inference, "nvidia_gpus", lambda: [])
 
     def fake_run(args, **_kwargs):
@@ -327,6 +366,7 @@ def test_synthesize_forwards_cfg_and_checks_output(tmp_path: Path, monkeypatch):
     argv = captured["argv"]
     assert argv[argv.index("--cfg-scale-text") + 1] == "4.25"
     assert argv[argv.index("--cfg-scale-caption") + 1] == "4.25"
+    assert argv[argv.index("--codec-repo") + 1] == str(codec)
 
 
 def test_ui_does_not_insert_llm_text_as_html():
