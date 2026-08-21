@@ -21,7 +21,7 @@ from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.state import StateStore
 from personavoice.workers import local_model_env, worker
 
-TRAIN_SCHEMA_VERSION = 5
+TRAIN_SCHEMA_VERSION = 6
 _SEED_VC_STEP_RE = re.compile(r"_step_(\d+)\.pth$")
 
 
@@ -49,8 +49,6 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
         "lfm_revision": LFM_MODEL_REVISION,
         "seed_vc_source_revision": SEED_VC_REVISION,
-        # Dependency-graph and implementation changes can alter optimization
-        # behavior even when model weights and user settings are identical.
         "irodori_lock_sha256": _file_contract(repo_root / "locks" / "Irodori-TTS.uv.lock"),
         "lfm_lock_sha256": _file_contract(repo_root / "workers" / "lfm" / "uv.lock"),
         "seed_vc_lock_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "uv.lock"),
@@ -109,13 +107,60 @@ def _has_training_artifacts(paths: PersonaPaths) -> bool:
     return latents.is_dir() and any(latents.iterdir())
 
 
+def _seed_vc_checkpoint_step(path: Path) -> int | None:
+    match = _SEED_VC_STEP_RE.search(path.name)
+    return int(match.group(1)) if match else None
+
+
 def _latest_seed_vc_checkpoint(source_dir: Path) -> Path | None:
-    candidates: list[tuple[int, Path]] = []
-    for path in source_dir.glob("CFM_*_step_*.pth"):
-        match = _SEED_VC_STEP_RE.search(path.name)
-        if match:
-            candidates.append((int(match.group(1)), path))
+    candidates = [
+        (step, path)
+        for path in source_dir.glob("CFM_*_step_*.pth")
+        if (step := _seed_vc_checkpoint_step(path)) is not None
+    ]
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def _seed_vc_training_progress(vendor: Path, persona_name: str) -> tuple[int, Path | None]:
+    """Return cumulative completed CFM update steps across PersonaVoice stages.
+
+    Seed-VC's pinned trainer can initialize model weights from a checkpoint but
+    resets its local iteration counter to zero. Encoding the cumulative offset
+    in each run directory lets PersonaVoice resume only the remaining number of
+    updates without modifying the pinned upstream checkout.
+    """
+
+    runs = vendor / "runs"
+    prefix = f"personavoice_{persona_name}_stage_"
+    best_step = 0
+    best_checkpoint: Path | None = None
+    if not runs.exists():
+        return best_step, best_checkpoint
+    for directory in runs.glob(f"{prefix}*"):
+        if not directory.is_dir():
+            continue
+        suffix = directory.name[len(prefix) :]
+        if not suffix.isdigit():
+            continue
+        checkpoint = _latest_seed_vc_checkpoint(directory)
+        if checkpoint is None:
+            continue
+        local_step = _seed_vc_checkpoint_step(checkpoint)
+        if local_step is None:
+            continue
+        cumulative = int(suffix) + local_step
+        if cumulative > best_step:
+            best_step = cumulative
+            best_checkpoint = checkpoint
+    return best_step, best_checkpoint
+
+
+def _clear_seed_vc_runs(repo_root: Path, persona_name: str) -> None:
+    runs = repo_root / "vendor" / "seed-vc" / "runs"
+    shutil.rmtree(runs / f"personavoice_{persona_name}", ignore_errors=True)
+    if runs.exists():
+        for path in runs.glob(f"personavoice_{persona_name}_stage_*"):
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
@@ -191,46 +236,75 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
 
     vendor = repo_root / "vendor" / "seed-vc"
     project = repo_root / "workers" / "seed_vc"
-    run_name = f"personavoice_{cfg.name}"
-    run(
-        [
-            "uv",
-            "run",
-            "--project",
-            project,
-            "--no-sync",
-            "accelerate",
-            "launch",
-            "--num_processes",
-            "1",
-            "--mixed_precision",
-            "fp16",
-            vendor / "train_v2.py",
-            "--dataset-dir",
-            audio_dir,
-            "--run-name",
-            run_name,
-            "--batch-size",
-            "2",
-            "--max-steps",
-            str(cfg.training.seed_vc_max_steps),
-            "--max-epochs",
-            "1000",
-            "--save-every",
-            str(max(100, cfg.training.seed_vc_max_steps // 2)),
-            "--num-workers",
-            "0",
-            "--train-cfm",
-        ],
-        cwd=vendor,
-        env=local_model_env(repo_root),
-    )
-    source_dir = vendor / "runs" / run_name
-    checkpoint = _latest_seed_vc_checkpoint(source_dir)
-    if checkpoint is None:
-        raise RuntimeError("Seed-VC fine-tuning completed without a CFM checkpoint")
+    completed_steps, initial_checkpoint = _seed_vc_training_progress(vendor, cfg.name)
+    desired_steps = cfg.training.seed_vc_max_steps
+    if completed_steps > desired_steps:
+        raise RuntimeError(
+            "Existing staged Seed-VC progress exceeds the configured max steps: "
+            f"completed={completed_steps}, configured={desired_steps}. "
+            "Run `persona train --force` to restart with the current training configuration."
+        )
+
     target = paths.models / "seed_vc" / "cfm.pth"
     target.parent.mkdir(parents=True, exist_ok=True)
+    if completed_steps == desired_steps and initial_checkpoint is not None:
+        shutil.copy2(initial_checkpoint, target)
+        return str(target)
+
+    remaining_steps = desired_steps - completed_steps
+    stage_name = f"personavoice_{cfg.name}_stage_{completed_steps:010d}"
+    stage_dir = vendor / "runs" / stage_name
+    # A directory without a usable checkpoint contains no recoverable progress;
+    # clear it so upstream auto-discovery cannot pick stale/partial files.
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir)
+
+    args: list[str | Path] = [
+        "uv",
+        "run",
+        "--project",
+        project,
+        "--no-sync",
+        "accelerate",
+        "launch",
+        "--num_processes",
+        "1",
+        "--mixed_precision",
+        "fp16",
+        vendor / "train_v2.py",
+        "--dataset-dir",
+        audio_dir,
+        "--run-name",
+        stage_name,
+        "--batch-size",
+        "2",
+        "--max-steps",
+        str(remaining_steps),
+        "--max-epochs",
+        str(max(1000, remaining_steps + 10)),
+        "--save-every",
+        str(max(25, min(500, max(1, remaining_steps // 2)))),
+        "--num-workers",
+        "0",
+        "--train-cfm",
+    ]
+    if initial_checkpoint is not None:
+        args += ["--pretrained-cfm-ckpt", initial_checkpoint]
+    run(args, cwd=vendor, env=local_model_env(repo_root))
+
+    checkpoint = _latest_seed_vc_checkpoint(stage_dir)
+    if checkpoint is None:
+        raise RuntimeError("Seed-VC fine-tuning completed without a CFM checkpoint")
+    local_steps = _seed_vc_checkpoint_step(checkpoint)
+    if local_steps is None:
+        raise RuntimeError(f"Seed-VC produced an unrecognized checkpoint name: {checkpoint.name}")
+    total_steps = completed_steps + local_steps
+    if total_steps != desired_steps:
+        raise RuntimeError(
+            "Seed-VC fine-tuning did not finish at the configured cumulative step count: "
+            f"completed={total_steps}, expected={desired_steps}. Retry normally to continue "
+            "from the latest staged checkpoint, or use `persona train --force` to restart."
+        )
     shutil.copy2(checkpoint, target)
     return str(target)
 
@@ -270,10 +344,7 @@ def train_persona(
     if force or inputs_changed or untracked_artifacts:
         _invalidate_training_artifacts(paths)
         if cfg.training.seed_vc_finetune:
-            shutil.rmtree(
-                repo_root / "vendor" / "seed-vc" / "runs" / f"personavoice_{cfg.name}",
-                ignore_errors=True,
-            )
+            _clear_seed_vc_runs(repo_root, cfg.name)
 
     with store.running("train", fingerprint):
         base_checkpoint(repo_root)
