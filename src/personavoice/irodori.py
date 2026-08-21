@@ -8,6 +8,7 @@ import yaml
 from huggingface_hub import hf_hub_download
 
 from personavoice.atomic import atomic_write_text
+from personavoice.environment_contract import require_current_environment
 from personavoice.hardware import safe_batch_profile
 from personavoice.model_assets import (
     IRODORI_DACVAE_FILENAME,
@@ -33,19 +34,9 @@ def vendor_dir(repo_root: Path) -> Path:
 
 
 def configured_backend(repo_root: Path) -> str:
-    setup = repo_root / ".runtime" / "setup.json"
-    if not setup.is_file():
-        raise FileNotFoundError(
-            "PersonaVoice setup state is missing. Run `persona setup` before Irodori "
-            "training or inference so the audited backend/environment is explicit."
-        )
-    try:
-        value = json.loads(setup.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise RuntimeError(
-            f"PersonaVoice setup state is unreadable: {setup}. Re-run `persona setup`."
-        ) from exc
-    if not isinstance(value, dict) or value.get("irodori_backend") is None:
+    value = require_current_environment(repo_root)
+    if value.get("irodori_backend") is None:
+        setup = repo_root / ".runtime" / "setup.json"
         raise RuntimeError(
             f"PersonaVoice setup state does not record irodori_backend: {setup}. "
             "Re-run `persona setup`."
