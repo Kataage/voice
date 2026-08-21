@@ -69,12 +69,24 @@ def _worker_extras(selected_backend: str) -> dict[str, str | None]:
 
 
 def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
+    """Sync Irodori from our audited lock without dirtying the pinned checkout."""
+
     managed_lock = repo_root / "locks" / "Irodori-TTS.uv.lock"
     args: list[str | Path] = ["uv", "sync", "--project", irodori, "--extra", backend]
-    if managed_lock.exists():
-        shutil.copy2(managed_lock, irodori / "uv.lock")
-        args.append("--locked")
-    run(args, cwd=repo_root)
+    if not managed_lock.exists():
+        run(args, cwd=repo_root)
+        return
+
+    vendor_lock = irodori / "uv.lock"
+    original = vendor_lock.read_bytes() if vendor_lock.exists() else None
+    try:
+        shutil.copy2(managed_lock, vendor_lock)
+        run([*args, "--locked"], cwd=repo_root)
+    finally:
+        if original is None:
+            vendor_lock.unlink(missing_ok=True)
+        else:
+            vendor_lock.write_bytes(original)
 
 
 def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:
