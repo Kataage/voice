@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from personavoice.pipeline import _dump, _read_cache_json
+from personavoice.project import init_persona
+from personavoice.state import StateStore
 
 
 def test_corrupt_prepare_json_cache_is_removed_and_recomputed(tmp_path: Path):
@@ -32,3 +34,23 @@ def test_prepare_json_dump_is_complete_json(tmp_path: Path):
 
     assert json.loads(path.read_text(encoding="utf-8")) == value
     assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+def test_force_prepare_invalidates_extracted_audio_and_all_derived_caches(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    derived = (
+        paths.cache / "audio" / "source.flac",
+        paths.cache / "asr" / "source.json",
+        paths.cache / "diarization" / "source.json",
+        paths.cache / "identity" / "identity.json",
+        paths.cache / "sense" / "clip.json",
+        paths.dataset / "clips" / "clip.flac",
+    )
+    for path in derived:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"stale")
+
+    store = StateStore(paths.state)
+    with store.running("prepare", "new-fingerprint", force=True):
+        for path in derived:
+            assert not path.exists()
