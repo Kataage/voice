@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 import yaml
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download
 
 from personavoice.hardware import safe_batch_profile
 from personavoice.process import run
@@ -29,9 +29,18 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
         return expected
     if not online:
         raise FileNotFoundError(
-            f"Irodori base checkpoint is not materialized at {expected}. Run `persona setup --download-models`."
+            f"Irodori base checkpoint is not materialized at {expected}. "
+            "Run `persona setup --download-models`."
         )
-    snapshot_download(MODEL_ID, local_dir=local_dir, cache_dir=Path(env["HF_HOME"]))
+    local_dir.mkdir(parents=True, exist_ok=True)
+    hf_hub_download(
+        repo_id=MODEL_ID,
+        filename="model.safetensors",
+        local_dir=local_dir,
+        cache_dir=Path(env["HF_HOME"]),
+    )
+    if not expected.exists():
+        raise FileNotFoundError(f"Irodori download completed but {expected} was not created")
     return expected
 
 
@@ -39,23 +48,50 @@ def materialize_base(repo_root: Path) -> Path:
     return base_checkpoint(repo_root, online=True)
 
 
-def prepare_manifest(repo_root: Path, source_jsonl: Path, output_manifest: Path, latent_dir: Path) -> None:
+def prepare_manifest(
+    repo_root: Path,
+    source_jsonl: Path,
+    output_manifest: Path,
+    latent_dir: Path,
+) -> None:
     vendor = vendor_dir(repo_root)
-    device = "cuda" if safe_batch_profile()["batch_size"] > 1 or shutil.which("nvidia-smi") else "cpu"
+    device = "cuda" if shutil.which("nvidia-smi") else "cpu"
     env = local_model_env(repo_root)
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     latent_dir.mkdir(parents=True, exist_ok=True)
     run(
         [
-            "uv", "run", "--project", vendor, "--no-sync", "python", vendor / "prepare_manifest.py",
-            "--dataset", "json", "--data-files", source_jsonl,
-            "--audio-column", "audio", "--text-column", "text", "--caption-column", "caption",
-            "--speaker-column", "speaker", "--output-manifest", output_manifest,
-            "--latent-dir", latent_dir, "--device", device,
+            "uv",
+            "run",
+            "--project",
+            vendor,
+            "--no-sync",
+            "python",
+            vendor / "prepare_manifest.py",
+            "--dataset",
+            "json",
+            "--data-files",
+            source_jsonl,
+            "--audio-column",
+            "audio",
+            "--text-column",
+            "text",
+            "--caption-column",
+            "caption",
+            "--speaker-column",
+            "speaker",
+            "--output-manifest",
+            output_manifest,
+            "--latent-dir",
+            latent_dir,
+            "--device",
+            device,
         ],
         cwd=vendor,
         env=env,
     )
+    if not output_manifest.exists() or output_manifest.stat().st_size == 0:
+        raise RuntimeError("Irodori manifest preparation produced no training examples")
 
 
 def _patched_config(source: Path, destination: Path, *, max_steps: int) -> Path:
@@ -73,15 +109,21 @@ def _patched_config(source: Path, destination: Path, *, max_steps: int) -> Path:
     if "gradient_checkpointing" in train_cfg or profile["gradient_checkpointing"]:
         train_cfg["gradient_checkpointing"] = bool(profile["gradient_checkpointing"])
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    destination.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
     return destination
 
 
 def _latest_resume(output_dir: Path) -> Path | None:
     if not output_dir.exists():
         return None
-    candidates = [path for path in output_dir.glob("checkpoint_*") if "best_val_loss" not in path.name]
-    candidates = [path for path in candidates if "final" not in path.name]
+    candidates = [
+        path
+        for path in output_dir.glob("checkpoint_*")
+        if "best_val_loss" not in path.name and "final" not in path.name
+    ]
     return sorted(candidates, key=lambda path: path.name)[-1] if candidates else None
 
 
@@ -110,14 +152,32 @@ def train_irodori(
                 max_steps=speaker_steps,
             )
             args = [
-                "uv", "run", "--project", vendor, "--no-sync", "python", vendor / "train.py",
-                "--config", cfg, "--manifest", manifest, "--init-checkpoint", base,
-                "--output-dir", out,
+                "uv",
+                "run",
+                "--project",
+                vendor,
+                "--no-sync",
+                "python",
+                vendor / "train.py",
+                "--config",
+                cfg,
+                "--manifest",
+                manifest,
+                "--init-checkpoint",
+                base,
+                "--output-dir",
+                out,
             ]
-            checkpoints = sorted(out.glob("checkpoint_*.speaker.safetensors")) if out.exists() else []
+            checkpoints = (
+                sorted(out.glob("checkpoint_*.speaker.safetensors"))
+                if out.exists()
+                else []
+            )
             if checkpoints:
                 args += ["--speaker-inversion-init-embedding", checkpoints[-1]]
             run(args, cwd=vendor, env=env)
+        if not final.exists():
+            raise RuntimeError("Irodori Speaker Inversion did not produce checkpoint_final")
         outputs["speaker_embedding"] = str(final)
     if do_lora:
         out = models_dir / "irodori" / "lora"
@@ -129,14 +189,28 @@ def train_irodori(
                 max_steps=lora_steps,
             )
             args = [
-                "uv", "run", "--project", vendor, "--no-sync", "python", vendor / "train.py",
-                "--config", cfg, "--manifest", manifest, "--init-checkpoint", base,
-                "--output-dir", out,
+                "uv",
+                "run",
+                "--project",
+                vendor,
+                "--no-sync",
+                "python",
+                vendor / "train.py",
+                "--config",
+                cfg,
+                "--manifest",
+                manifest,
+                "--init-checkpoint",
+                base,
+                "--output-dir",
+                out,
             ]
             resume = _latest_resume(out)
             if resume:
                 args += ["--resume", resume]
             run(args, cwd=vendor, env=env)
+        if not final.exists():
+            raise RuntimeError("Irodori LoRA training did not produce checkpoint_final")
         outputs["lora_adapter"] = str(final)
     return outputs
 
