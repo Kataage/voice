@@ -10,8 +10,10 @@ from personavoice.captions import annotate_text, build_caption
 from personavoice.config import PersonaConfig
 from personavoice.hardware import nvidia_gpus
 from personavoice.irodori import (
+    backend_device,
     base_checkpoint,
     codec_checkpoint,
+    configured_backend,
     reference_files,
     vendor_dir,
 )
@@ -173,13 +175,15 @@ def synthesize(
     vendor = vendor_dir(repo_root)
     base = base_checkpoint(repo_root)
     codec = codec_checkpoint(repo_root)
+    backend = configured_backend(repo_root)
+    device = backend_device(backend)
     output = output or (paths.outputs / f"tts_{_stamp()}.wav")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     requested = cfg.inference.default_candidates if candidates is None else candidates
     if requested < 1:
         raise ValueError("candidates must be at least 1")
-    gpus = nvidia_gpus()
+    gpus = nvidia_gpus() if backend == "cu128" else []
     requested = (
         1
         if not gpus or max(gpu.total_mib for gpu in gpus) < 16000
@@ -198,6 +202,10 @@ def synthesize(
         base,
         "--codec-repo",
         codec,
+        "--model-device",
+        device,
+        "--codec-device",
+        device,
         "--text",
         text,
         "--caption",
