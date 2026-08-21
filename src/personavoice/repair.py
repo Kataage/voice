@@ -31,9 +31,7 @@ def _is_materialization_failure(health: Any) -> bool:
     if not isinstance(health, dict) or health.get("ok") is not False:
         return False
     error = str(health.get("error") or "").lower()
-    if any(hint in error for hint in _NON_MATERIALIZATION_ERROR_HINTS):
-        return False
-    return True
+    return not any(hint in error for hint in _NON_MATERIALIZATION_ERROR_HINTS)
 
 
 def repair_failed_model_materializations(
