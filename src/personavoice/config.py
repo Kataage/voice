@@ -6,6 +6,8 @@ from typing import Literal, Self
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from personavoice.atomic import atomic_write_text
+
 
 class StrictConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
@@ -105,11 +107,11 @@ class PersonaConfig(StrictConfigModel):
         return config
 
     def save(self, path: Path) -> None:
-        path.write_text(
+        atomic_write_text(
+            path,
             yaml.safe_dump(
                 self.model_dump(mode="json"),
                 allow_unicode=True,
                 sort_keys=False,
             ),
-            encoding="utf-8",
         )

@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import torch
+from checkpoint_contract import latest_complete_checkpoint, prune_incomplete_checkpoints
 from datasets import load_dataset
 from model_contract import audited_attention_lora_targets
 from peft import LoraConfig
@@ -55,6 +56,13 @@ def main() -> None:
     base = Path(args.base).resolve()
     output = Path(args.output).resolve()
     _verify_base(base)
+    output.mkdir(parents=True, exist_ok=True)
+    # A power loss can leave a numerically newer Trainer directory only partly
+    # written. Remove only those derived incomplete checkpoints before asking
+    # Trainer to resume, then select the highest verified checkpoint explicitly.
+    prune_incomplete_checkpoints(output)
+    resume = latest_complete_checkpoint(output)
+
     dataset = load_dataset("json", data_files=args.dataset, split="train")
     if len(dataset) < 2:
         raise RuntimeError("LFM fine-tuning needs at least two conversational examples")
@@ -88,8 +96,13 @@ def main() -> None:
         bf16=bool(has_cuda and torch.cuda.is_bf16_supported()),
         fp16=bool(has_cuda and not torch.cuda.is_bf16_supported()),
         logging_steps=5,
-        save_strategy="epoch",
+        # Periodic step checkpoints limit loss from hard crashes/OOMs while the
+        # JIT checkpoint below covers graceful SIGTERM shutdowns.
+        save_strategy="steps",
+        save_steps=25,
         save_total_limit=2,
+        save_only_model=False,
+        enable_jit_checkpoint=True,
         max_length=2048,
         completion_only_loss=True,
         report_to="none",
@@ -102,8 +115,7 @@ def main() -> None:
         processing_class=tokenizer,
         peft_config=peft_config,
     )
-    resume = True if list(output.glob("checkpoint-*")) else None
-    trainer.train(resume_from_checkpoint=resume)
+    trainer.train(resume_from_checkpoint=str(resume) if resume is not None else None)
     trainer.save_model(str(output))
     tokenizer.save_pretrained(str(output))
     if not (output / "adapter_config.json").is_file() or _adapter_weight(output) is None:

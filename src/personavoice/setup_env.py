@@ -7,6 +7,8 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
+from personavoice.atomic import atomic_write_json, atomic_write_text
+from personavoice.environment_contract import SETUP_TRANSACTION_MARKER, environment_contract
 from personavoice.hardware import detect_irodori_backend
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
@@ -37,7 +39,82 @@ IRODORI_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 SEED_VC_REPO = "https://github.com/Plachtaa/seed-vc.git"
 SEED_VC_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
 REVISION_MARKER = ".personavoice-revision"
+IRODORI_LOCK_SWAP_MARKER = "irodori-lock-swap.json"
 SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
+
+
+def _irodori_swap_marker(repo_root: Path) -> Path:
+    return repo_root / ".runtime" / IRODORI_LOCK_SWAP_MARKER
+
+
+def _git_head(directory: Path) -> str:
+    return run(["git", "rev-parse", "HEAD"], cwd=directory, capture=True).stdout.strip()
+
+
+def _restore_vendor_lock(irodori: Path) -> None:
+    """Restore uv.lock to the pinned checkout's clean HEAD state."""
+
+    vendor_lock = irodori / "uv.lock"
+    tracked = run(
+        ["git", "ls-files", "--error-unmatch", "--", "uv.lock"],
+        cwd=irodori,
+        capture=True,
+        check=False,
+    ).returncode == 0
+    if tracked:
+        run(
+            ["git", "restore", "--source=HEAD", "--worktree", "--", "uv.lock"],
+            cwd=irodori,
+        )
+    else:
+        vendor_lock.unlink(missing_ok=True)
+
+
+def _recover_irodori_lock_swap(repo_root: Path, irodori: Path) -> None:
+    """Recover a managed uv.lock swap interrupted by process termination."""
+
+    marker = _irodori_swap_marker(repo_root)
+    if not marker.is_file():
+        return
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Interrupted Irodori lock-swap marker is unreadable: {marker}. "
+            "Inspect the vendor checkout before rerunning setup."
+        ) from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 2:
+        raise RuntimeError(
+            f"Interrupted Irodori lock-swap marker has an unsupported format: {marker}"
+        )
+
+    expected_head = value.get("vendor_head")
+    current_head = _git_head(irodori)
+    if not isinstance(expected_head, str) or current_head != expected_head:
+        raise RuntimeError(
+            "An interrupted PersonaVoice Irodori lock swap belongs to a different vendor HEAD. "
+            "Refusing automatic recovery; inspect vendor/Irodori-TTS before rerunning setup."
+        )
+
+    vendor_lock = irodori / "uv.lock"
+    current_exists = vendor_lock.is_file()
+    current_sha = sha256_file(vendor_lock) if current_exists else None
+    original_exists = bool(value.get("original_exists"))
+    original_sha = value.get("original_sha256")
+    managed_sha = value.get("managed_sha256")
+    original_state = current_exists == original_exists and (
+        not current_exists or current_sha == original_sha
+    )
+    managed_state = current_exists and isinstance(managed_sha, str) and current_sha == managed_sha
+    if managed_state:
+        _restore_vendor_lock(irodori)
+    elif not original_state:
+        raise RuntimeError(
+            "An interrupted PersonaVoice Irodori lock swap was found, but vendor/"
+            "Irodori-TTS/uv.lock no longer matches either the original checkout or the "
+            "audited temporary lock. Refusing to overwrite a possible local edit."
+        )
+    marker.unlink(missing_ok=True)
 
 
 def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
@@ -48,6 +125,8 @@ def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
     git_dir = destination / ".git"
     if not git_dir.exists():
         raise RuntimeError(f"{destination} exists but is not a git checkout")
+    if name == "Irodori-TTS":
+        _recover_irodori_lock_swap(repo_root, destination)
     status = run(["git", "status", "--porcelain"], cwd=destination, capture=True).stdout.strip()
     if status:
         raise RuntimeError(
@@ -66,13 +145,7 @@ def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
 
 
 def _worker_extras(selected_backend: str) -> dict[str, str | None]:
-    """Map the Irodori backend to compatible isolated worker backends.
-
-    The modern Torch workers use CUDA 12.8. Archived Seed-VC is pinned to
-    Torch 2.4.0, whose newest official Windows/Linux CUDA wheel is CUDA 12.4.
-    ROCm/XPU support is currently limited to Irodori; the other workers use CPU
-    rather than silently resolving an arbitrary PyPI Torch build.
-    """
+    """Map the Irodori backend to compatible isolated worker backends."""
 
     if selected_backend == "cu128":
         return {
@@ -92,24 +165,42 @@ def _worker_extras(selected_backend: str) -> dict[str, str | None]:
 
 
 def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
-    """Sync Irodori from our audited lock without dirtying the pinned checkout."""
+    """Sync Irodori from the audited lock with crash-safe checkout recovery."""
 
     managed_lock = repo_root / "locks" / "Irodori-TTS.uv.lock"
-    args: list[str | Path] = ["uv", "sync", "--project", irodori, "--extra", backend]
-    if not managed_lock.exists():
-        run(args, cwd=repo_root)
-        return
+    if not managed_lock.is_file():
+        raise FileNotFoundError(
+            f"Audited Irodori lockfile is missing: {managed_lock}. "
+            "Refusing an unlocked environment sync; restore the repository lockfile first."
+        )
 
+    marker = _irodori_swap_marker(repo_root)
     vendor_lock = irodori / "uv.lock"
-    original = vendor_lock.read_bytes() if vendor_lock.exists() else None
+    original_exists = vendor_lock.is_file()
+    swap_state = {
+        "schema_version": 2,
+        "vendor": str(irodori.resolve()),
+        "vendor_head": _git_head(irodori),
+        "original_exists": original_exists,
+        "original_sha256": sha256_file(vendor_lock) if original_exists else None,
+        "managed_sha256": sha256_file(managed_lock),
+    }
+    atomic_write_json(marker, swap_state)
+    args: list[str | Path] = [
+        "uv",
+        "sync",
+        "--project",
+        irodori,
+        "--extra",
+        backend,
+        "--locked",
+    ]
     try:
-        shutil.copy2(managed_lock, vendor_lock)
-        run([*args, "--locked"], cwd=repo_root)
+        atomic_write_text(vendor_lock, managed_lock.read_text(encoding="utf-8"))
+        run(args, cwd=repo_root)
     finally:
-        if original is None:
-            vendor_lock.unlink(missing_ok=True)
-        else:
-            vendor_lock.write_bytes(original)
+        _restore_vendor_lock(irodori)
+        marker.unlink(missing_ok=True)
 
 
 def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:
@@ -122,6 +213,23 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         expected = ", ".join(sorted(SUPPORTED_IRODORI_BACKENDS))
         raise ValueError(f"Unsupported Irodori backend {selected_backend!r}; choose one of: {expected}")
 
+    worker_extras = _worker_extras(selected_backend)
+    runtime = repo_root / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    transaction_marker = runtime / SETUP_TRANSACTION_MARKER
+    transaction_state = {
+        "schema_version": 1,
+        "irodori_backend": selected_backend,
+        "worker_backends": worker_extras,
+        "irodori_revision": IRODORI_REVISION,
+        "seed_vc_revision": SEED_VC_REVISION,
+        "environment_contract": environment_contract(repo_root),
+    }
+    # This marker is written before the first environment mutation. It is
+    # deliberately kept on any failure so an old setup.json can never authorize
+    # a partially replaced CPU/CUDA environment after an interrupted setup.
+    atomic_write_json(transaction_marker, transaction_state)
+
     irodori = _clone_pinned(
         repo_root,
         "Irodori-TTS",
@@ -131,19 +239,17 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     seed = _clone_pinned(repo_root, "seed-vc", SEED_VC_REPO, SEED_VC_REVISION)
     _install_irodori(repo_root, irodori, selected_backend)
 
-    worker_extras = _worker_extras(selected_backend)
     synced = []
     for name in ("asr", "diarization", "sense", "lfm", "seed_vc"):
         worker(repo_root, name).sync(repo_root, extra=worker_extras[name])
         synced.append(name)
 
-    runtime = repo_root / ".runtime"
-    runtime.mkdir(parents=True, exist_ok=True)
     setup_state = {
         "irodori_backend": selected_backend,
         "worker_backends": worker_extras,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
+        "environment_contract": environment_contract(repo_root),
         "model_assets": {
             "irodori_model_sha256": IRODORI_MODEL_SHA256,
             "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
@@ -158,10 +264,8 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
         },
     }
-    (runtime / "setup.json").write_text(
-        json.dumps(setup_state, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(runtime / "setup.json", setup_state)
+    transaction_marker.unlink(missing_ok=True)
     return {
         **setup_state,
         "workers": synced,
@@ -189,18 +293,27 @@ def _download_verified_file(
 ) -> tuple[Path, bool]:
     local_dir.mkdir(parents=True, exist_ok=True)
     target = local_dir / filename
-    existed = target.exists()
-    if not existed:
-        hf_hub_download(
-            repo_id=model_id,
-            filename=filename,
-            local_dir=local_dir,
-            cache_dir=cache_dir,
-        )
+    existed = target.is_file()
+    force_download = False
+    if existed:
+        try:
+            _verify_sha256(target, sha256, label=f"{model_id}:{filename}")
+            return target, True
+        except RuntimeError:
+            target.unlink(missing_ok=True)
+            force_download = True
+
+    hf_hub_download(
+        repo_id=model_id,
+        filename=filename,
+        local_dir=local_dir,
+        cache_dir=cache_dir,
+        force_download=force_download,
+    )
     if not target.is_file():
         raise FileNotFoundError(f"Expected model file was not created: {target}")
     _verify_sha256(target, sha256, label=f"{model_id}:{filename}")
-    return target, existed
+    return target, False
 
 
 def _snapshot_if_missing(
@@ -221,9 +334,6 @@ def _snapshot_if_missing(
     if marker.exists() and (revision is None or current_revision == revision):
         return False
 
-    # A materialized directory without the expected revision marker came from a
-    # floating/older setup. Replace only PersonaVoice's local view; HF cache blobs
-    # are retained and can be reused by snapshot_download.
     if local_dir.exists():
         shutil.rmtree(local_dir)
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -239,7 +349,7 @@ def _snapshot_if_missing(
             f"Model download for {model_id} completed but expected marker is missing: {marker}"
         )
     if revision is not None:
-        revision_path.write_text(revision + "\n", encoding="utf-8")
+        atomic_write_text(revision_path, revision + "\n")
     return True
 
 
@@ -261,9 +371,6 @@ def _snapshot_pinned(
     if required_path.is_file() and current_revision == revision:
         return False
 
-    # An unmarked directory came from the older floating-revision setup. Remove
-    # only PersonaVoice's materialized view; Hugging Face's shared cache is kept,
-    # so unchanged blobs can still be reused without another network transfer.
     shutil.rmtree(local_dir, ignore_errors=True)
     local_dir.mkdir(parents=True, exist_ok=True)
     snapshot_download(
@@ -277,7 +384,7 @@ def _snapshot_pinned(
             f"Pinned model download for {model_id}@{revision} completed but "
             f"expected file is missing: {required_path}"
         )
-    revision_path.write_text(revision + "\n", encoding="utf-8")
+    atomic_write_text(revision_path, revision + "\n")
     return True
 
 
@@ -320,9 +427,6 @@ def download_models(
         f"{IRODORI_DACVAE_ID}:{IRODORI_DACVAE_FILENAME}"
     )
 
-    # The pinned Irodori v4 training configuration explicitly references this
-    # ModernBERT commit. Ensuring it on every setup is cheap when cached and
-    # guarantees that offline training can resolve the exact revision.
     snapshot_download(
         repo_id=IRODORI_TEXT_ENCODER_ID,
         revision=IRODORI_TEXT_ENCODER_REVISION,
@@ -389,12 +493,7 @@ def download_models(
     sense_verified = False
     if sense_marker.exists():
         try:
-            sense_worker.call(
-                repo_root,
-                "verify",
-                {},
-                offline=True,
-            )
+            sense_worker.call(repo_root, "verify", {}, offline=True)
             sense_verified = True
         except Exception:
             sense_marker.unlink(missing_ok=True)
@@ -408,13 +507,10 @@ def download_models(
             {"online": True},
             offline=False,
         )
-        sense_marker.write_text("verified\n", encoding="utf-8")
+        atomic_write_text(sense_marker, "verified\n")
         downloaded.append(SENSE_MODEL_ID)
 
     if include_seed_vc:
-        # Seed-VC has several transitive pretrained assets. Loading the wrapper online once
-        # is the upstream-compatible way to materialize all of them; deep doctor verifies
-        # the exact same load path in offline mode afterwards.
         seed_marker = runtime / "seed-vc-models-ready"
         if seed_marker.exists():
             reused.append("Seed-VC-v2-default-checkpoints")
@@ -425,7 +521,7 @@ def download_models(
                 {"online": True},
                 offline=False,
             )
-            seed_marker.write_text("ready\n", encoding="utf-8")
+            atomic_write_text(seed_marker, "ready\n")
             downloaded.append("Seed-VC-v2-default-checkpoints")
 
     return {

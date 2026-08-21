@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from personavoice import irodori, setup_env
+from personavoice.environment_contract import environment_contract
 from personavoice.model_assets import (
     IRODORI_TEXT_ENCODER_ID,
     IRODORI_TEXT_ENCODER_REVISION,
@@ -78,7 +79,12 @@ def test_prepare_manifest_passes_local_codec_and_recorded_cpu_backend(
     runtime = tmp_path / ".runtime"
     runtime.mkdir()
     (runtime / "setup.json").write_text(
-        json.dumps({"irodori_backend": "cpu"}),
+        json.dumps(
+            {
+                "irodori_backend": "cpu",
+                "environment_contract": environment_contract(tmp_path),
+            }
+        ),
         encoding="utf-8",
     )
     codec = tmp_path / "models" / "irodori" / "dacvae" / "weights.pth"

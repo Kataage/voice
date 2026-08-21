@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from personavoice.environment_contract import require_current_environment
 from personavoice.process import run, run_json
 
 
@@ -23,6 +24,11 @@ class Worker:
         *,
         offline: bool = True,
     ) -> Any:
+        # Every model worker executes from an isolated `.venv` with --no-sync.
+        # Refuse to run it unless setup.json proves that environment was synced
+        # from the exact dependency declarations and audited locks in this checkout.
+        require_current_environment(repo_root)
+
         request_dir = repo_root / ".runtime" / "requests"
         request_dir.mkdir(parents=True, exist_ok=True)
         request_path = request_dir / f"{self.name}-{uuid4().hex}.json"
@@ -49,10 +55,19 @@ class Worker:
             request_path.unlink(missing_ok=True)
 
     def sync(self, repo_root: Path, *, extra: str | None = None) -> None:
-        args: list[str | Path] = ["uv", "sync", "--project", self.project_dir]
         lockfile = self.project_dir / "uv.lock"
-        if lockfile.exists():
-            args.append("--locked")
+        if not lockfile.is_file():
+            raise FileNotFoundError(
+                f"Audited worker lockfile is missing for {self.name}: {lockfile}. "
+                "Refusing an unlocked environment sync; restore the repository lockfile first."
+            )
+        args: list[str | Path] = [
+            "uv",
+            "sync",
+            "--project",
+            self.project_dir,
+            "--locked",
+        ]
         if extra:
             args.extend(["--extra", extra])
         run(args, cwd=repo_root)

@@ -21,22 +21,35 @@ from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.state import StateStore
 from personavoice.workers import local_model_env, worker
 
-TRAIN_SCHEMA_VERSION = 6
+TRAIN_SCHEMA_VERSION = 8
 _SEED_VC_STEP_RE = re.compile(r"_step_(\d+)\.pth$")
 _LFM_ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 
 
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _line_count(path: Path) -> int:
-    if not path.exists():
+    try:
+        if not path.is_file():
+            return 0
+        with path.open("r", encoding="utf-8") as handle:
+            return sum(1 for line in handle if line.strip())
+    except OSError:
         return 0
-    with path.open("r", encoding="utf-8") as handle:
-        return sum(1 for line in handle if line.strip())
 
 
 def _file_contract(path: Path) -> str:
-    if not path.is_file():
-        return "missing"
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        if not path.is_file():
+            return "missing"
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "unreadable"
 
 
 def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
@@ -53,13 +66,12 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "irodori_lock_sha256": _file_contract(repo_root / "locks" / "Irodori-TTS.uv.lock"),
         "lfm_lock_sha256": _file_contract(repo_root / "workers" / "lfm" / "uv.lock"),
         "seed_vc_lock_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "uv.lock"),
-        "training_code_sha256": _file_contract(
-            repo_root / "src" / "personavoice" / "training.py"
-        ),
-        "irodori_code_sha256": _file_contract(
-            repo_root / "src" / "personavoice" / "irodori.py"
-        ),
+        "training_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "training.py"),
+        "irodori_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "irodori.py"),
         "lfm_train_code_sha256": _file_contract(repo_root / "workers" / "lfm" / "train.py"),
+        "lfm_checkpoint_contract_code_sha256": _file_contract(
+            repo_root / "workers" / "lfm" / "checkpoint_contract.py"
+        ),
         "lfm_model_contract_code_sha256": _file_contract(
             repo_root / "workers" / "lfm" / "model_contract.py"
         ),
@@ -75,7 +87,7 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         paths.dataset / "lfm_train.jsonl",
         paths.dataset / "seed_vc" / "manifest.jsonl",
     ):
-        if path.exists():
+        if path.is_file():
             digest.update(path.name.encode())
             digest.update(path.read_bytes())
     digest.update(json.dumps(cfg.training.model_dump(mode="json"), sort_keys=True).encode())
@@ -96,8 +108,6 @@ def _invalidate_training_artifacts(paths: PersonaPaths) -> None:
 
 
 def _has_training_artifacts(paths: PersonaPaths) -> bool:
-    """Return True when derived training state exists without relying on directories alone."""
-
     markers = (
         paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors",
         paths.models / "irodori" / "lora" / "checkpoint_final",
@@ -114,19 +124,17 @@ def _has_training_artifacts(paths: PersonaPaths) -> bool:
 def _lfm_adapter_weight(output: Path) -> Path | None:
     for name in ("adapter_model.safetensors", "adapter_model.bin"):
         candidate = output / name
-        if candidate.is_file() and candidate.stat().st_size > 0:
+        if _nonempty_file(candidate):
             return candidate
     return None
 
 
 def _lfm_adapter_complete(output: Path) -> bool:
-    if not (output / "adapter_config.json").is_file() or _lfm_adapter_weight(output) is None:
+    if not _nonempty_file(output / "adapter_config.json") or _lfm_adapter_weight(output) is None:
         return False
     marker = output / _LFM_ADAPTER_REVISION_MARKER
-    if not marker.is_file():
-        return False
     try:
-        return marker.read_text(encoding="utf-8").strip() == LFM_MODEL_REVISION
+        return marker.is_file() and marker.read_text(encoding="utf-8").strip() == LFM_MODEL_REVISION
     except OSError:
         return False
 
@@ -140,19 +148,13 @@ def _latest_seed_vc_checkpoint(source_dir: Path) -> Path | None:
     candidates = [
         (step, path)
         for path in source_dir.glob("CFM_*_step_*.pth")
-        if (step := _seed_vc_checkpoint_step(path)) is not None
+        if _nonempty_file(path) and (step := _seed_vc_checkpoint_step(path)) is not None
     ]
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def _seed_vc_training_progress(vendor: Path, persona_name: str) -> tuple[int, Path | None]:
-    """Return cumulative completed CFM update steps across PersonaVoice stages.
-
-    Seed-VC's pinned trainer can initialize model weights from a checkpoint but
-    resets its local iteration counter to zero. Encoding the cumulative offset
-    in each run directory lets PersonaVoice resume only the remaining number of
-    updates without modifying the pinned upstream checkout.
-    """
+    """Return cumulative completed CFM update steps across PersonaVoice stages."""
 
     runs = vendor / "runs"
     prefix = f"personavoice_{persona_name}_stage_"
@@ -170,7 +172,7 @@ def _seed_vc_training_progress(vendor: Path, persona_name: str) -> tuple[int, Pa
         if checkpoint is None:
             continue
         local_step = _seed_vc_checkpoint_step(checkpoint)
-        if local_step is None:
+        if local_step is None or local_step <= 0:
             continue
         cumulative = int(suffix) + local_step
         if cumulative > best_step:
@@ -198,14 +200,13 @@ def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
             "or deliberately set training.lfm_lora: false."
         )
     base = repo_root / "models" / "lfm" / "base"
-    if not (base / "config.json").exists():
+    if not _nonempty_file(base / "config.json"):
         raise FileNotFoundError("LFM base model is missing. Run `persona setup --download-models`.")
     output = paths.models / "lfm" / "adapter"
     output.parent.mkdir(parents=True, exist_ok=True)
     if _lfm_adapter_complete(output):
         return str(output)
     project = repo_root / "workers" / "lfm"
-    env = local_model_env(repo_root)
     run(
         [
             "uv",
@@ -231,7 +232,7 @@ def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
             str(cfg.training.lfm_lora_alpha),
         ],
         cwd=repo_root,
-        env=env,
+        env=local_model_env(repo_root),
     )
     if not _lfm_adapter_complete(output):
         raise RuntimeError(
@@ -240,48 +241,20 @@ def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
     return str(output)
 
 
-def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str | None:
-    if not cfg.training.seed_vc_finetune:
-        return None
-    audio_dir = paths.dataset / "seed_vc" / "audio"
-    audio_files = list(audio_dir.glob("*.flac")) if audio_dir.exists() else []
-    if len(audio_files) < 2:
-        raise RuntimeError(
-            "training.seed_vc_finetune is enabled, but fewer than two target-speaker "
-            f"audio clips were exported ({len(audio_files)}). Add usable target audio, "
-            "rerun `persona prepare`, or deliberately set training.seed_vc_finetune: false."
-        )
-
-    health = worker(repo_root, "seed_vc").call(repo_root, "health", {"deep": False})
-    if not bool(health.get("cuda")):
-        raise RuntimeError(
-            "Seed-VC fine-tuning requires a CUDA-enabled Seed-VC worker. "
-            "Re-run `persona setup` on a supported NVIDIA system, or leave "
-            "training.seed_vc_finetune=false and use zero-shot reenactment."
-        )
-
-    vendor = repo_root / "vendor" / "seed-vc"
-    project = repo_root / "workers" / "seed_vc"
-    completed_steps, initial_checkpoint = _seed_vc_training_progress(vendor, cfg.name)
-    desired_steps = cfg.training.seed_vc_max_steps
-    if completed_steps > desired_steps:
-        raise RuntimeError(
-            "Existing staged Seed-VC progress exceeds the configured max steps: "
-            f"completed={completed_steps}, configured={desired_steps}. "
-            "Run `persona train --force` to restart with the current training configuration."
-        )
-
-    target = paths.models / "seed_vc" / "cfm.pth"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if completed_steps == desired_steps and initial_checkpoint is not None:
-        shutil.copy2(initial_checkpoint, target)
-        return str(target)
-
+def _run_seed_vc_stage(
+    repo_root: Path,
+    *,
+    project: Path,
+    vendor: Path,
+    audio_dir: Path,
+    persona_name: str,
+    completed_steps: int,
+    desired_steps: int,
+    initial_checkpoint: Path | None,
+) -> tuple[int, Path]:
     remaining_steps = desired_steps - completed_steps
-    stage_name = f"personavoice_{cfg.name}_stage_{completed_steps:010d}"
+    stage_name = f"personavoice_{persona_name}_stage_{completed_steps:010d}"
     stage_dir = vendor / "runs" / stage_name
-    # A directory without a usable checkpoint contains no recoverable progress;
-    # clear it so upstream auto-discovery cannot pick stale/partial files.
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
 
@@ -320,18 +293,75 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
 
     checkpoint = _latest_seed_vc_checkpoint(stage_dir)
     if checkpoint is None:
-        raise RuntimeError("Seed-VC fine-tuning completed without a CFM checkpoint")
-    local_steps = _seed_vc_checkpoint_step(checkpoint)
-    if local_steps is None:
-        raise RuntimeError(f"Seed-VC produced an unrecognized checkpoint name: {checkpoint.name}")
-    total_steps = completed_steps + local_steps
-    if total_steps != desired_steps:
         raise RuntimeError(
-            "Seed-VC fine-tuning did not finish at the configured cumulative step count: "
-            f"completed={total_steps}, expected={desired_steps}. Retry normally to continue "
-            "from the latest staged checkpoint, or use `persona train --force` to restart."
+            "Seed-VC fine-tuning stage completed without a non-empty CFM checkpoint: "
+            f"stage={stage_name}"
         )
+    local_steps = _seed_vc_checkpoint_step(checkpoint)
+    if local_steps is None or local_steps <= 0:
+        raise RuntimeError(f"Seed-VC produced an invalid checkpoint step: {checkpoint.name}")
+    total_steps = completed_steps + local_steps
+    if total_steps <= completed_steps:
+        raise RuntimeError(
+            "Seed-VC staged fine-tuning made no forward progress; refusing an automatic retry loop"
+        )
+    if total_steps > desired_steps:
+        raise RuntimeError(
+            "Seed-VC staged fine-tuning exceeded the requested cumulative step count: "
+            f"completed={total_steps}, expected<={desired_steps}"
+        )
+    return total_steps, checkpoint
+
+
+def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str | None:
+    if not cfg.training.seed_vc_finetune:
+        return None
+    audio_dir = paths.dataset / "seed_vc" / "audio"
+    audio_files = [path for path in audio_dir.glob("*.flac") if _nonempty_file(path)] if audio_dir.exists() else []
+    if len(audio_files) < 2:
+        raise RuntimeError(
+            "training.seed_vc_finetune is enabled, but fewer than two valid target-speaker "
+            f"audio clips were exported ({len(audio_files)}). Add usable target audio, "
+            "rerun `persona prepare`, or deliberately set training.seed_vc_finetune: false."
+        )
+
+    health = worker(repo_root, "seed_vc").call(repo_root, "health", {"deep": False})
+    if not bool(health.get("ok", True)) or not bool(health.get("cuda")):
+        raise RuntimeError(
+            "Seed-VC fine-tuning requires a healthy CUDA-enabled Seed-VC worker. "
+            "Re-run `persona setup` on a supported NVIDIA system, inspect `persona doctor --deep`, "
+            "or leave training.seed_vc_finetune=false and use zero-shot reenactment."
+        )
+
+    vendor = repo_root / "vendor" / "seed-vc"
+    project = repo_root / "workers" / "seed_vc"
+    completed_steps, checkpoint = _seed_vc_training_progress(vendor, cfg.name)
+    desired_steps = cfg.training.seed_vc_max_steps
+    if completed_steps > desired_steps:
+        raise RuntimeError(
+            "Existing staged Seed-VC progress exceeds the configured max steps: "
+            f"completed={completed_steps}, configured={desired_steps}. "
+            "Run `persona train --force` to restart with the current training configuration."
+        )
+
+    target = paths.models / "seed_vc" / "cfm.pth"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    while completed_steps < desired_steps:
+        completed_steps, checkpoint = _run_seed_vc_stage(
+            repo_root,
+            project=project,
+            vendor=vendor,
+            audio_dir=audio_dir,
+            persona_name=cfg.name,
+            completed_steps=completed_steps,
+            desired_steps=desired_steps,
+            initial_checkpoint=checkpoint,
+        )
+    if checkpoint is None or not _nonempty_file(checkpoint):
+        raise RuntimeError("Seed-VC reached the requested step count without a usable CFM checkpoint")
     shutil.copy2(checkpoint, target)
+    if not _nonempty_file(target):
+        raise RuntimeError("Seed-VC final CFM checkpoint copy is missing or empty")
     return str(target)
 
 
@@ -349,7 +379,7 @@ def train_persona(
     current_prepare_fingerprint = _prepare_fingerprint(paths, cfg)
     if not store.is_complete("prepare", current_prepare_fingerprint):
         raise RuntimeError(
-            "Prepared dataset is missing or stale for the current raw/identity/config inputs. "
+            "Prepared dataset is missing, stale, or incomplete for the current inputs. "
             "Run `persona prepare` before training."
         )
 
@@ -376,7 +406,7 @@ def train_persona(
         base_checkpoint(repo_root)
         manifest = paths.dataset / "irodori_manifest.jsonl"
         latents = paths.cache / "irodori_latents"
-        if not manifest.exists():
+        if not _nonempty_file(manifest):
             prepare_manifest(repo_root, source, manifest, latents)
         irodori = train_irodori(
             repo_root,

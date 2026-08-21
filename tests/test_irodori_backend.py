@@ -4,16 +4,29 @@ import json
 from pathlib import Path
 
 from personavoice import hardware, irodori
+from personavoice.environment_contract import environment_contract
 
 
-def test_recorded_irodori_backend_overrides_hardware_auto_detection(tmp_path: Path, monkeypatch):
+def test_recorded_irodori_backend_is_used_without_runtime_autodetection(
+    tmp_path: Path,
+    monkeypatch,
+):
     runtime = tmp_path / ".runtime"
     runtime.mkdir()
     (runtime / "setup.json").write_text(
-        json.dumps({"irodori_backend": "cpu"}),
+        json.dumps(
+            {
+                "irodori_backend": "cpu",
+                "environment_contract": environment_contract(tmp_path),
+            }
+        ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(irodori, "detect_irodori_backend", lambda: "cu128")
+
+    def fail_if_autodetected():
+        raise AssertionError("runtime must not re-detect the Irodori backend")
+
+    monkeypatch.setattr(hardware, "detect_irodori_backend", fail_if_autodetected)
     assert irodori.configured_backend(tmp_path) == "cpu"
     assert irodori.backend_device("cpu") == "cpu"
 

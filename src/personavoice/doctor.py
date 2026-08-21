@@ -5,6 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from personavoice.environment_contract import environment_contract_status
 from personavoice.hardware import hardware_report
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
@@ -32,7 +33,8 @@ def _setup_state(repo_root: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -40,7 +42,8 @@ def _setup_state(repo_root: Path) -> dict:
 def _expected_worker_backend(name: str, setup: dict) -> str | None:
     if name == "asr":
         return "cuda" if setup.get("irodori_backend") == "cu128" else "cpu"
-    value = (setup.get("worker_backends") or {}).get(name)
+    backends = setup.get("worker_backends")
+    value = backends.get(name) if isinstance(backends, dict) else None
     return None if value is None else str(value)
 
 
@@ -65,11 +68,7 @@ def _vendor_integrity(repo_root: Path, relative: str, expected_revision: str) ->
             "error": "vendor checkout is missing or is not a git repository",
         }
     try:
-        head = run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=directory,
-            capture=True,
-        ).stdout.strip()
+        head = run(["git", "rev-parse", "HEAD"], cwd=directory, capture=True).stdout.strip()
         status = run(
             ["git", "status", "--porcelain"],
             cwd=directory,
@@ -95,6 +94,13 @@ def _read_revision(path: Path) -> str | None:
         return path.read_text(encoding="utf-8").strip() if path.is_file() else None
     except OSError:
         return None
+
+
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
@@ -139,39 +145,39 @@ def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
         "irodori_sha256": None,
         "dacvae_sha256": None,
     }
+    errors = []
     if recorded != expected_setup:
-        result["ok"] = False
-        result["error"] = "setup model asset pins do not match this PersonaVoice revision"
+        errors.append("setup model asset pins do not match this PersonaVoice revision")
     if recorded_prepare != expected_prepare:
-        result["ok"] = False
-        result["error"] = "setup preparation asset pins do not match this PersonaVoice revision"
-    if not irodori.is_file() or not dacvae.is_file():
-        result["ok"] = False
-        result["error"] = "Irodori base checkpoint or DACVAE checkpoint is missing"
+        errors.append("setup preparation asset pins do not match this PersonaVoice revision")
+    if not _nonempty_file(irodori) or not _nonempty_file(dacvae):
+        errors.append("Irodori base checkpoint or DACVAE checkpoint is missing/empty")
     if lfm_revision != LFM_MODEL_REVISION:
-        result["ok"] = False
-        result["error"] = "LFM materialized revision does not match the audited revision"
+        errors.append("LFM materialized revision does not match the audited revision")
     if asr_revision != ASR_MODEL_REVISION:
-        result["ok"] = False
-        result["error"] = "ASR materialized revision does not match the audited revision"
+        errors.append("ASR materialized revision does not match the audited revision")
     if pyannote_revision != PYANNOTE_MODEL_REVISION:
-        result["ok"] = False
-        result["error"] = "pyannote materialized revision does not match the audited revision"
+        errors.append("pyannote materialized revision does not match the audited revision")
     if sense_marker != "verified":
-        result["ok"] = False
-        result["error"] = "SenseVoice assets have not been verified by the current setup"
+        errors.append("SenseVoice assets have not been verified by the current setup")
 
-    if deep and irodori.is_file() and dacvae.is_file():
-        irodori_sha = sha256_file(irodori)
-        dacvae_sha = sha256_file(dacvae)
-        result["irodori_sha256"] = irodori_sha
-        result["dacvae_sha256"] = dacvae_sha
-        if irodori_sha != IRODORI_MODEL_SHA256:
-            result["ok"] = False
-            result["error"] = "Irodori checkpoint checksum mismatch"
-        if dacvae_sha != IRODORI_DACVAE_SHA256:
-            result["ok"] = False
-            result["error"] = "Irodori DACVAE checksum mismatch"
+    if deep and _nonempty_file(irodori) and _nonempty_file(dacvae):
+        try:
+            irodori_sha = sha256_file(irodori)
+            dacvae_sha = sha256_file(dacvae)
+        except OSError as exc:
+            errors.append(f"model checksum read failed: {exc}")
+        else:
+            result["irodori_sha256"] = irodori_sha
+            result["dacvae_sha256"] = dacvae_sha
+            if irodori_sha != IRODORI_MODEL_SHA256:
+                errors.append("Irodori checkpoint checksum mismatch")
+            if dacvae_sha != IRODORI_DACVAE_SHA256:
+                errors.append("Irodori DACVAE checksum mismatch")
+    if errors:
+        result["ok"] = False
+        result["errors"] = errors
+        result["error"] = errors[0]
     return result
 
 
@@ -179,14 +185,16 @@ def _irodori_health(repo_root: Path, setup: dict) -> dict:
     vendor = repo_root / "vendor" / "Irodori-TTS"
     checkpoint = repo_root / "models" / "irodori" / "v4.1-small" / IRODORI_MODEL_FILENAME
     codec = repo_root / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
-    if not (vendor / "infer.py").exists():
+    backend = setup.get("irodori_backend")
+    if backend is None:
+        return {"ok": False, "error": "Irodori backend is not recorded; run `persona setup`"}
+    if not (vendor / "infer.py").is_file():
         return {"ok": False, "error": "Irodori vendor checkout is missing"}
-    if not checkpoint.exists():
-        return {"ok": False, "error": "Irodori base checkpoint is missing"}
-    if not codec.exists():
-        return {"ok": False, "error": "Irodori DACVAE checkpoint is missing"}
+    if not _nonempty_file(checkpoint):
+        return {"ok": False, "error": "Irodori base checkpoint is missing/empty"}
+    if not _nonempty_file(codec):
+        return {"ok": False, "error": "Irodori DACVAE checkpoint is missing/empty"}
 
-    backend = setup.get("irodori_backend") or hardware_report().get("irodori_backend")
     device = _irodori_device(str(backend))
     output_dir = repo_root / ".runtime" / "doctor"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -231,14 +239,9 @@ def _irodori_health(repo_root: Path, setup: dict) -> dict:
             env=local_model_env(repo_root, offline=True),
             capture=True,
         )
-        if not output.exists() or output.stat().st_size <= 44:
+        if not _nonempty_file(output) or output.stat().st_size <= 44:
             return {"ok": False, "device": device, "error": "Irodori produced no valid WAV"}
-        return {
-            "ok": True,
-            "device": device,
-            "model_loaded": True,
-            "smoke_inference": True,
-        }
+        return {"ok": True, "device": device, "model_loaded": True, "smoke_inference": True}
     finally:
         output.unlink(missing_ok=True)
 
@@ -252,24 +255,23 @@ def report(
     required = {name: shutil.which(name) for name in ("uv", "git", "ffmpeg", "ffprobe")}
     runtime = repo_root / ".runtime"
     models = {
-        "irodori": (repo_root / "models/irodori/v4.1-small/model.safetensors").exists(),
-        "irodori_dacvae": (repo_root / "models/irodori/dacvae/weights.pth").exists(),
-        "lfm": (repo_root / "models/lfm/base/config.json").exists(),
-        "asr": (repo_root / "models/asr/large-v3/model.bin").exists(),
-        "pyannote": (repo_root / "models/pyannote/community-1/config.yaml").exists(),
-        "sense": (runtime / "sense-model-ready").exists(),
-        "seed_vc_models": (runtime / "seed-vc-models-ready").exists(),
-        "seed_vc_vendor": (repo_root / "vendor/seed-vc/inference_v2.py").exists(),
-        "irodori_vendor": (repo_root / "vendor/Irodori-TTS/infer.py").exists(),
+        "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
+        "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
+        "lfm": _nonempty_file(repo_root / "models/lfm/base/config.json"),
+        "asr": _nonempty_file(repo_root / "models/asr/large-v3/model.bin"),
+        "pyannote": _nonempty_file(repo_root / "models/pyannote/community-1/config.yaml"),
+        "sense": _nonempty_file(runtime / "sense-model-ready"),
+        "seed_vc_models": _nonempty_file(runtime / "seed-vc-models-ready"),
+        "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
+        "irodori_vendor": _nonempty_file(repo_root / "vendor/Irodori-TTS/infer.py"),
     }
     workers = {
-        name: (repo_root / "workers" / name / ".venv").exists()
+        name: (repo_root / "workers" / name / ".venv").is_dir()
         for name in WORKER_NAMES
     }
-    active_workers = tuple(
-        name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc"
-    )
+    active_workers = tuple(name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc")
     setup = _setup_state(repo_root)
+    environment = environment_contract_status(repo_root, setup.get("environment_contract"))
     model_assets = _model_asset_integrity(repo_root, setup, deep=deep)
     vendor_integrity = {
         "irodori": _vendor_integrity(repo_root, "Irodori-TTS", IRODORI_REVISION),
@@ -305,18 +307,15 @@ def report(
         try:
             worker_health["irodori"] = _irodori_health(repo_root, setup)
         except Exception as exc:
-            worker_health["irodori"] = {
-                "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+            worker_health["irodori"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     lockfiles = {
-        "root": (repo_root / "uv.lock").exists(),
+        "root": (repo_root / "uv.lock").is_file(),
         **{
-            name: (repo_root / "workers" / name / "uv.lock").exists()
+            name: (repo_root / "workers" / name / "uv.lock").is_file()
             for name in WORKER_NAMES
         },
-        "irodori_managed": (repo_root / "locks" / "Irodori-TTS.uv.lock").exists(),
+        "irodori_managed": (repo_root / "locks" / "Irodori-TTS.uv.lock").is_file(),
     }
     required_model_keys = {
         "irodori",
@@ -337,13 +336,13 @@ def report(
 
     locks_ready = all(lockfiles[key] for key in required_lock_keys)
     vendors_ready = all(vendor_integrity[key].get("ok") for key in required_vendor_keys)
+    reproducible = locks_ready and bool(model_assets.get("ok")) and bool(environment.get("ok"))
     base_ready = (
         all(required.values())
         and bool(setup)
-        and bool(model_assets.get("ok"))
+        and reproducible
         and all(models[key] for key in required_model_keys)
         and all(workers[key] for key in required_worker_keys)
-        and locks_ready
         and vendors_ready
     )
     deep_ready = all(bool(value.get("ok")) for value in worker_health.values()) if deep else True
@@ -353,13 +352,14 @@ def report(
         "commands_ok": all(required.values()),
         "hardware": hardware_report(),
         "setup": setup,
+        "environment_contract": environment,
         "models": models,
         "model_asset_integrity": model_assets,
         "workers": workers,
         "worker_health": worker_health if deep else None,
         "vendor_integrity": vendor_integrity,
         "lockfiles": lockfiles,
-        "reproducible_environment": locks_ready and bool(model_assets.get("ok")),
+        "reproducible_environment": reproducible,
         "ready_offline": base_ready and deep_ready,
         "seed_vc_required": require_seed_vc,
     }
