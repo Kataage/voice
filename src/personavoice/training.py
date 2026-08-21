@@ -10,7 +10,7 @@ from personavoice.irodori import base_checkpoint, prepare_manifest, train_irodor
 from personavoice.process import run
 from personavoice.project import PersonaPaths
 from personavoice.state import StateStore
-from personavoice.workers import local_model_env
+from personavoice.workers import local_model_env, worker
 
 TRAIN_SCHEMA_VERSION = 2
 
@@ -102,6 +102,15 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
     audio_files = list(audio_dir.glob("*.flac")) if audio_dir.exists() else []
     if len(audio_files) < 2:
         return None
+
+    health = worker(repo_root, "seed_vc").call(repo_root, "health", {"deep": False})
+    if not bool(health.get("cuda")):
+        raise RuntimeError(
+            "Seed-VC fine-tuning requires a CUDA-enabled Seed-VC worker. "
+            "Re-run `persona setup` on a supported NVIDIA system, or leave "
+            "training.seed_vc_finetune=false and use zero-shot reenactment."
+        )
+
     vendor = repo_root / "vendor" / "seed-vc"
     project = repo_root / "workers" / "seed_vc"
     run_name = f"personavoice_{cfg.name}"
