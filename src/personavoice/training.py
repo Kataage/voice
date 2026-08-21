@@ -7,6 +7,7 @@ from pathlib import Path
 
 from personavoice.config import PersonaConfig
 from personavoice.irodori import base_checkpoint, prepare_manifest, train_irodori
+from personavoice.pipeline import _prepare_fingerprint
 from personavoice.process import run
 from personavoice.project import PersonaPaths
 from personavoice.state import StateStore
@@ -166,13 +167,21 @@ def train_persona(
 ) -> dict:
     if not cfg.consent.authorized:
         raise PermissionError("Training is blocked because consent.authorized is not true.")
+
+    store = StateStore(paths.state)
+    current_prepare_fingerprint = _prepare_fingerprint(paths, cfg)
+    if not store.is_complete("prepare", current_prepare_fingerprint):
+        raise RuntimeError(
+            "Prepared dataset is missing or stale for the current raw/identity/config inputs. "
+            "Run `persona prepare` before training."
+        )
+
     source = paths.dataset / "irodori_source.jsonl"
     if _line_count(source) < 2:
         raise RuntimeError(
             "Prepared Irodori dataset is missing or too small. Run `persona prepare` first."
         )
 
-    store = StateStore(paths.state)
     fingerprint = _fingerprint(paths, cfg)
     previous = store.stage("train")
     if not force and store.is_complete("train", fingerprint):
