@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from personavoice import irodori
+from personavoice.dataset import replace_utterances
 from personavoice.model_assets import LFM_MODEL_REVISION
 from personavoice.state import PREPARE_CACHE_POLICY_VERSION, StateStore
 from personavoice.workers import Worker
@@ -39,6 +40,33 @@ def _state(path: Path, *, stage: str, fingerprint: str, result: dict) -> StateSt
         encoding="utf-8",
     )
     return StateStore(path)
+
+
+def _write_master(path: Path, clip: Path) -> None:
+    replace_utterances(
+        path,
+        [
+            {
+                "id": "source_000001",
+                "source_id": "source",
+                "source_path": "source.wav",
+                "start": 0.0,
+                "end": 1.0,
+                "speaker": "SPEAKER_00",
+                "target": True,
+                "speaker_similarity": 0.9,
+                "speaker_coverage": 1.0,
+                "overlap_ratio": 0.0,
+                "text": "a",
+                "text_annotated": "a",
+                "emotion": "NEUTRAL",
+                "events": [],
+                "caption": "",
+                "audio_path": str(clip.resolve()),
+                "quality": 1.0,
+            }
+        ],
+    )
 
 
 def test_worker_sync_refuses_missing_lockfile(tmp_path: Path):
@@ -86,8 +114,8 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
 
     _write(dataset / "source_inventory.json", b"[]")
     _write(dataset / "master.json", b"[]")
-    _write(dataset / "master.sqlite3", b"sqlite")
     clip = _write(dataset / "clips" / "u.flac", b"audio")
+    _write_master(dataset / "master.sqlite3", clip)
     seed_clip = _write(dataset / "seed_vc" / "audio" / "u.flac", b"audio")
     (dataset / "irodori_source.jsonl").write_text(
         json.dumps({"audio": str(clip.resolve()), "text": "a"}) + "\n",
@@ -107,6 +135,13 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
         encoding="utf-8",
     )
     result = {
+        "prepare_schema": 4,
+        "sources": 1,
+        "skipped_sources": 0,
+        "utterances": 1,
+        "target_utterances": 1,
+        "usable_tts_utterances": 1,
+        "usable_seconds": 1.0,
         "master_db": str((dataset / "master.sqlite3").resolve()),
         "irodori_examples": 1,
         "lfm_examples": 1,
@@ -134,6 +169,8 @@ def test_train_cache_hit_requires_complete_adapters(tmp_path: Path):
     _write(lfm / "adapter_model.safetensors", b"w")
     (lfm / ".personavoice-base-revision").write_text(LFM_MODEL_REVISION + "\n", encoding="utf-8")
     result = {
+        "train_schema": 8,
+        "fingerprint": fingerprint,
         "irodori": {
             "base": str(base.resolve()),
             "speaker_embedding": str(speaker.resolve()),
@@ -146,4 +183,19 @@ def test_train_cache_hit_requires_complete_adapters(tmp_path: Path):
     assert store.is_complete("train", fingerprint)
 
     irodori_weight.unlink()
+    assert not store.is_complete("train", fingerprint)
+
+
+def test_train_cache_hit_rejects_logically_incomplete_result(tmp_path: Path):
+    persona = tmp_path / "personas" / "alice"
+    fingerprint = "train-fingerprint"
+    base = _write(tmp_path / "base.safetensors", b"base")
+    result = {
+        "train_schema": 8,
+        "fingerprint": fingerprint,
+        "irodori": {"base": str(base.resolve())},
+        "lfm_adapter": None,
+        # seed_vc_cfm intentionally missing: a truncated logical result must not cache-hit.
+    }
+    store = _state(persona / "state.json", stage="train", fingerprint=fingerprint, result=result)
     assert not store.is_complete("train", fingerprint)

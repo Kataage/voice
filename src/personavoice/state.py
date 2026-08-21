@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from personavoice.atomic import atomic_write_json
+from personavoice.dataset import SCHEMA_VERSION as DATASET_SCHEMA_VERSION
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     LFM_MODEL_REVISION,
@@ -18,6 +20,9 @@ from personavoice.model_assets import (
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
 )
+
+PREPARE_RESULT_SCHEMA = 4
+TRAIN_RESULT_SCHEMA = 8
 
 
 def _repo_root() -> Path:
@@ -38,7 +43,9 @@ def _prepare_cache_policy() -> str:
 
     repo = _repo_root()
     contract = {
-        "schema": 7,
+        "schema": 10,
+        "prepare_result_schema": PREPARE_RESULT_SCHEMA,
+        "dataset_schema": DATASET_SCHEMA_VERSION,
         "asr_revision": ASR_MODEL_REVISION,
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
@@ -61,7 +68,7 @@ def _prepare_cache_policy() -> str:
         "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"7-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"10-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
@@ -139,14 +146,74 @@ def _jsonl_contract(path: Path, *, path_key: str | None = None) -> int | None:
     return count
 
 
+def _sqlite_contract(path: Path, *, expected_utterances: int) -> bool:
+    """Validate the lightweight canonical dataset contract without a full DB scan."""
+
+    if not _nonempty_file(path) or expected_utterances < 0:
+        return False
+    try:
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            schema_row = connection.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()
+            count_row = connection.execute("SELECT COUNT(*) FROM utterances").fetchone()
+        finally:
+            connection.close()
+    except (sqlite3.DatabaseError, OSError):
+        return False
+    if schema_row is None or count_row is None:
+        return False
+    return str(schema_row[0]) == str(DATASET_SCHEMA_VERSION) and int(count_row[0]) == expected_utterances
+
+
 def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     if not isinstance(result, dict):
         return False
+    required_keys = {
+        "prepare_schema",
+        "sources",
+        "skipped_sources",
+        "utterances",
+        "target_utterances",
+        "usable_tts_utterances",
+        "usable_seconds",
+        "references",
+        "irodori_examples",
+        "lfm_examples",
+        "seed_vc_examples",
+        "master_db",
+    }
+    if not required_keys.issubset(result):
+        return False
+    if _safe_int(result.get("prepare_schema")) != PREPARE_RESULT_SCHEMA:
+        return False
+    numeric_values: dict[str, int] = {}
+    for key in (
+        "sources",
+        "skipped_sources",
+        "utterances",
+        "target_utterances",
+        "usable_tts_utterances",
+        "references",
+        "irodori_examples",
+        "lfm_examples",
+        "seed_vc_examples",
+    ):
+        value = _safe_int(result.get(key))
+        if value is None or value < 0:
+            return False
+        numeric_values[key] = value
+    if numeric_values["usable_tts_utterances"] == 0:
+        return False
+
     dataset = persona_root / "dataset"
     if not all(
         _nonempty_file(path)
         for path in (
             dataset / "source_inventory.json",
+            dataset / "skipped_sources.json",
             dataset / "master.json",
             dataset / "master.sqlite3",
         )
@@ -156,10 +223,13 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     recorded_master = result.get("master_db")
     if not isinstance(recorded_master, str) or not recorded_master:
         return False
+    master_db = dataset / "master.sqlite3"
     try:
-        if Path(recorded_master).resolve() != (dataset / "master.sqlite3").resolve():
+        if Path(recorded_master).resolve() != master_db.resolve():
             return False
     except OSError:
+        return False
+    if not _sqlite_contract(master_db, expected_utterances=numeric_values["utterances"]):
         return False
 
     raw_contracts = (
@@ -173,6 +243,13 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         if expected is None or expected < 0 or actual is None or actual != expected:
             return False
 
+    try:
+        skipped = json.loads((dataset / "skipped_sources.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(skipped, list) or len(skipped) != numeric_values["skipped_sources"]:
+        return False
+
     bank = persona_root / "references" / "bank.json"
     try:
         bank_value = json.loads(bank.read_text(encoding="utf-8"))
@@ -180,9 +257,8 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         return False
     if not isinstance(bank_value, dict) or not isinstance(bank_value.get("files"), list):
         return False
-    expected_refs = _safe_int(result.get("references"))
     reference_files = bank_value["files"]
-    if expected_refs is None or expected_refs < 0 or len(reference_files) != expected_refs:
+    if len(reference_files) != numeric_values["references"]:
         return False
     for raw_path in reference_files:
         if not isinstance(raw_path, str) or not raw_path or not _nonempty_file(Path(raw_path)):
@@ -190,11 +266,17 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     return True
 
 
-def _train_artifacts_complete(result: Any) -> bool:
+def _train_artifacts_complete(result: Any, *, expected_fingerprint: str) -> bool:
     if not isinstance(result, dict):
         return False
+    if not {"train_schema", "fingerprint", "irodori", "lfm_adapter", "seed_vc_cfm"}.issubset(result):
+        return False
+    if _safe_int(result.get("train_schema")) != TRAIN_RESULT_SCHEMA:
+        return False
+    if result.get("fingerprint") != expected_fingerprint:
+        return False
     irodori = result.get("irodori")
-    if not isinstance(irodori, dict):
+    if not isinstance(irodori, dict) or "base" not in irodori:
         return False
     base = irodori.get("base")
     if not isinstance(base, str) or not base or not _nonempty_file(Path(base)):
@@ -209,12 +291,12 @@ def _train_artifacts_complete(result: Any) -> bool:
         not isinstance(lora, str) or not lora or not _irodori_lora_complete(Path(lora))
     ):
         return False
-    lfm = result.get("lfm_adapter")
+    lfm = result["lfm_adapter"]
     if lfm is not None and (
         not isinstance(lfm, str) or not lfm or not _lfm_adapter_complete(Path(lfm))
     ):
         return False
-    seed = result.get("seed_vc_cfm")
+    seed = result["seed_vc_cfm"]
     return seed is None or (
         isinstance(seed, str) and bool(seed) and _nonempty_file(Path(seed))
     )
@@ -243,7 +325,7 @@ class StateStore:
         if name == "prepare":
             return _prepare_artifacts_complete(self.path.parent, stage.get("result"))
         if name == "train":
-            return _train_artifacts_complete(stage.get("result"))
+            return _train_artifacts_complete(stage.get("result"), expected_fingerprint=fingerprint)
         return True
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
@@ -263,6 +345,7 @@ class StateStore:
     def _invalidate_prepare_derived(self) -> None:
         persona_root = self.path.parent
         for relative in (
+            Path("cache/audio"),
             Path("cache/asr"),
             Path("cache/diarization"),
             Path("cache/identity"),

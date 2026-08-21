@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from personavoice.atomic import atomic_write_json
 from personavoice.config import ConsentConfig, PersonaConfig
 
 PERSONA_DIRS = (
@@ -97,10 +97,7 @@ def init_persona(repo_root: Path, name: str, *, authorized: bool = False) -> Per
             "updated_at": utc_now(),
             "stages": {},
         }
-        (root / "state.json").write_text(
-            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        atomic_write_json(root / "state.json", state)
     return PersonaPaths(root=root)
 
 
