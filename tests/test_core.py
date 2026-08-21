@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from personavoice import inference
+from personavoice import inference, setup_env
 from personavoice.api import ui
 from personavoice.captions import annotate_text, build_caption, normalize_events
 from personavoice.config import PersonaConfig
@@ -91,9 +91,8 @@ def test_prepare_force_after_complete_invalidates_unsafe_subcaches(tmp_path: Pat
 def test_prepare_failed_resume_keeps_expensive_subcaches(tmp_path: Path):
     paths = init_persona(tmp_path, "alice", authorized=True)
     store = StateStore(paths.state)
-    with pytest.raises(RuntimeError):
-        with store.running("prepare", "same"):
-            raise RuntimeError("interrupted")
+    with pytest.raises(RuntimeError), store.running("prepare", "same"):
+        raise RuntimeError("interrupted")
     stale = _stale_prepare_paths(paths)
     _write_stale(stale)
     with store.running("prepare", "same"):
@@ -241,6 +240,36 @@ def test_worker_pyprojects_pin_pytorch_indexes():
         assert "explicit = true" in text
         assert index in text
         assert "pytorch-cpu" in text
+
+
+@pytest.mark.parametrize("original", [None, b"upstream-lock"])
+def test_irodori_locked_sync_restores_vendor_checkout(
+    tmp_path: Path,
+    monkeypatch,
+    original: bytes | None,
+):
+    repo_root = tmp_path
+    vendor = repo_root / "vendor" / "Irodori-TTS"
+    vendor.mkdir(parents=True)
+    managed = repo_root / "locks" / "Irodori-TTS.uv.lock"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"audited-lock")
+    vendor_lock = vendor / "uv.lock"
+    if original is not None:
+        vendor_lock.write_bytes(original)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append([str(value) for value in args])
+
+    monkeypatch.setattr(setup_env, "run", fake_run)
+    setup_env._install_irodori(repo_root, vendor, "cpu")
+
+    assert calls and "--locked" in calls[0]
+    if original is None:
+        assert not vendor_lock.exists()
+    else:
+        assert vendor_lock.read_bytes() == original
 
 
 def test_best_irodori_adapter_prefers_lowest_validation_loss(tmp_path: Path):
