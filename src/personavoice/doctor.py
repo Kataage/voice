@@ -15,6 +15,10 @@ from personavoice.model_assets import (
     IRODORI_MODEL_SHA256,
     IRODORI_TEXT_ENCODER_REVISION,
     LFM_MODEL_REVISION,
+    PYANNOTE_MODEL_REVISION,
+    SENSE_MODEL_CMVN_SHA256,
+    SENSE_MODEL_TOKENIZER_SHA256,
+    SENSE_MODEL_WEIGHT_SHA256,
 )
 from personavoice.process import run
 from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_REVISION
@@ -101,25 +105,46 @@ def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
         "lfm_revision": LFM_MODEL_REVISION,
         "asr_revision": ASR_MODEL_REVISION,
     }
+    expected_prepare = {
+        "pyannote_revision": PYANNOTE_MODEL_REVISION,
+        "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
+        "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
+        "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
+    }
     recorded = setup.get("model_assets") if isinstance(setup.get("model_assets"), dict) else {}
+    recorded_prepare = (
+        setup.get("prepare_assets") if isinstance(setup.get("prepare_assets"), dict) else {}
+    )
     irodori = repo_root / "models" / "irodori" / "v4.1-small" / IRODORI_MODEL_FILENAME
     dacvae = repo_root / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
     lfm_revision = _read_revision(repo_root / "models" / "lfm" / "base" / REVISION_MARKER)
     asr_revision = _read_revision(repo_root / "models" / "asr" / "large-v3" / REVISION_MARKER)
+    pyannote_revision = _read_revision(
+        repo_root / "models" / "pyannote" / "community-1" / REVISION_MARKER
+    )
+    sense_marker = _read_revision(repo_root / ".runtime" / "sense-model-ready")
 
     result = {
         "ok": True,
         "setup_matches": recorded == expected_setup,
+        "prepare_setup_matches": recorded_prepare == expected_prepare,
         "expected": expected_setup,
         "recorded": recorded,
+        "expected_prepare": expected_prepare,
+        "recorded_prepare": recorded_prepare,
         "lfm_revision": lfm_revision,
         "asr_revision": asr_revision,
+        "pyannote_revision": pyannote_revision,
+        "sense_verified_marker": sense_marker,
         "irodori_sha256": None,
         "dacvae_sha256": None,
     }
     if recorded != expected_setup:
         result["ok"] = False
         result["error"] = "setup model asset pins do not match this PersonaVoice revision"
+    if recorded_prepare != expected_prepare:
+        result["ok"] = False
+        result["error"] = "setup preparation asset pins do not match this PersonaVoice revision"
     if not irodori.is_file() or not dacvae.is_file():
         result["ok"] = False
         result["error"] = "Irodori base checkpoint or DACVAE checkpoint is missing"
@@ -129,6 +154,12 @@ def _model_asset_integrity(repo_root: Path, setup: dict, *, deep: bool) -> dict:
     if asr_revision != ASR_MODEL_REVISION:
         result["ok"] = False
         result["error"] = "ASR materialized revision does not match the audited revision"
+    if pyannote_revision != PYANNOTE_MODEL_REVISION:
+        result["ok"] = False
+        result["error"] = "pyannote materialized revision does not match the audited revision"
+    if sense_marker != "verified":
+        result["ok"] = False
+        result["error"] = "SenseVoice assets have not been verified by the current setup"
 
     if deep and irodori.is_file() and dacvae.is_file():
         irodori_sha = sha256_file(irodori)
