@@ -3,10 +3,12 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from personavoice import dataset
+from personavoice import dataset, training
+from personavoice.model_assets import LFM_MODEL_REVISION
 
 
 def _utterance(
@@ -93,6 +95,8 @@ def test_lfm_lora_contract_targets_attention_only():
     contract = _load_model_contract()
 
     class FakeModel:
+        config = SimpleNamespace(layer_types=["full_attention", "conv"])
+
         def named_modules(self):
             names = [
                 "model.layers.0.self_attn.q_proj",
@@ -122,6 +126,8 @@ def test_lfm_lora_contract_fails_if_projection_disappears():
     contract = _load_model_contract()
 
     class BrokenModel:
+        config = SimpleNamespace(layer_types=["full_attention"])
+
         def named_modules(self):
             return [
                 ("model.layers.0.self_attn.q_proj", object()),
@@ -131,6 +137,40 @@ def test_lfm_lora_contract_fails_if_projection_disappears():
 
     with pytest.raises(RuntimeError, match="missing=.*out_proj"):
         contract.audited_attention_lora_targets(BrokenModel())
+
+
+def test_lfm_lora_contract_checks_attention_layer_count():
+    contract = _load_model_contract()
+
+    class MissingLayerModel:
+        config = SimpleNamespace(layer_types=["full_attention", "full_attention"])
+
+        def named_modules(self):
+            return [
+                (f"model.layers.0.self_attn.{suffix}", object())
+                for suffix in ("q_proj", "k_proj", "v_proj", "out_proj")
+            ]
+
+    with pytest.raises(RuntimeError, match="expected_each=2"):
+        contract.audited_attention_lora_targets(MissingLayerModel())
+
+
+def test_lfm_adapter_completion_requires_weights_and_revision(tmp_path: Path):
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}\n", encoding="utf-8")
+    assert not training._lfm_adapter_complete(adapter)
+
+    (adapter / "adapter_model.safetensors").write_bytes(b"weights")
+    assert not training._lfm_adapter_complete(adapter)
+
+    (adapter / ".personavoice-base-revision").write_text(
+        LFM_MODEL_REVISION + "\n", encoding="utf-8"
+    )
+    assert training._lfm_adapter_complete(adapter)
+
+    (adapter / ".personavoice-base-revision").write_text("wrong\n", encoding="utf-8")
+    assert not training._lfm_adapter_complete(adapter)
 
 
 def test_lfm_worker_and_trainer_are_pinned_to_jp_202606_contract():
@@ -144,5 +184,7 @@ def test_lfm_worker_and_trainer_are_pinned_to_jp_202606_contract():
     assert "top_k=50" in worker
     assert "repetition_penalty=1.05" in worker
     assert "top_p=" not in worker
+    assert "verify_adapter(adapter_path)" in worker
     assert "completion_only_loss=True" in trainer
     assert "audited_attention_lora_targets(model)" in trainer
+    assert "ADAPTER_REVISION_MARKER" in trainer
