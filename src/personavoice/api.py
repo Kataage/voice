@@ -180,12 +180,14 @@ audio{width:100%;margin-top:10px}.muted{color:#666}@media(max-width:700px){.grid
 <div class="card"><h2>Result</h2><pre id="out"></pre></div>
 <script>
 let history=[];const p=document.getElementById('persona'),o=document.getElementById('out');
-async function init(){let x=await(await fetch('/v1/personas')).json();p.innerHTML=x.personas.map(v=>`<option>${v}</option>`).join('')}
-function player(url){return `<audio controls autoplay src="${url}"></audio>`}
+async function init(){let x=await(await fetch('/v1/personas')).json();p.replaceChildren(...x.personas.map(v=>{let e=document.createElement('option');e.textContent=v;return e}))}
+function player(url){let a=document.createElement('audio');a.controls=true;a.autoplay=true;a.src=url;return a}
+function setPlayers(id,items){let d=document.getElementById(id);d.replaceChildren(...items.map(x=>player(x.url)))}
+function setChat(text,audio){let d=document.getElementById('chatAudio'),q=document.createElement('p');q.textContent=text||'';d.replaceChildren(q,player(audio.url))}
 async function post(url,body){o.textContent='Running...';let r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});let x=await r.json();o.textContent=JSON.stringify(x,null,2);if(!r.ok)throw new Error(x.detail||'request failed');return x}
-async function tts(){try{let ev=document.getElementById('events').value.split(',').map(x=>x.trim()).filter(Boolean);let x=await post('/v1/tts',{persona:p.value,text:document.getElementById('text').value,style:document.getElementById('style').value||null,emotion:document.getElementById('emotion').value||null,events:ev,ref:document.getElementById('ref').value||null});document.getElementById('ttsAudio').innerHTML=(x.outputs||[]).map(a=>player(a.url)).join('')}catch(e){}}
-async function vc(){try{let x=await post('/v1/voice-convert',{persona:p.value,source:document.getElementById('source').value});document.getElementById('audioResult').innerHTML=player(x.output.url)}catch(e){}}
-async function repeatAudio(){try{let x=await post('/v1/repeat',{persona:p.value,source:document.getElementById('source').value});document.getElementById('audioResult').innerHTML=(x.outputs||[]).map(a=>player(a.url)).join('')}catch(e){}}
-async function chat(){try{let prompt=document.getElementById('prompt').value;let x=await post('/v1/chat',{persona:p.value,prompt,history});history.push({role:'user',content:prompt},{role:'assistant',content:JSON.stringify({text:x.text,voice:x.voice})});history=history.slice(-12);document.getElementById('chatAudio').innerHTML=`<p>${x.text||''}</p>`+player(x.audio.url)}catch(e){}}
+async function tts(){try{let ev=document.getElementById('events').value.split(',').map(x=>x.trim()).filter(Boolean);let x=await post('/v1/tts',{persona:p.value,text:document.getElementById('text').value,style:document.getElementById('style').value||null,emotion:document.getElementById('emotion').value||null,events:ev,ref:document.getElementById('ref').value||null});setPlayers('ttsAudio',x.outputs||[])}catch(e){o.textContent=String(e)}}
+async function vc(){try{let x=await post('/v1/voice-convert',{persona:p.value,source:document.getElementById('source').value});setPlayers('audioResult',[x.output])}catch(e){o.textContent=String(e)}}
+async function repeatAudio(){try{let x=await post('/v1/repeat',{persona:p.value,source:document.getElementById('source').value});setPlayers('audioResult',x.outputs||[])}catch(e){o.textContent=String(e)}}
+async function chat(){try{let prompt=document.getElementById('prompt').value;let x=await post('/v1/chat',{persona:p.value,prompt,history});history.push({role:'user',content:prompt},{role:'assistant',content:JSON.stringify({text:x.text,voice:x.voice})});history=history.slice(-12);setChat(x.text,x.audio)}catch(e){o.textContent=String(e)}}
 init();
 </script></body></html>"""
