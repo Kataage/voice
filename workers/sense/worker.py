@@ -84,7 +84,14 @@ def load_model() -> AutoModel:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     # Use the uv-locked FunASR implementation rather than executing model-repo
     # Python code. The inference-critical model assets are hash-verified above.
-    return AutoModel(model=local_model(), trust_remote_code=False, device=device)
+    # FunASR's version check is explicitly disabled so deep doctor remains a
+    # deterministic local-only operation instead of attempting an update lookup.
+    return AutoModel(
+        model=local_model(),
+        trust_remote_code=False,
+        disable_update=True,
+        device=device,
+    )
 
 
 def parse_result(result) -> dict:
