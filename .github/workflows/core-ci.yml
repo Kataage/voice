@@ -2,7 +2,7 @@ name: core-ci
 
 on:
   push:
-    branches: [main, feat/personavoice-foundation, fix/deep-audit-hardening]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   core:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -25,15 +26,16 @@ jobs:
       - name: Sync core environment
         run: uv sync --dev --locked
       - name: Ruff
-        run: uv run --locked ruff check src tests
+        run: uv run --locked ruff check src tests workers
       - name: Unit tests
         run: uv run --locked pytest
       - name: Compile
-        run: uv run --locked python -m compileall -q src tests
+        run: uv run --locked python -m compileall -q src tests workers
       - name: CLI smoke test
         run: uv run --locked persona --help
 
   worker-envs:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
