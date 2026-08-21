@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from personavoice import dataset, inference, media, speaker, state, training
+from personavoice import dataset, inference, irodori, media, speaker, state, training
 from personavoice.config import PersonaConfig
 from personavoice.project import init_persona
 
@@ -181,6 +181,18 @@ def test_enabled_seed_vc_training_rejects_silent_data_shortage(tmp_path: Path):
     cfg.training.seed_vc_finetune = True
     with pytest.raises(RuntimeError, match="fewer than two target-speaker"):
         training.train_seed_vc(tmp_path, paths, cfg)
+
+
+def test_irodori_resume_uses_highest_numeric_step(tmp_path: Path):
+    for name in ("checkpoint_900", "checkpoint_1000", "checkpoint_best_val_loss_1200_0.2"):
+        (tmp_path / name).mkdir()
+    assert irodori._latest_resume(tmp_path) == tmp_path / "checkpoint_1000"
+
+    speaker_900 = tmp_path / "checkpoint_900.speaker.safetensors"
+    speaker_1000 = tmp_path / "checkpoint_1000.speaker.safetensors"
+    speaker_900.write_bytes(b"x")
+    speaker_1000.write_bytes(b"x")
+    assert irodori._latest_numeric_checkpoint([speaker_900, speaker_1000]) == speaker_1000
 
 
 def test_worker_sources_fail_closed_on_audited_local_models():
