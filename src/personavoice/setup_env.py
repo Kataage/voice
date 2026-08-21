@@ -71,6 +71,29 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     }
 
 
+def _snapshot_if_missing(
+    *,
+    model_id: str,
+    local_dir: Path,
+    marker: Path,
+    cache_dir: Path,
+    token: str | None = None,
+) -> bool:
+    if marker.exists():
+        return False
+    snapshot_download(
+        repo_id=model_id,
+        local_dir=local_dir,
+        cache_dir=cache_dir,
+        token=token,
+    )
+    if not marker.exists():
+        raise FileNotFoundError(
+            f"Model download for {model_id} completed but expected marker is missing: {marker}"
+        )
+    return True
+
+
 def download_models(
     repo_root: Path,
     *,
@@ -81,33 +104,67 @@ def download_models(
     cache_dir = Path(env["HF_HOME"])
     cache_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token or os.getenv("HF_TOKEN")
+    downloaded: list[str] = []
+    reused: list[str] = []
 
     irodori_dir = repo_root / "models" / "irodori" / "v4.1-small"
-    irodori_dir.mkdir(parents=True, exist_ok=True)
-    hf_hub_download(
-        repo_id="Aratako/Irodori-TTS-v4.1-Small",
-        filename="model.safetensors",
-        local_dir=irodori_dir,
-        cache_dir=cache_dir,
-    )
-
-    snapshots = {
-        "LiquidAI/LFM2.5-1.2B-JP-202606": repo_root / "models" / "lfm" / "base",
-        "Systran/faster-whisper-large-v3": repo_root / "models" / "asr" / "large-v3",
-        "pyannote/speaker-diarization-community-1": (
-            repo_root / "models" / "pyannote" / "community-1"
-        ),
-    }
-    downloaded = ["Aratako/Irodori-TTS-v4.1-Small:model.safetensors"]
-    for model_id, local_dir in snapshots.items():
-        snapshot_download(
-            repo_id=model_id,
-            local_dir=local_dir,
+    irodori_model = irodori_dir / "model.safetensors"
+    if irodori_model.exists():
+        reused.append("Aratako/Irodori-TTS-v4.1-Small:model.safetensors")
+    else:
+        irodori_dir.mkdir(parents=True, exist_ok=True)
+        hf_hub_download(
+            repo_id="Aratako/Irodori-TTS-v4.1-Small",
+            filename="model.safetensors",
+            local_dir=irodori_dir,
             cache_dir=cache_dir,
-            token=token if model_id.startswith("pyannote/") else None,
         )
-        downloaded.append(model_id)
+        if not irodori_model.exists():
+            raise FileNotFoundError(f"Expected Irodori checkpoint was not created: {irodori_model}")
+        downloaded.append("Aratako/Irodori-TTS-v4.1-Small:model.safetensors")
 
+    lfm_dir = repo_root / "models" / "lfm" / "base"
+    if _snapshot_if_missing(
+        model_id="LiquidAI/LFM2.5-1.2B-JP-202606",
+        local_dir=lfm_dir,
+        marker=lfm_dir / "config.json",
+        cache_dir=cache_dir,
+    ):
+        downloaded.append("LiquidAI/LFM2.5-1.2B-JP-202606")
+    else:
+        reused.append("LiquidAI/LFM2.5-1.2B-JP-202606")
+
+    asr_dir = repo_root / "models" / "asr" / "large-v3"
+    if _snapshot_if_missing(
+        model_id="Systran/faster-whisper-large-v3",
+        local_dir=asr_dir,
+        marker=asr_dir / "model.bin",
+        cache_dir=cache_dir,
+    ):
+        downloaded.append("Systran/faster-whisper-large-v3")
+    else:
+        reused.append("Systran/faster-whisper-large-v3")
+
+    pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
+    pyannote_marker = pyannote_dir / "config.yaml"
+    if not pyannote_marker.exists() and not token:
+        raise RuntimeError(
+            "HF_TOKEN is required for the first download of "
+            "pyannote/speaker-diarization-community-1. Accept its Hugging Face usage terms, "
+            "then set HF_TOKEN in the environment. The token is never stored by PersonaVoice."
+        )
+    if _snapshot_if_missing(
+        model_id="pyannote/speaker-diarization-community-1",
+        local_dir=pyannote_dir,
+        marker=pyannote_marker,
+        cache_dir=cache_dir,
+        token=token,
+    ):
+        downloaded.append("pyannote/speaker-diarization-community-1")
+    else:
+        reused.append("pyannote/speaker-diarization-community-1")
+
+    # Irodori loads these by model id at runtime. Cache them once for offline use.
     for model_id in (
         "Aratako/Semantic-DACVAE-Japanese-32dim",
         "sbintuitions/modernbert-ja-310m",
@@ -115,19 +172,38 @@ def download_models(
         snapshot_download(repo_id=model_id, cache_dir=cache_dir)
         downloaded.append(model_id)
 
-    worker(repo_root, "sense").call(
-        repo_root,
-        "download",
-        {"online": True},
-        offline=False,
-    )
-    downloaded.append("iic/SenseVoiceSmall")
-    if include_seed_vc:
-        worker(repo_root, "seed_vc").call(
+    sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
+    if sense_dir.exists() and any(sense_dir.iterdir()):
+        reused.append("iic/SenseVoiceSmall")
+    else:
+        worker(repo_root, "sense").call(
             repo_root,
             "download",
             {"online": True},
             offline=False,
         )
-        downloaded.append("Seed-VC-v2-default-checkpoints")
-    return {"downloaded": downloaded, "cache": str(cache_dir)}
+        downloaded.append("iic/SenseVoiceSmall")
+
+    if include_seed_vc:
+        # Seed-VC has several transitive pretrained assets. Loading the wrapper online once
+        # is the upstream-compatible way to materialize all of them; deep doctor verifies
+        # the exact same load path in offline mode afterwards.
+        seed_marker = repo_root / ".runtime" / "seed-vc-models-ready"
+        if seed_marker.exists():
+            reused.append("Seed-VC-v2-default-checkpoints")
+        else:
+            worker(repo_root, "seed_vc").call(
+                repo_root,
+                "download",
+                {"online": True},
+                offline=False,
+            )
+            seed_marker.parent.mkdir(parents=True, exist_ok=True)
+            seed_marker.write_text("ready\n", encoding="utf-8")
+            downloaded.append("Seed-VC-v2-default-checkpoints")
+
+    return {
+        "downloaded": downloaded,
+        "reused": reused,
+        "cache": str(cache_dir),
+    }
