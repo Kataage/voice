@@ -20,7 +20,12 @@ from personavoice.media import (
     sha256_file,
 )
 from personavoice.project import PersonaPaths
-from personavoice.speaker import TARGET_NOT_FOUND, dominant_speaker, overlap_ratio, select_target_speaker
+from personavoice.speaker import (
+    TARGET_NOT_FOUND,
+    dominant_speaker,
+    overlap_ratio,
+    select_target_speaker,
+)
 from personavoice.state import StateStore
 from personavoice.workers import worker
 
