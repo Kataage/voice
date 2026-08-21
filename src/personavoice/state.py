@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+# Increment this whenever the semantics of cached prepare artifacts change.
+# Keeping it here lets us invalidate old caches even when the user-facing
+# prepare configuration itself did not change.
+PREPARE_CACHE_POLICY_VERSION = 2
 
 
 def _now() -> str:
@@ -33,6 +39,8 @@ class StateStore:
 
     def is_complete(self, name: str, fingerprint: str) -> bool:
         stage = self.stage(name)
+        if name == "prepare" and stage.get("cache_policy_version") != PREPARE_CACHE_POLICY_VERSION:
+            return False
         return stage.get("status") == "complete" and stage.get("fingerprint") == fingerprint
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
@@ -40,10 +48,45 @@ class StateStore:
         state.setdefault("stages", {}).setdefault(name, {})["result"] = result
         self.save(state)
 
+    def _invalidate_prepare_derived(self) -> None:
+        """Remove only artifacts whose identity depends on prepare semantics.
+
+        The lossless source-audio cache is intentionally retained because it is
+        content-addressed by source SHA. ASR/diarization/Sense caches and cut
+        clips are not safe to reuse across arbitrary prepare-setting or code
+        changes, so they are rebuilt when the prepare fingerprint/policy changes
+        or a completed prepare is explicitly forced.
+        """
+
+        persona_root = self.path.parent
+        for relative in (
+            Path("cache/asr"),
+            Path("cache/diarization"),
+            Path("cache/identity"),
+            Path("cache/sense"),
+            Path("dataset/clips"),
+        ):
+            shutil.rmtree(persona_root / relative, ignore_errors=True)
+
     @contextmanager
     def running(self, name: str, fingerprint: str) -> Iterator[dict[str, Any]]:
         state = self.load()
         stage = state.setdefault("stages", {}).setdefault(name, {})
+
+        if name == "prepare":
+            old_fingerprint = stage.get("fingerprint")
+            old_policy = stage.get("cache_policy_version")
+            # A completed stage reaching `running` means the caller explicitly
+            # requested a force rebuild. Failed/running stages with an unchanged
+            # fingerprint keep their expensive caches for resumability.
+            must_invalidate = (
+                old_policy != PREPARE_CACHE_POLICY_VERSION
+                or (old_fingerprint is not None and old_fingerprint != fingerprint)
+                or stage.get("status") == "complete"
+            )
+            if must_invalidate:
+                self._invalidate_prepare_derived()
+
         stage.update(
             {
                 "status": "running",
@@ -53,6 +96,8 @@ class StateStore:
                 "error": None,
             }
         )
+        if name == "prepare":
+            stage["cache_policy_version"] = PREPARE_CACHE_POLICY_VERSION
         self.save(state)
         try:
             yield stage
