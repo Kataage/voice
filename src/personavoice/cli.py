@@ -79,12 +79,27 @@ def setup(
     if download:
         result["models"] = download_models(root, include_seed_vc=not skip_seed_vc_models)
     if verify:
-        result["verification"] = doctor_report(
+        verification = doctor_report(
             root,
             deep=True,
             require_seed_vc=not skip_seed_vc_models,
         )
-        if not result["verification"]["ready_offline"]:
+        # Seed-VC owns several transitive HF assets. Its deep worker invalidates
+        # this readiness marker only when model loading itself failed. Retry once
+        # in the same setup invocation so a stale marker/cache can self-heal;
+        # CUDA/backend mismatches leave the marker intact and are not mistaken
+        # for missing assets.
+        seed_marker = root / ".runtime" / "seed-vc-models-ready"
+        if (
+            download
+            and not skip_seed_vc_models
+            and not verification["ready_offline"]
+            and not seed_marker.exists()
+        ):
+            result["seed_vc_recovery"] = download_models(root, include_seed_vc=True)
+            verification = doctor_report(root, deep=True, require_seed_vc=True)
+        result["verification"] = verification
+        if not verification["ready_offline"]:
             _print(result)
             raise typer.Exit(1)
     _print(result)
