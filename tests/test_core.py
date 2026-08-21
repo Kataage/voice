@@ -17,6 +17,8 @@ from personavoice.speaker import (
     select_target_speaker,
 )
 from personavoice.state import StateStore
+from personavoice.training import _invalidate_training_artifacts
+from personavoice.workers import local_model_env
 
 
 def test_safe_name():
@@ -130,3 +132,29 @@ def test_batch_results_fails_loudly():
             [{"id": "x", "ok": False, "error": "boom"}],
             operation="ASR",
         )
+
+
+def test_training_invalidation_removes_stale_outputs(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    stale = [
+        paths.models / "irodori" / "lora" / "adapter.bin",
+        paths.models / "lfm" / "adapter" / "adapter_config.json",
+        paths.models / "seed_vc" / "cfm.pth",
+        paths.cache / "irodori_latents" / "000.pt",
+        paths.dataset / "irodori_manifest.jsonl",
+        paths.cache / "irodori_lora.yaml",
+    ]
+    for path in stale:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stale", encoding="utf-8")
+    _invalidate_training_artifacts(paths)
+    assert all(not path.exists() for path in stale)
+
+
+def test_huggingface_cache_layout_is_consistent(tmp_path: Path):
+    env = local_model_env(tmp_path, offline=True)
+    hf_home = Path(env["HF_HOME"])
+    hub_cache = Path(env["HUGGINGFACE_HUB_CACHE"])
+    assert hub_cache.parent == hf_home
+    assert env["HF_HUB_OFFLINE"] == "1"
+    assert env["TRANSFORMERS_OFFLINE"] == "1"
