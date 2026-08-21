@@ -8,6 +8,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from personavoice.atomic import atomic_write_json, atomic_write_text
+from personavoice.environment_contract import environment_contract
 from personavoice.hardware import detect_irodori_backend
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
@@ -46,6 +47,10 @@ def _irodori_swap_marker(repo_root: Path) -> Path:
     return repo_root / ".runtime" / IRODORI_LOCK_SWAP_MARKER
 
 
+def _git_head(directory: Path) -> str:
+    return run(["git", "rev-parse", "HEAD"], cwd=directory, capture=True).stdout.strip()
+
+
 def _restore_vendor_lock(irodori: Path) -> None:
     """Restore uv.lock to the pinned checkout's clean HEAD state."""
 
@@ -66,12 +71,7 @@ def _restore_vendor_lock(irodori: Path) -> None:
 
 
 def _recover_irodori_lock_swap(repo_root: Path, irodori: Path) -> None:
-    """Recover a managed uv.lock swap interrupted by process termination.
-
-    The marker records both the clean checkout state and the temporary managed
-    lock hash. We only auto-recover when the current file is one of those two
-    known states. A third-party/local edit is never overwritten automatically.
-    """
+    """Recover a managed uv.lock swap interrupted by process termination."""
 
     marker = _irodori_swap_marker(repo_root)
     if not marker.is_file():
@@ -83,8 +83,18 @@ def _recover_irodori_lock_swap(repo_root: Path, irodori: Path) -> None:
             f"Interrupted Irodori lock-swap marker is unreadable: {marker}. "
             "Inspect the vendor checkout before rerunning setup."
         ) from exc
-    if not isinstance(value, dict):
-        raise RuntimeError(f"Interrupted Irodori lock-swap marker is invalid: {marker}")
+    if not isinstance(value, dict) or value.get("schema_version") != 2:
+        raise RuntimeError(
+            f"Interrupted Irodori lock-swap marker has an unsupported format: {marker}"
+        )
+
+    expected_head = value.get("vendor_head")
+    current_head = _git_head(irodori)
+    if not isinstance(expected_head, str) or current_head != expected_head:
+        raise RuntimeError(
+            "An interrupted PersonaVoice Irodori lock swap belongs to a different vendor HEAD. "
+            "Refusing automatic recovery; inspect vendor/Irodori-TTS before rerunning setup."
+        )
 
     vendor_lock = irodori / "uv.lock"
     current_exists = vendor_lock.is_file()
@@ -92,7 +102,6 @@ def _recover_irodori_lock_swap(repo_root: Path, irodori: Path) -> None:
     original_exists = bool(value.get("original_exists"))
     original_sha = value.get("original_sha256")
     managed_sha = value.get("managed_sha256")
-
     original_state = current_exists == original_exists and (
         not current_exists or current_sha == original_sha
     )
@@ -136,13 +145,7 @@ def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
 
 
 def _worker_extras(selected_backend: str) -> dict[str, str | None]:
-    """Map the Irodori backend to compatible isolated worker backends.
-
-    The modern Torch workers use CUDA 12.8. Archived Seed-VC is pinned to
-    Torch 2.4.0, whose newest official Windows/Linux CUDA wheel is CUDA 12.4.
-    ROCm/XPU support is currently limited to Irodori; the other workers use CPU
-    rather than silently resolving an arbitrary PyPI Torch build.
-    """
+    """Map the Irodori backend to compatible isolated worker backends."""
 
     if selected_backend == "cu128":
         return {
@@ -175,8 +178,9 @@ def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
     vendor_lock = irodori / "uv.lock"
     original_exists = vendor_lock.is_file()
     swap_state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "vendor": str(irodori.resolve()),
+        "vendor_head": _git_head(irodori),
         "original_exists": original_exists,
         "original_sha256": sha256_file(vendor_lock) if original_exists else None,
         "managed_sha256": sha256_file(managed_lock),
@@ -192,7 +196,7 @@ def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
         "--locked",
     ]
     try:
-        shutil.copy2(managed_lock, vendor_lock)
+        atomic_write_text(vendor_lock, managed_lock.read_text(encoding="utf-8"))
         run(args, cwd=repo_root)
     finally:
         _restore_vendor_lock(irodori)
@@ -231,6 +235,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         "worker_backends": worker_extras,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
+        "environment_contract": environment_contract(repo_root),
         "model_assets": {
             "irodori_model_sha256": IRODORI_MODEL_SHA256,
             "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
@@ -280,8 +285,6 @@ def _download_verified_file(
             _verify_sha256(target, sha256, label=f"{model_id}:{filename}")
             return target, True
         except RuntimeError:
-            # The setup command is an explicit online repair boundary. Remove only
-            # the local materialized view and force-refresh the audited Hub asset.
             target.unlink(missing_ok=True)
             force_download = True
 
@@ -316,9 +319,6 @@ def _snapshot_if_missing(
     if marker.exists() and (revision is None or current_revision == revision):
         return False
 
-    # A materialized directory without the expected revision marker came from a
-    # floating/older setup. Replace only PersonaVoice's local view; HF cache blobs
-    # are retained and can be reused by snapshot_download.
     if local_dir.exists():
         shutil.rmtree(local_dir)
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -356,9 +356,6 @@ def _snapshot_pinned(
     if required_path.is_file() and current_revision == revision:
         return False
 
-    # An unmarked directory came from the older floating-revision setup. Remove
-    # only PersonaVoice's materialized view; Hugging Face's shared cache is kept,
-    # so unchanged blobs can still be reused without another network transfer.
     shutil.rmtree(local_dir, ignore_errors=True)
     local_dir.mkdir(parents=True, exist_ok=True)
     snapshot_download(
@@ -415,9 +412,6 @@ def download_models(
         f"{IRODORI_DACVAE_ID}:{IRODORI_DACVAE_FILENAME}"
     )
 
-    # The pinned Irodori v4 training configuration explicitly references this
-    # ModernBERT commit. Ensuring it on every setup is cheap when cached and
-    # guarantees that offline training can resolve the exact revision.
     snapshot_download(
         repo_id=IRODORI_TEXT_ENCODER_ID,
         revision=IRODORI_TEXT_ENCODER_REVISION,
@@ -484,12 +478,7 @@ def download_models(
     sense_verified = False
     if sense_marker.exists():
         try:
-            sense_worker.call(
-                repo_root,
-                "verify",
-                {},
-                offline=True,
-            )
+            sense_worker.call(repo_root, "verify", {}, offline=True)
             sense_verified = True
         except Exception:
             sense_marker.unlink(missing_ok=True)
@@ -507,9 +496,6 @@ def download_models(
         downloaded.append(SENSE_MODEL_ID)
 
     if include_seed_vc:
-        # Seed-VC has several transitive pretrained assets. Loading the wrapper online once
-        # is the upstream-compatible way to materialize all of them; deep doctor verifies
-        # the exact same load path in offline mode afterwards.
         seed_marker = runtime / "seed-vc-models-ready"
         if seed_marker.exists():
             reused.append("Seed-VC-v2-default-checkpoints")
