@@ -38,7 +38,7 @@ def vendor_dir(repo_root: Path) -> Path:
     try:
         head = run(["git", "rev-parse", "HEAD"], cwd=path, capture=True).stdout.strip()
         status = run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            ["git", "status", "--porcelain"],
             cwd=path,
             capture=True,
         ).stdout.strip()
@@ -51,7 +51,7 @@ def vendor_dir(repo_root: Path) -> Path:
         )
     if status:
         raise RuntimeError(
-            "Irodori vendor checkout has tracked local modifications. "
+            "Irodori vendor checkout has local modifications or untracked files. "
             "Restore the checkout and run `persona setup` before model work."
         )
     return path
