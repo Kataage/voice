@@ -5,6 +5,9 @@ import sys
 from pathlib import Path
 
 from personavoice.hardware import hardware_report
+from personavoice.workers import worker
+
+WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
 
 
 def report(repo_root: Path, *, deep: bool = False) -> dict:
@@ -18,9 +21,29 @@ def report(repo_root: Path, *, deep: bool = False) -> dict:
         "seed_vc_vendor": (repo_root / "vendor/seed-vc/inference_v2.py").exists(),
         "irodori_vendor": (repo_root / "vendor/Irodori-TTS/infer.py").exists(),
     }
-    workers = {}
-    for name in ("asr", "diarization", "sense", "lfm", "seed_vc"):
-        workers[name] = (repo_root / "workers" / name / ".venv").exists()
+    workers = {
+        name: (repo_root / "workers" / name / ".venv").exists()
+        for name in WORKER_NAMES
+    }
+    worker_health = {}
+    if deep:
+        for name in WORKER_NAMES:
+            if not workers[name]:
+                worker_health[name] = {"ok": False, "error": "worker .venv is missing"}
+                continue
+            try:
+                worker_health[name] = worker(repo_root, name).call(
+                    repo_root,
+                    "health",
+                    {"deep": True, "model": "large-v3", "compute_type": "auto"},
+                )
+            except Exception as exc:
+                worker_health[name] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+    base_ready = all(required.values()) and all(models.values()) and all(workers.values())
+    deep_ready = all(bool(value.get("ok")) for value in worker_health.values()) if deep else True
     return {
         "python": sys.version.split()[0],
         "commands": required,
@@ -28,5 +51,6 @@ def report(repo_root: Path, *, deep: bool = False) -> dict:
         "hardware": hardware_report(),
         "models": models,
         "workers": workers,
-        "ready_offline": all(required.values()) and all(models.values()) and all(workers.values()),
+        "worker_health": worker_health if deep else None,
+        "ready_offline": base_ready and deep_ready,
     }
