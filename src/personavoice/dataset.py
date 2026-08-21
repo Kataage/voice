@@ -257,6 +257,14 @@ def _conversation_blocks(source_rows: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
+    """Export conversational prompt/completion examples for persona SFT.
+
+    TRL applies the model chat template to conversational prompt/completion data
+    and, with completion-only loss, trains only on the authorized persona reply.
+    This avoids teaching the model to imitate system instructions or the other
+    speaker while preserving those turns as conditioning context.
+    """
+
     all_rows = load_utterances(master_db)
     examples: list[dict[str, Any]] = []
     by_source: dict[str, list[dict[str, Any]]] = {}
@@ -295,14 +303,16 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
             }
             examples.append(
                 {
-                    "messages": [
+                    "prompt": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
+                    ],
+                    "completion": [
                         {
                             "role": "assistant",
                             "content": json.dumps(answer, ensure_ascii=False),
-                        },
-                    ]
+                        }
+                    ],
                 }
             )
     return write_jsonl(output, examples)
