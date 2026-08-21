@@ -7,7 +7,8 @@ from pathlib import Path
 import yaml
 from huggingface_hub import hf_hub_download
 
-from personavoice.hardware import detect_irodori_backend, safe_batch_profile
+from personavoice.atomic import atomic_write_text
+from personavoice.hardware import safe_batch_profile
 from personavoice.model_assets import (
     IRODORI_DACVAE_FILENAME,
     IRODORI_MODEL_FILENAME,
@@ -20,28 +21,39 @@ from personavoice.workers import local_model_env
 
 SUPPORTED_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
 _CHECKPOINT_STEP_RE = re.compile(r"^checkpoint_(\d+)(?:\.speaker\.safetensors)?$")
+_LORA_WEIGHT_NAMES = ("adapter_model.safetensors", "adapter_model.bin")
+_LORA_TRAINER_STATE = "trainer_state.pt"
 
 
 def vendor_dir(repo_root: Path) -> Path:
     path = repo_root / "vendor" / "Irodori-TTS"
-    if not (path / "infer.py").exists():
+    if not (path / "infer.py").is_file():
         raise FileNotFoundError("Irodori-TTS is not installed. Run `persona setup` first.")
     return path
 
 
 def configured_backend(repo_root: Path) -> str:
     setup = repo_root / ".runtime" / "setup.json"
-    if setup.exists():
-        try:
-            value = json.loads(setup.read_text(encoding="utf-8")).get("irodori_backend")
-        except (json.JSONDecodeError, OSError):
-            value = None
-        if value is not None:
-            backend = str(value)
-            if backend not in SUPPORTED_BACKENDS:
-                raise RuntimeError(f"Unsupported recorded Irodori backend: {backend!r}")
-            return backend
-    return detect_irodori_backend()
+    if not setup.is_file():
+        raise FileNotFoundError(
+            "PersonaVoice setup state is missing. Run `persona setup` before Irodori "
+            "training or inference so the audited backend/environment is explicit."
+        )
+    try:
+        value = json.loads(setup.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"PersonaVoice setup state is unreadable: {setup}. Re-run `persona setup`."
+        ) from exc
+    if not isinstance(value, dict) or value.get("irodori_backend") is None:
+        raise RuntimeError(
+            f"PersonaVoice setup state does not record irodori_backend: {setup}. "
+            "Re-run `persona setup`."
+        )
+    backend = str(value["irodori_backend"])
+    if backend not in SUPPORTED_BACKENDS:
+        raise RuntimeError(f"Unsupported recorded Irodori backend: {backend!r}")
+    return backend
 
 
 def backend_device(backend: str) -> str:
@@ -54,9 +66,33 @@ def backend_device(backend: str) -> str:
     raise ValueError(f"Unsupported Irodori backend: {backend!r}")
 
 
+def _nonempty_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def speaker_embedding_complete(path: Path) -> bool:
+    return _nonempty_file(path)
+
+
+def lora_adapter_weight(path: Path) -> Path | None:
+    for name in _LORA_WEIGHT_NAMES:
+        candidate = path / name
+        if _nonempty_file(candidate):
+            return candidate
+    return None
+
+
+def lora_adapter_complete(path: Path) -> bool:
+    return _nonempty_file(path / "adapter_config.json") and lora_adapter_weight(path) is not None
+
+
+def lora_resume_checkpoint_complete(path: Path) -> bool:
+    return lora_adapter_complete(path) and _nonempty_file(path / _LORA_TRAINER_STATE)
+
+
 def codec_checkpoint(repo_root: Path) -> Path:
     expected = repo_root / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
-    if not expected.is_file():
+    if not _nonempty_file(expected):
         raise FileNotFoundError(
             f"Irodori DACVAE is not materialized at {expected}. "
             "Run `persona setup --download-models`."
@@ -68,13 +104,14 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
     env = local_model_env(repo_root, offline=not online)
     local_dir = repo_root / "models" / "irodori" / "v4.1-small"
     expected = local_dir / IRODORI_MODEL_FILENAME
-    if expected.exists():
+    if _nonempty_file(expected):
         return expected
     if not online:
         raise FileNotFoundError(
             f"Irodori base checkpoint is not materialized at {expected}. "
             "Run `persona setup --download-models`."
         )
+    expected.unlink(missing_ok=True)
     local_dir.mkdir(parents=True, exist_ok=True)
     hf_hub_download(
         repo_id=IRODORI_MODEL_ID,
@@ -82,7 +119,7 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
         local_dir=local_dir,
         cache_dir=Path(env["HUGGINGFACE_HUB_CACHE"]),
     )
-    if not expected.exists():
+    if not _nonempty_file(expected):
         raise FileNotFoundError(f"Irodori download completed but {expected} was not created")
     return expected
 
@@ -191,10 +228,9 @@ def _patched_config(
         train_cfg["allow_tf32"] = False
     if "gradient_checkpointing" in train_cfg or profile["gradient_checkpointing"]:
         train_cfg["gradient_checkpointing"] = bool(profile["gradient_checkpointing"])
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
+    atomic_write_text(
+        destination,
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
     )
     return destination
 
@@ -212,7 +248,12 @@ def _latest_numeric_checkpoint(paths: list[Path]) -> Path | None:
 def _latest_resume(output_dir: Path) -> Path | None:
     if not output_dir.exists():
         return None
-    return _latest_numeric_checkpoint(list(output_dir.glob("checkpoint_*")))
+    candidates = [
+        path
+        for path in output_dir.glob("checkpoint_*")
+        if path.is_dir() and lora_resume_checkpoint_complete(path)
+    ]
+    return _latest_numeric_checkpoint(candidates)
 
 
 def train_irodori(
@@ -235,7 +276,7 @@ def train_irodori(
     if do_speaker:
         out = models_dir / "irodori" / "speaker"
         final = out / "checkpoint_final.speaker.safetensors"
-        if not final.exists():
+        if not speaker_embedding_complete(final):
             cfg = _patched_config(
                 vendor / "configs" / "train_v4_small_speaker_inversion.yaml",
                 cache_dir / "irodori_speaker.yaml",
@@ -262,20 +303,26 @@ def train_irodori(
                 device,
             ]
             checkpoint = (
-                _latest_numeric_checkpoint(list(out.glob("checkpoint_*.speaker.safetensors")))
+                _latest_numeric_checkpoint(
+                    [
+                        path
+                        for path in out.glob("checkpoint_*.speaker.safetensors")
+                        if speaker_embedding_complete(path)
+                    ]
+                )
                 if out.exists()
                 else None
             )
             if checkpoint is not None:
                 args += ["--speaker-inversion-init-embedding", checkpoint]
             run(args, cwd=vendor, env=env)
-        if not final.exists():
-            raise RuntimeError("Irodori Speaker Inversion did not produce checkpoint_final")
+        if not speaker_embedding_complete(final):
+            raise RuntimeError("Irodori Speaker Inversion did not produce a valid checkpoint_final")
         outputs["speaker_embedding"] = str(final)
     if do_lora:
         out = models_dir / "irodori" / "lora"
         final = out / "checkpoint_final"
-        if not final.exists():
+        if not lora_adapter_complete(final):
             cfg = _patched_config(
                 vendor / "configs" / "train_v4_small_lora.yaml",
                 cache_dir / "irodori_lora.yaml",
@@ -305,8 +352,8 @@ def train_irodori(
             if resume:
                 args += ["--resume", resume]
             run(args, cwd=vendor, env=env)
-        if not final.exists():
-            raise RuntimeError("Irodori LoRA training did not produce checkpoint_final")
+        if not lora_adapter_complete(final):
+            raise RuntimeError("Irodori LoRA training did not produce a complete PEFT adapter")
         outputs["lora_adapter"] = str(final)
     return outputs
 
