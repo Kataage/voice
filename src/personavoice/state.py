@@ -215,11 +215,9 @@ def _train_artifacts_complete(result: Any) -> bool:
     ):
         return False
     seed = result.get("seed_vc_cfm")
-    if seed is not None and (
-        not isinstance(seed, str) or not seed or not _nonempty_file(Path(seed))
-    ):
-        return False
-    return True
+    return seed is None or (
+        isinstance(seed, str) and bool(seed) and _nonempty_file(Path(seed))
+    )
 
 
 class StateStore:
