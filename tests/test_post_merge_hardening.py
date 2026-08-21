@@ -85,6 +85,7 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
     fingerprint = "prepare-fingerprint"
 
     _write(dataset / "source_inventory.json", b"[]")
+    _write(dataset / "skipped_sources.json", b"[]")
     _write(dataset / "master.json", b"[]")
     _write(dataset / "master.sqlite3", b"sqlite")
     clip = _write(dataset / "clips" / "u.flac", b"audio")
@@ -107,6 +108,13 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
         encoding="utf-8",
     )
     result = {
+        "prepare_schema": 3,
+        "sources": 1,
+        "skipped_sources": 0,
+        "utterances": 1,
+        "target_utterances": 1,
+        "usable_tts_utterances": 1,
+        "usable_seconds": 1.0,
         "master_db": str((dataset / "master.sqlite3").resolve()),
         "irodori_examples": 1,
         "lfm_examples": 1,
@@ -134,6 +142,8 @@ def test_train_cache_hit_requires_complete_adapters(tmp_path: Path):
     _write(lfm / "adapter_model.safetensors", b"w")
     (lfm / ".personavoice-base-revision").write_text(LFM_MODEL_REVISION + "\n", encoding="utf-8")
     result = {
+        "train_schema": 8,
+        "fingerprint": fingerprint,
         "irodori": {
             "base": str(base.resolve()),
             "speaker_embedding": str(speaker.resolve()),
@@ -146,4 +156,19 @@ def test_train_cache_hit_requires_complete_adapters(tmp_path: Path):
     assert store.is_complete("train", fingerprint)
 
     irodori_weight.unlink()
+    assert not store.is_complete("train", fingerprint)
+
+
+def test_train_cache_hit_rejects_logically_incomplete_result(tmp_path: Path):
+    persona = tmp_path / "personas" / "alice"
+    fingerprint = "train-fingerprint"
+    base = _write(tmp_path / "base.safetensors", b"base")
+    result = {
+        "train_schema": 8,
+        "fingerprint": fingerprint,
+        "irodori": {"base": str(base.resolve())},
+        "lfm_adapter": None,
+        # seed_vc_cfm intentionally missing: a truncated logical result must not cache-hit.
+    }
+    store = _state(persona / "state.json", stage="train", fingerprint=fingerprint, result=result)
     assert not store.is_complete("train", fingerprint)
