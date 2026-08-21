@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,12 +9,16 @@ import pytest
 from personavoice import irodori, setup_env
 from personavoice.model_assets import (
     IRODORI_DACVAE_FILENAME,
+    IRODORI_DACVAE_REVISION,
     IRODORI_DACVAE_SHA256,
     IRODORI_MODEL_FILENAME,
+    IRODORI_MODEL_REVISION,
     IRODORI_MODEL_SHA256,
     IRODORI_SOURCE_REVISION,
     SEED_VC_SOURCE_REVISION,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _vendor(root: Path) -> Path:
@@ -103,8 +108,22 @@ def test_online_base_materialization_replaces_corruption_and_rehashes(
     assert len(calls) == 1
 
 
-def test_runtime_hash_constants_and_setup_source_pins_stay_aligned():
+def test_runtime_hash_constants_and_source_pins_stay_aligned():
+    for value in (
+        IRODORI_SOURCE_REVISION,
+        SEED_VC_SOURCE_REVISION,
+        IRODORI_MODEL_REVISION,
+        IRODORI_DACVAE_REVISION,
+    ):
+        assert re.fullmatch(r"[0-9a-f]{40}", value)
     assert len(IRODORI_MODEL_SHA256) == 64
     assert len(IRODORI_DACVAE_SHA256) == 64
     assert setup_env.IRODORI_REVISION == IRODORI_SOURCE_REVISION
     assert setup_env.SEED_VC_REVISION == SEED_VC_SOURCE_REVISION
+
+
+def test_lock_scripts_cannot_drift_from_audited_irodori_source_pin():
+    shell = (ROOT / "scripts" / "lock_all.sh").read_text(encoding="utf-8")
+    powershell = (ROOT / "scripts" / "lock_all.ps1").read_text(encoding="utf-8")
+    assert f'IRODORI_REVISION="{IRODORI_SOURCE_REVISION}"' in shell
+    assert f'$IrodoriRevision = "{IRODORI_SOURCE_REVISION}"' in powershell
