@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from personavoice import inference, media
+from personavoice import inference, media, state, training
 from personavoice.config import PersonaConfig
 from personavoice.project import init_persona
 
@@ -53,6 +53,34 @@ def test_inventory_fingerprint_changes_when_materialization_root_changes(tmp_pat
     (first / "a.wav").write_bytes(b"same")
     (second / "a.wav").write_bytes(b"same")
     assert media.inventory_fingerprint(first) != media.inventory_fingerprint(second)
+
+
+def test_prepare_cache_policy_changes_when_worker_lock_changes(tmp_path: Path, monkeypatch):
+    for name in ("asr", "diarization", "sense"):
+        lock = tmp_path / "workers" / name / "uv.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(f"{name}-one", encoding="utf-8")
+    monkeypatch.setattr(state, "_repo_root", lambda: tmp_path)
+    before = state._prepare_cache_policy()
+    (tmp_path / "workers" / "asr" / "uv.lock").write_text("asr-two", encoding="utf-8")
+    assert state._prepare_cache_policy() != before
+
+
+def test_training_fingerprint_changes_when_training_lock_changes(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    (paths.dataset / "irodori_source.jsonl").write_text("{}\n{}\n", encoding="utf-8")
+    for relative in (
+        Path("locks/Irodori-TTS.uv.lock"),
+        Path("workers/lfm/uv.lock"),
+        Path("workers/seed_vc/uv.lock"),
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("one", encoding="utf-8")
+    before = training._fingerprint(paths, cfg)
+    (tmp_path / "workers" / "lfm" / "uv.lock").write_text("two", encoding="utf-8")
+    assert training._fingerprint(paths, cfg) != before
 
 
 def test_worker_sources_fail_closed_on_audited_local_models():
