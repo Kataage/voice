@@ -49,10 +49,19 @@ class Worker:
             request_path.unlink(missing_ok=True)
 
     def sync(self, repo_root: Path, *, extra: str | None = None) -> None:
-        args: list[str | Path] = ["uv", "sync", "--project", self.project_dir]
         lockfile = self.project_dir / "uv.lock"
-        if lockfile.exists():
-            args.append("--locked")
+        if not lockfile.is_file():
+            raise FileNotFoundError(
+                f"Audited worker lockfile is missing for {self.name}: {lockfile}. "
+                "Refusing an unlocked environment sync; restore the repository lockfile first."
+            )
+        args: list[str | Path] = [
+            "uv",
+            "sync",
+            "--project",
+            self.project_dir,
+            "--locked",
+        ]
         if extra:
             args.extend(["--extra", extra])
         run(args, cwd=repo_root)
