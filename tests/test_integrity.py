@@ -68,32 +68,33 @@ def _write_minimal_complete_prepare_artifacts(paths) -> dict:
     clip = dataset / "clips" / "u.flac"
     clip.parent.mkdir(parents=True, exist_ok=True)
     clip.write_bytes(b"audio")
-    replace_utterances(
-        dataset / "master.sqlite3",
-        [
-            {
-                "id": "source_000001",
-                "source_id": "source",
-                "source_path": "source.wav",
-                "start": 0.0,
-                "end": 1.0,
-                "speaker": "SPEAKER_00",
-                "target": True,
-                "speaker_similarity": 0.9,
-                "speaker_coverage": 1.0,
-                "overlap_ratio": 0.0,
-                "text": "a",
-                "text_annotated": "a",
-                "emotion": "NEUTRAL",
-                "events": [],
-                "caption": "",
-                "audio_path": str(clip.resolve()),
-                "quality": 1.0,
-            }
-        ],
+    digest = "a" * 64
+    source_id = digest[:16]
+    row = {
+        "id": f"{source_id}_000001",
+        "source_id": source_id,
+        "source_path": "source.wav",
+        "start": 0.0,
+        "end": 1.0,
+        "speaker": "SPEAKER_00",
+        "target": True,
+        "speaker_similarity": 0.9,
+        "speaker_coverage": 1.0,
+        "overlap_ratio": 0.0,
+        "text": "a",
+        "text_annotated": "a",
+        "emotion": "NEUTRAL",
+        "events": [],
+        "caption": "",
+        "audio_path": str(clip.resolve()),
+        "quality": 1.0,
+    }
+    replace_utterances(dataset / "master.sqlite3", [row])
+    (dataset / "source_inventory.json").write_text(
+        json.dumps([{"sha256": digest, "path": "source.wav"}]) + "\n",
+        encoding="utf-8",
     )
-    (dataset / "source_inventory.json").write_text("[]\n", encoding="utf-8")
-    (dataset / "master.json").write_text("[]\n", encoding="utf-8")
+    (dataset / "master.json").write_text(json.dumps([row]) + "\n", encoding="utf-8")
     (dataset / "irodori_source.jsonl").write_text("", encoding="utf-8")
     (dataset / "lfm_train.jsonl").write_text("", encoding="utf-8")
     seed_manifest = dataset / "seed_vc" / "manifest.jsonl"
