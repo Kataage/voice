@@ -48,9 +48,18 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _root() -> Path:
+    return Path(os.environ["PERSONAVOICE_ROOT"])
+
+
 def _local_dir() -> Path:
-    root = Path(os.environ["PERSONAVOICE_ROOT"])
-    return root / "models" / "sense" / "SenseVoiceSmall"
+    return _root() / "models" / "sense" / "SenseVoiceSmall"
+
+
+def _mark_verified() -> None:
+    runtime = _root() / ".runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    (runtime / "sense-model-ready").write_text("verified\n", encoding="utf-8")
 
 
 def verify_local_assets() -> dict:
@@ -69,6 +78,10 @@ def verify_local_assets() -> dict:
                 "Remove the local SenseVoice model and rerun `persona setup`."
             )
         verified[relative] = actual
+    # Verification is the authority for this marker. This also migrates legacy
+    # `ready` markers from older PersonaVoice versions without re-downloading a
+    # byte when the already materialized model matches the audited hashes.
+    _mark_verified()
     return {"model": MODEL_ID, "path": str(local), "verified": verified}
 
 
