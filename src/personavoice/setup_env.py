@@ -34,7 +34,11 @@ from personavoice.model_assets import (
 from personavoice.process import CommandError, run
 from personavoice.seed_vc_assets import (
     contract_digest as seed_vc_contract_digest,
+)
+from personavoice.seed_vc_assets import (
     materialize as materialize_seed_vc_assets,
+)
+from personavoice.seed_vc_assets import (
     ready_marker as seed_vc_ready_marker,
 )
 from personavoice.workers import local_model_env, worker
