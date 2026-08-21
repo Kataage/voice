@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from collections.abc import Iterable
 
 
 def cosine_similarity(a: Iterable[float], b: Iterable[float]) -> float:
-    av = [float(x) for x in a]
-    bv = [float(x) for x in b]
+    av = [float(value) for value in a]
+    bv = [float(value) for value in b]
     if len(av) != len(bv) or not av:
         return -1.0
     dot = sum(x * y for x, y in zip(av, bv, strict=True))
@@ -23,7 +23,7 @@ def mean_embedding(embeddings: list[list[float]]) -> list[float]:
     width = len(embeddings[0])
     if any(len(row) != width for row in embeddings):
         raise ValueError("embedding dimensions differ")
-    return [sum(row[i] for row in embeddings) / len(embeddings) for i in range(width)]
+    return [sum(row[index] for row in embeddings) / len(embeddings) for index in range(width)]
 
 
 def select_target_speaker(
@@ -44,15 +44,20 @@ def select_target_speaker(
         )
     reference = mean_embedding(identity_embeddings)
     ranked = sorted(
-        ((label, cosine_similarity(embedding, reference)) for label, embedding in speaker_embeddings.items()),
+        (
+            (label, cosine_similarity(embedding, reference))
+            for label, embedding in speaker_embeddings.items()
+        ),
         key=lambda item: item[1],
         reverse=True,
     )
     label, score = ranked[0]
     if score < threshold:
         raise ValueError(
-            f"Target-speaker match is uncertain: best={label} similarity={score:.3f} < {threshold:.3f}. "
-            "Add cleaner identity reference audio or lower prepare.min_identity_similarity deliberately."
+            f"Target-speaker match is uncertain: best={label} "
+            f"similarity={score:.3f} < {threshold:.3f}. "
+            "Add cleaner identity reference audio or lower "
+            "prepare.min_identity_similarity deliberately."
         )
     return label, score
 
@@ -67,7 +72,8 @@ def dominant_speaker(start: float, end: float, turns: list[dict]) -> tuple[str |
     for turn in turns:
         overlap = interval_overlap(start, end, float(turn["start"]), float(turn["end"]))
         if overlap > 0:
-            scores[str(turn["speaker"])] = scores.get(str(turn["speaker"]), 0.0) + overlap
+            speaker = str(turn["speaker"])
+            scores[speaker] = scores.get(speaker, 0.0) + overlap
     if not scores:
         return None, 0.0
     speaker, overlap = max(scores.items(), key=lambda item: item[1])
@@ -78,18 +84,19 @@ def overlap_ratio(start: float, end: float, regular_turns: list[dict]) -> float:
     duration = max(1e-9, end - start)
     points = {start, end}
     for turn in regular_turns:
-        ts = max(start, float(turn["start"]))
-        te = min(end, float(turn["end"]))
-        if te > ts:
-            points.add(ts)
-            points.add(te)
+        turn_start = max(start, float(turn["start"]))
+        turn_end = min(end, float(turn["end"]))
+        if turn_end > turn_start:
+            points.add(turn_start)
+            points.add(turn_end)
     ordered = sorted(points)
     overlap = 0.0
     for left, right in zip(ordered, ordered[1:], strict=False):
-        mid = (left + right) / 2
+        midpoint = (left + right) / 2
         active = sum(
-            1 for turn in regular_turns
-            if float(turn["start"]) <= mid < float(turn["end"])
+            1
+            for turn in regular_turns
+            if float(turn["start"]) <= midpoint < float(turn["end"])
         )
         if active >= 2:
             overlap += right - left
