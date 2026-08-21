@@ -11,9 +11,7 @@ def _is_materialization_failure(health: Any) -> bool:
     error = str(health.get("error") or "")
     # doctor adds this error after a worker health call succeeds. Re-downloading
     # model files cannot fix an unavailable CUDA runtime/driver.
-    if "was installed for" in error and "runtime cannot see CUDA" in error:
-        return False
-    return True
+    return not ("was installed for" in error and "runtime cannot see CUDA" in error)
 
 
 def repair_failed_model_materializations(
