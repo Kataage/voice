@@ -7,6 +7,7 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
+from personavoice.atomic import atomic_write_json, atomic_write_text
 from personavoice.hardware import detect_irodori_backend
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
@@ -37,7 +38,74 @@ IRODORI_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 SEED_VC_REPO = "https://github.com/Plachtaa/seed-vc.git"
 SEED_VC_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
 REVISION_MARKER = ".personavoice-revision"
+IRODORI_LOCK_SWAP_MARKER = "irodori-lock-swap.json"
 SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
+
+
+def _irodori_swap_marker(repo_root: Path) -> Path:
+    return repo_root / ".runtime" / IRODORI_LOCK_SWAP_MARKER
+
+
+def _restore_vendor_lock(irodori: Path) -> None:
+    """Restore uv.lock to the pinned checkout's clean HEAD state."""
+
+    vendor_lock = irodori / "uv.lock"
+    tracked = run(
+        ["git", "ls-files", "--error-unmatch", "--", "uv.lock"],
+        cwd=irodori,
+        capture=True,
+        check=False,
+    ).returncode == 0
+    if tracked:
+        run(
+            ["git", "restore", "--source=HEAD", "--worktree", "--", "uv.lock"],
+            cwd=irodori,
+        )
+    else:
+        vendor_lock.unlink(missing_ok=True)
+
+
+def _recover_irodori_lock_swap(repo_root: Path, irodori: Path) -> None:
+    """Recover a managed uv.lock swap interrupted by process termination.
+
+    The marker records both the clean checkout state and the temporary managed
+    lock hash. We only auto-recover when the current file is one of those two
+    known states. A third-party/local edit is never overwritten automatically.
+    """
+
+    marker = _irodori_swap_marker(repo_root)
+    if not marker.is_file():
+        return
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Interrupted Irodori lock-swap marker is unreadable: {marker}. "
+            "Inspect the vendor checkout before rerunning setup."
+        ) from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Interrupted Irodori lock-swap marker is invalid: {marker}")
+
+    vendor_lock = irodori / "uv.lock"
+    current_exists = vendor_lock.is_file()
+    current_sha = sha256_file(vendor_lock) if current_exists else None
+    original_exists = bool(value.get("original_exists"))
+    original_sha = value.get("original_sha256")
+    managed_sha = value.get("managed_sha256")
+
+    original_state = current_exists == original_exists and (
+        not current_exists or current_sha == original_sha
+    )
+    managed_state = current_exists and isinstance(managed_sha, str) and current_sha == managed_sha
+    if managed_state:
+        _restore_vendor_lock(irodori)
+    elif not original_state:
+        raise RuntimeError(
+            "An interrupted PersonaVoice Irodori lock swap was found, but vendor/"
+            "Irodori-TTS/uv.lock no longer matches either the original checkout or the "
+            "audited temporary lock. Refusing to overwrite a possible local edit."
+        )
+    marker.unlink(missing_ok=True)
 
 
 def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
@@ -48,6 +116,8 @@ def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
     git_dir = destination / ".git"
     if not git_dir.exists():
         raise RuntimeError(f"{destination} exists but is not a git checkout")
+    if name == "Irodori-TTS":
+        _recover_irodori_lock_swap(repo_root, destination)
     status = run(["git", "status", "--porcelain"], cwd=destination, capture=True).stdout.strip()
     if status:
         raise RuntimeError(
@@ -92,24 +162,41 @@ def _worker_extras(selected_backend: str) -> dict[str, str | None]:
 
 
 def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
-    """Sync Irodori from our audited lock without dirtying the pinned checkout."""
+    """Sync Irodori from the audited lock with crash-safe checkout recovery."""
 
     managed_lock = repo_root / "locks" / "Irodori-TTS.uv.lock"
-    args: list[str | Path] = ["uv", "sync", "--project", irodori, "--extra", backend]
-    if not managed_lock.exists():
-        run(args, cwd=repo_root)
-        return
+    if not managed_lock.is_file():
+        raise FileNotFoundError(
+            f"Audited Irodori lockfile is missing: {managed_lock}. "
+            "Refusing an unlocked environment sync; restore the repository lockfile first."
+        )
 
+    marker = _irodori_swap_marker(repo_root)
     vendor_lock = irodori / "uv.lock"
-    original = vendor_lock.read_bytes() if vendor_lock.exists() else None
+    original_exists = vendor_lock.is_file()
+    swap_state = {
+        "schema_version": 1,
+        "vendor": str(irodori.resolve()),
+        "original_exists": original_exists,
+        "original_sha256": sha256_file(vendor_lock) if original_exists else None,
+        "managed_sha256": sha256_file(managed_lock),
+    }
+    atomic_write_json(marker, swap_state)
+    args: list[str | Path] = [
+        "uv",
+        "sync",
+        "--project",
+        irodori,
+        "--extra",
+        backend,
+        "--locked",
+    ]
     try:
         shutil.copy2(managed_lock, vendor_lock)
-        run([*args, "--locked"], cwd=repo_root)
+        run(args, cwd=repo_root)
     finally:
-        if original is None:
-            vendor_lock.unlink(missing_ok=True)
-        else:
-            vendor_lock.write_bytes(original)
+        _restore_vendor_lock(irodori)
+        marker.unlink(missing_ok=True)
 
 
 def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:
@@ -158,10 +245,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
         },
     }
-    (runtime / "setup.json").write_text(
-        json.dumps(setup_state, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(runtime / "setup.json", setup_state)
     return {
         **setup_state,
         "workers": synced,
@@ -189,18 +273,29 @@ def _download_verified_file(
 ) -> tuple[Path, bool]:
     local_dir.mkdir(parents=True, exist_ok=True)
     target = local_dir / filename
-    existed = target.exists()
-    if not existed:
-        hf_hub_download(
-            repo_id=model_id,
-            filename=filename,
-            local_dir=local_dir,
-            cache_dir=cache_dir,
-        )
+    existed = target.is_file()
+    force_download = False
+    if existed:
+        try:
+            _verify_sha256(target, sha256, label=f"{model_id}:{filename}")
+            return target, True
+        except RuntimeError:
+            # The setup command is an explicit online repair boundary. Remove only
+            # the local materialized view and force-refresh the audited Hub asset.
+            target.unlink(missing_ok=True)
+            force_download = True
+
+    hf_hub_download(
+        repo_id=model_id,
+        filename=filename,
+        local_dir=local_dir,
+        cache_dir=cache_dir,
+        force_download=force_download,
+    )
     if not target.is_file():
         raise FileNotFoundError(f"Expected model file was not created: {target}")
     _verify_sha256(target, sha256, label=f"{model_id}:{filename}")
-    return target, existed
+    return target, False
 
 
 def _snapshot_if_missing(
@@ -239,7 +334,7 @@ def _snapshot_if_missing(
             f"Model download for {model_id} completed but expected marker is missing: {marker}"
         )
     if revision is not None:
-        revision_path.write_text(revision + "\n", encoding="utf-8")
+        atomic_write_text(revision_path, revision + "\n")
     return True
 
 
@@ -277,7 +372,7 @@ def _snapshot_pinned(
             f"Pinned model download for {model_id}@{revision} completed but "
             f"expected file is missing: {required_path}"
         )
-    revision_path.write_text(revision + "\n", encoding="utf-8")
+    atomic_write_text(revision_path, revision + "\n")
     return True
 
 
@@ -408,7 +503,7 @@ def download_models(
             {"online": True},
             offline=False,
         )
-        sense_marker.write_text("verified\n", encoding="utf-8")
+        atomic_write_text(sense_marker, "verified\n")
         downloaded.append(SENSE_MODEL_ID)
 
     if include_seed_vc:
@@ -425,7 +520,7 @@ def download_models(
                 {"online": True},
                 offline=False,
             )
-            seed_marker.write_text("ready\n", encoding="utf-8")
+            atomic_write_text(seed_marker, "ready\n")
             downloaded.append("Seed-VC-v2-default-checkpoints")
 
     return {
