@@ -272,10 +272,19 @@ def test_irodori_locked_sync_restores_vendor_checkout(
     def fake_run(args, **_kwargs):
         calls.append([str(value) for value in args])
 
+    def fake_restore(path: Path):
+        if original is None:
+            (path / "uv.lock").unlink(missing_ok=True)
+        else:
+            (path / "uv.lock").write_bytes(original)
+
+    monkeypatch.setattr(setup_env, "_git_head", lambda _path: "audited-head")
+    monkeypatch.setattr(setup_env, "_restore_vendor_lock", fake_restore)
     monkeypatch.setattr(setup_env, "run", fake_run)
     setup_env._install_irodori(repo_root, vendor, "cpu")
 
-    assert calls and "--locked" in calls[0]
+    assert any("--locked" in call for call in calls)
+    assert not (repo_root / ".runtime" / setup_env.IRODORI_LOCK_SWAP_MARKER).exists()
     if original is None:
         assert not vendor_lock.exists()
     else:
@@ -288,8 +297,10 @@ def test_best_irodori_adapter_prefers_lowest_validation_loss(tmp_path: Path):
     (root / "checkpoint_final").mkdir(parents=True)
     worse = root / "checkpoint_best_val_loss_0001000_0.900000"
     better = root / "checkpoint_best_val_loss_0002000_0.400000"
-    worse.mkdir()
-    better.mkdir()
+    for adapter in (worse, better):
+        adapter.mkdir()
+        (adapter / "adapter_config.json").write_text("{}\n", encoding="utf-8")
+        (adapter / "adapter_model.safetensors").write_bytes(b"weights")
     assert inference._best_lora_adapter(paths) == better
 
 
@@ -352,6 +363,7 @@ def test_synthesize_forwards_cfg_and_checks_output(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(inference, "vendor_dir", lambda _root: vendor)
     monkeypatch.setattr(inference, "base_checkpoint", lambda _root: base)
     monkeypatch.setattr(inference, "codec_checkpoint", lambda _root: codec)
+    monkeypatch.setattr(inference, "configured_backend", lambda _root: "cpu")
     monkeypatch.setattr(inference, "nvidia_gpus", lambda: [])
 
     def fake_run(args, **_kwargs):
