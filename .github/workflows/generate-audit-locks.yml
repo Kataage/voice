@@ -1,16 +1,15 @@
 name: generate-audit-locks
 
 on:
-  push:
-    branches:
-      - fix/deep-audit-hardening
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   locks:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'fix/deep-audit-hardening' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
