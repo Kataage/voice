@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import sqlite3
 from collections.abc import Iterator
@@ -43,7 +44,7 @@ def _prepare_cache_policy() -> str:
 
     repo = _repo_root()
     contract = {
-        "schema": 10,
+        "schema": 11,
         "prepare_result_schema": PREPARE_RESULT_SCHEMA,
         "dataset_schema": DATASET_SCHEMA_VERSION,
         "asr_revision": ASR_MODEL_REVISION,
@@ -68,7 +69,7 @@ def _prepare_cache_policy() -> str:
         "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"10-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"11-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
@@ -85,6 +86,16 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _safe_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _nonempty_file(path: Path) -> bool:
@@ -146,6 +157,16 @@ def _jsonl_contract(path: Path, *, path_key: str | None = None) -> int | None:
     return count
 
 
+def _json_object_list(path: Path) -> list[dict[str, Any]] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        return None
+    return value
+
+
 def _sqlite_contract(path: Path, *, expected_utterances: int) -> bool:
     """Validate the lightweight canonical dataset contract without a full DB scan."""
 
@@ -166,6 +187,76 @@ def _sqlite_contract(path: Path, *, expected_utterances: int) -> bool:
     if schema_row is None or count_row is None:
         return False
     return str(schema_row[0]) == str(DATASET_SCHEMA_VERSION) and int(count_row[0]) == expected_utterances
+
+
+def _canonical_prepare_json_complete(
+    dataset: Path,
+    numeric_values: dict[str, int],
+    *,
+    expected_usable_seconds: float,
+) -> bool:
+    inventory = _json_object_list(dataset / "source_inventory.json")
+    master = _json_object_list(dataset / "master.json")
+    skipped = _json_object_list(dataset / "skipped_sources.json")
+    if inventory is None or master is None or skipped is None:
+        return False
+    if len(inventory) != numeric_values["sources"]:
+        return False
+    if len(master) != numeric_values["utterances"]:
+        return False
+    if len(skipped) != numeric_values["skipped_sources"]:
+        return False
+
+    source_ids: set[str] = set()
+    for source in inventory:
+        digest = source.get("sha256")
+        if not isinstance(digest, str) or len(digest) < 16:
+            return False
+        source_id = digest[:16]
+        if source_id in source_ids:
+            return False
+        source_ids.add(source_id)
+
+    utterance_ids: set[str] = set()
+    target_count = 0
+    usable_count = 0
+    usable_seconds = 0.0
+    target_sources: set[str] = set()
+    for row in master:
+        item_id = row.get("id")
+        source_id = row.get("source_id")
+        if not isinstance(item_id, str) or not item_id or item_id in utterance_ids:
+            return False
+        if not isinstance(source_id, str) or source_id not in source_ids:
+            return False
+        utterance_ids.add(item_id)
+        if bool(row.get("target")):
+            target_count += 1
+            target_sources.add(source_id)
+            if row.get("audio_path") and row.get("text_annotated"):
+                start = _safe_float(row.get("start"))
+                end = _safe_float(row.get("end"))
+                if start is None or end is None or end < start:
+                    return False
+                usable_count += 1
+                usable_seconds += end - start
+
+    if target_count != numeric_values["target_utterances"]:
+        return False
+    if usable_count != numeric_values["usable_tts_utterances"]:
+        return False
+    if round(usable_seconds, 2) != round(expected_usable_seconds, 2):
+        return False
+
+    skipped_ids: set[str] = set()
+    for item in skipped:
+        source_id = item.get("source_id")
+        if not isinstance(source_id, str) or source_id not in source_ids:
+            return False
+        if source_id in skipped_ids or source_id in target_sources:
+            return False
+        skipped_ids.add(source_id)
+    return True
 
 
 def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
@@ -205,7 +296,16 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         if value is None or value < 0:
             return False
         numeric_values[key] = value
+    usable_seconds = _safe_float(result.get("usable_seconds"))
+    if usable_seconds is None or usable_seconds < 0.0:
+        return False
     if numeric_values["usable_tts_utterances"] == 0:
+        return False
+    if numeric_values["skipped_sources"] > numeric_values["sources"]:
+        return False
+    if numeric_values["target_utterances"] > numeric_values["utterances"]:
+        return False
+    if numeric_values["usable_tts_utterances"] > numeric_values["target_utterances"]:
         return False
 
     dataset = persona_root / "dataset"
@@ -217,6 +317,12 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
             dataset / "master.json",
             dataset / "master.sqlite3",
         )
+    ):
+        return False
+    if not _canonical_prepare_json_complete(
+        dataset,
+        numeric_values,
+        expected_usable_seconds=usable_seconds,
     ):
         return False
 
@@ -242,13 +348,6 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         actual = _jsonl_contract(path, path_key=path_key)
         if expected is None or expected < 0 or actual is None or actual != expected:
             return False
-
-    try:
-        skipped = json.loads((dataset / "skipped_sources.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(skipped, list) or len(skipped) != numeric_values["skipped_sources"]:
-        return False
 
     bank = persona_root / "references" / "bank.json"
     try:
