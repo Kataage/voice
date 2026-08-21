@@ -80,7 +80,6 @@ def infer(payload: dict) -> dict:
         do_sample=True,
         temperature=float(payload.get("temperature", 0.1)),
         top_k=50,
-        top_p=0.9,
         repetition_penalty=1.05,
         max_new_tokens=int(payload.get("max_new_tokens", 384)),
     )
