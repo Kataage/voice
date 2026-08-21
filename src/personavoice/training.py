@@ -98,10 +98,16 @@ def _has_training_artifacts(paths: PersonaPaths) -> bool:
     return latents.is_dir() and any(latents.iterdir())
 
 
-def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str | None:
+def train_lfm(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> str:
     dataset = paths.dataset / "lfm_train.jsonl"
-    if _line_count(dataset) < 2:
-        return None
+    example_count = _line_count(dataset)
+    if example_count < 2:
+        raise RuntimeError(
+            "training.lfm_lora is enabled, but fewer than two valid conversational "
+            f"examples were exported ({example_count}). Add source conversations containing "
+            "the authorized speaker responding to another speaker, rerun `persona prepare`, "
+            "or deliberately set training.lfm_lora: false."
+        )
     base = repo_root / "models" / "lfm" / "base"
     if not (base / "config.json").exists():
         raise FileNotFoundError("LFM base model is missing. Run `persona setup --download-models`.")
@@ -149,7 +155,11 @@ def train_seed_vc(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> s
     audio_dir = paths.dataset / "seed_vc" / "audio"
     audio_files = list(audio_dir.glob("*.flac")) if audio_dir.exists() else []
     if len(audio_files) < 2:
-        return None
+        raise RuntimeError(
+            "training.seed_vc_finetune is enabled, but fewer than two target-speaker "
+            f"audio clips were exported ({len(audio_files)}). Add usable target audio, "
+            "rerun `persona prepare`, or deliberately set training.seed_vc_finetune: false."
+        )
 
     health = worker(repo_root, "seed_vc").call(repo_root, "health", {"deep": False})
     if not bool(health.get("cuda")):
