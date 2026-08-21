@@ -1,0 +1,34 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+.DS_Store
+Thumbs.db
+
+# Local model/data artifacts
+personas/*/raw/*
+personas/*/identity/*
+personas/*/dataset/*
+personas/*/references/*
+personas/*/models/*
+personas/*/outputs/*
+personas/*/cache/*
+personas/*/logs/*
+models/
+cache/
+logs/
+
+# Keep directory markers and human-editable persona config
+!personas/*/raw/.gitkeep
+!personas/*/identity/.gitkeep
+!personas/*/dataset/.gitkeep
+!personas/*/references/.gitkeep
+!personas/*/models/.gitkeep
+!personas/*/outputs/.gitkeep
+!personas/*/cache/.gitkeep
+!personas/*/logs/.gitkeep
+!personas/*/persona.yaml
+!personas/*/state.json
