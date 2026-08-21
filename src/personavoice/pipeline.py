@@ -29,7 +29,7 @@ from personavoice.speaker import (
 from personavoice.state import StateStore
 from personavoice.workers import worker
 
-PREPARE_SCHEMA_VERSION = 3
+PREPARE_SCHEMA_VERSION = 4
 
 
 def _dump(path: Path, value: Any) -> None:
@@ -497,6 +497,21 @@ def _prepare_fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     ).hexdigest()
 
 
+def _skipped_source_report(
+    path: Path,
+    identity_rejections: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    value = _read_json(path)
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise RuntimeError(f"Invalid skipped-source report: {path}")
+    for item in value:
+        extra = identity_rejections.get(str(item.get("source_id")))
+        if extra is not None:
+            item.update(extra)
+    _dump(path, value)
+    return value
+
+
 def prepare_persona(
     repo_root: Path,
     paths: PersonaPaths,
@@ -541,7 +556,7 @@ def prepare_persona(
         asr_by_source = _batch_asr(repo_root, paths, cfg, prepared_sources)
         diar_by_source = _batch_diarization(repo_root, paths, prepared_sources)
         all_rows: list[dict[str, Any]] = []
-        skipped_sources: list[dict[str, Any]] = []
+        identity_rejections: dict[str, dict[str, Any]] = {}
 
         for prepared in prepared_sources:
             source_id = str(prepared["source_id"])
@@ -559,15 +574,11 @@ def prepare_persona(
                 threshold=cfg.prepare.min_identity_similarity,
             )
             if target_label == TARGET_NOT_FOUND:
-                skipped_sources.append(
-                    {
-                        "source_id": source_id,
-                        "source_path": source["path"],
-                        "reason": "authorized_speaker_below_identity_threshold",
-                        "best_similarity": round(float(target_similarity), 6),
-                        "threshold": cfg.prepare.min_identity_similarity,
-                    }
-                )
+                identity_rejections[source_id] = {
+                    "reason": "authorized_speaker_below_identity_threshold",
+                    "best_similarity": round(float(target_similarity), 6),
+                    "threshold": cfg.prepare.min_identity_similarity,
+                }
             exclusive = diarization.get("exclusive_turns") or diarization.get("turns") or []
             regular = diarization.get("turns") or exclusive
             source_rows = _turn_rows(
@@ -647,7 +658,10 @@ def prepare_persona(
         master_db = paths.dataset / "master.sqlite3"
         replace_utterances(master_db, all_rows)
         _dump(paths.dataset / "master.json", all_rows)
-        _dump(paths.dataset / "skipped_sources.json", skipped_sources)
+        skipped_report = _skipped_source_report(
+            paths.dataset / "skipped_sources.json",
+            identity_rejections,
+        )
         references = _select_references(paths, all_rows, cfg)
         irodori_count = export_irodori(
             master_db,
@@ -665,7 +679,7 @@ def prepare_persona(
         result = {
             "prepare_schema": PREPARE_SCHEMA_VERSION,
             "sources": len(source_inventory),
-            "skipped_sources": len(skipped_sources),
+            "skipped_sources": len(skipped_report),
             "utterances": len(all_rows),
             "target_utterances": len(target_rows),
             "usable_tts_utterances": len(usable),
