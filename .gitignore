@@ -6,10 +6,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Local runtime and large artifacts
+# Local runtime and persona artifacts
 .runtime/
 models/
 vendor/
+personas/*/persona.yaml
 personas/*/raw/*
 personas/*/identity/*
 personas/*/dataset/*
@@ -20,8 +21,9 @@ personas/*/cache/*
 personas/*/logs/*
 personas/*/state.json
 
-# Keep directory markers. persona.yaml remains intentionally versionable;
-# state.json is machine/runtime state and stays local by default.
+# Keep only empty directory markers by default. A real persona configuration can
+# contain a person's name, consent notes, and local training choices, so it is
+# intentionally private unless the operator force-adds it after review.
 !personas/*/raw/.gitkeep
 !personas/*/identity/.gitkeep
 !personas/*/dataset/.gitkeep
