@@ -32,6 +32,11 @@ from personavoice.model_assets import (
     SENSE_MODEL_WEIGHT_SHA256,
 )
 from personavoice.process import CommandError, run
+from personavoice.seed_vc_assets import (
+    contract_digest as seed_vc_contract_digest,
+    materialize as materialize_seed_vc_assets,
+    ready_marker as seed_vc_ready_marker,
+)
 from personavoice.workers import local_model_env, worker
 
 IRODORI_REPO = "https://github.com/Aratako/Irodori-TTS.git"
@@ -278,6 +283,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
             "lfm_revision": LFM_MODEL_REVISION,
             "asr_revision": ASR_MODEL_REVISION,
+            "seed_vc_asset_contract_sha256": seed_vc_contract_digest(repo_root),
         },
         "prepare_assets": {
             "pyannote_revision": PYANNOTE_MODEL_REVISION,
@@ -509,18 +515,32 @@ def download_models(
         downloaded.append(SENSE_MODEL_ID)
 
     if include_seed_vc:
-        seed_marker = runtime / "seed-vc-models-ready"
-        if seed_marker.exists():
-            reused.append("Seed-VC-v2-default-checkpoints")
-        else:
+        seed_assets = materialize_seed_vc_assets(
+            repo_root,
+            cache_dir=hub_cache,
+            token=token,
+        )
+        downloaded.extend(f"Seed-VC:{name}" for name in seed_assets["downloaded"])
+        reused.extend(f"Seed-VC:{name}" for name in seed_assets["reused"])
+        seed_digest = seed_vc_contract_digest(repo_root)
+        marker = seed_vc_ready_marker(repo_root)
+        try:
+            marker_matches = marker.is_file() and marker.read_text(encoding="utf-8").strip() == seed_digest
+        except OSError:
+            marker_matches = False
+        if seed_assets["downloaded"] or not marker_matches:
+            # Prove the pinned local views can instantiate with HF network access
+            # disabled before publishing the ready marker. The worker itself
+            # writes the contract digest only after a successful local-only load.
             worker(repo_root, "seed_vc").call(
                 repo_root,
                 "download",
-                {"online": True},
-                offline=False,
+                {"online": False},
+                offline=True,
             )
-            atomic_write_text(seed_marker, "ready\n")
-            downloaded.append("Seed-VC-v2-default-checkpoints")
+            downloaded.append("Seed-VC-v2-local-runtime")
+        else:
+            reused.append("Seed-VC-v2-local-runtime")
 
     return {
         "downloaded": downloaded,
