@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 def _now() -> str:
@@ -21,7 +22,10 @@ class StateStore:
     def save(self, state: dict[str, Any]) -> None:
         state["updated_at"] = _now()
         temp = self.path.with_suffix(".json.tmp")
-        temp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         temp.replace(self.path)
 
     def stage(self, name: str) -> dict[str, Any]:
@@ -55,11 +59,23 @@ class StateStore:
         except Exception as exc:
             state = self.load()
             stage = state.setdefault("stages", {}).setdefault(name, {})
-            stage.update({"status": "failed", "finished_at": _now(), "error": str(exc)})
+            stage.update(
+                {
+                    "status": "failed",
+                    "finished_at": _now(),
+                    "error": str(exc),
+                }
+            )
             self.save(state)
             raise
         else:
             state = self.load()
             stage = state.setdefault("stages", {}).setdefault(name, {})
-            stage.update({"status": "complete", "finished_at": _now(), "error": None})
+            stage.update(
+                {
+                    "status": "complete",
+                    "finished_at": _now(),
+                    "error": None,
+                }
+            )
             self.save(state)
