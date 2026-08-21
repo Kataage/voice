@@ -76,6 +76,12 @@ jobs:
         run: |
           project="workers/${{ matrix.worker }}"
           uv run --project "$project" --no-sync python -m compileall -q "$project"
+      - name: Validate LFM trainer API
+        if: ${{ matrix.worker == 'lfm' }}
+        shell: bash
+        run: |
+          project="workers/${{ matrix.worker }}"
+          uv run --project "$project" --no-sync python -c "from trl import SFTConfig; c=SFTConfig(output_dir='.runtime/ci-lfm', completion_only_loss=True); assert c.completion_only_loss is True"
       - name: Validate locked GPU extra
         if: ${{ matrix.gpu_extra != '' }}
         shell: bash
