@@ -179,13 +179,18 @@ def test_enabled_seed_vc_training_rejects_silent_data_shortage(tmp_path: Path):
     paths = init_persona(tmp_path, "alice", authorized=True)
     cfg = PersonaConfig.load(paths.config)
     cfg.training.seed_vc_finetune = True
-    with pytest.raises(RuntimeError, match="fewer than two target-speaker"):
+    with pytest.raises(RuntimeError, match="fewer than two valid target-speaker"):
         training.train_seed_vc(tmp_path, paths, cfg)
 
 
 def test_irodori_resume_uses_highest_numeric_step(tmp_path: Path):
-    for name in ("checkpoint_900", "checkpoint_1000", "checkpoint_best_val_loss_1200_0.2"):
-        (tmp_path / name).mkdir()
+    for name in ("checkpoint_900", "checkpoint_1000"):
+        checkpoint = tmp_path / name
+        checkpoint.mkdir()
+        (checkpoint / "adapter_config.json").write_text("{}\n", encoding="utf-8")
+        (checkpoint / "adapter_model.safetensors").write_bytes(b"weights")
+        (checkpoint / "trainer_state.pt").write_bytes(b"state")
+    (tmp_path / "checkpoint_best_val_loss_1200_0.2").mkdir()
     assert irodori._latest_resume(tmp_path) == tmp_path / "checkpoint_1000"
 
     speaker_900 = tmp_path / "checkpoint_900.speaker.safetensors"
