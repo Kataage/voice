@@ -9,8 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from personavoice.atomic import atomic_write_json
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
+    LFM_MODEL_REVISION,
     PYANNOTE_MODEL_REVISION,
     SENSE_MODEL_CMVN_SHA256,
     SENSE_MODEL_TOKENIZER_SHA256,
@@ -74,6 +76,154 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _nonempty_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _adapter_weight(path: Path) -> Path | None:
+    for name in ("adapter_model.safetensors", "adapter_model.bin"):
+        candidate = path / name
+        if _nonempty_file(candidate):
+            return candidate
+    return None
+
+
+def _irodori_lora_complete(path: Path) -> bool:
+    return _nonempty_file(path / "adapter_config.json") and _adapter_weight(path) is not None
+
+
+def _lfm_adapter_complete(path: Path) -> bool:
+    if not _irodori_lora_complete(path):
+        return False
+    marker = path / ".personavoice-base-revision"
+    if not marker.is_file():
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == LFM_MODEL_REVISION
+    except OSError:
+        return False
+
+
+def _jsonl_contract(path: Path, *, path_key: str | None = None) -> tuple[int, bool] | None:
+    if not path.is_file():
+        return None
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if not isinstance(value, dict):
+                    return None
+                count += 1
+                if path_key is not None:
+                    raw_path = value.get(path_key)
+                    if not isinstance(raw_path, str) or not raw_path:
+                        return None
+                    artifact = Path(raw_path)
+                    if not _nonempty_file(artifact):
+                        # A zero-byte derived audio file cannot become valid by
+                        # merely rerunning exports; delete it so prepare recuts it.
+                        if artifact.is_file() and artifact.stat().st_size == 0:
+                            artifact.unlink(missing_ok=True)
+                        return None
+    except (OSError, json.JSONDecodeError):
+        return None
+    return count, True
+
+
+def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    dataset = persona_root / "dataset"
+    required_nonempty = (
+        dataset / "source_inventory.json",
+        dataset / "master.json",
+        dataset / "master.sqlite3",
+    )
+    if not all(_nonempty_file(path) for path in required_nonempty):
+        return False
+
+    expected_master = dataset / "master.sqlite3"
+    recorded_master = result.get("master_db")
+    if not isinstance(recorded_master, str):
+        return False
+    try:
+        if Path(recorded_master).resolve() != expected_master.resolve():
+            return False
+    except OSError:
+        return False
+
+    contracts = (
+        (
+            dataset / "irodori_source.jsonl",
+            "audio",
+            int(result.get("irodori_examples", -1)),
+        ),
+        (dataset / "lfm_train.jsonl", None, int(result.get("lfm_examples", -1))),
+        (
+            dataset / "seed_vc" / "manifest.jsonl",
+            "audio",
+            int(result.get("seed_vc_examples", -1)),
+        ),
+    )
+    for path, path_key, expected_count in contracts:
+        contract = _jsonl_contract(path, path_key=path_key)
+        if contract is None or contract[0] != expected_count:
+            return False
+
+    bank = persona_root / "references" / "bank.json"
+    if not bank.is_file():
+        return False
+    try:
+        bank_value = json.loads(bank.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(bank_value, dict) or not isinstance(bank_value.get("files"), list):
+        return False
+    reference_files = bank_value["files"]
+    if len(reference_files) != int(result.get("references", -1)):
+        return False
+    for raw_path in reference_files:
+        if not isinstance(raw_path, str) or not _nonempty_file(Path(raw_path)):
+            return False
+    return True
+
+
+def _train_artifacts_complete(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    irodori = result.get("irodori")
+    if not isinstance(irodori, dict):
+        return False
+    base = irodori.get("base")
+    if not isinstance(base, str) or not _nonempty_file(Path(base)):
+        return False
+    speaker = irodori.get("speaker_embedding")
+    if speaker is not None and (
+        not isinstance(speaker, str) or not _nonempty_file(Path(speaker))
+    ):
+        return False
+    lora = irodori.get("lora_adapter")
+    if lora is not None and (
+        not isinstance(lora, str) or not _irodori_lora_complete(Path(lora))
+    ):
+        return False
+
+    lfm = result.get("lfm_adapter")
+    if lfm is not None and (
+        not isinstance(lfm, str) or not _lfm_adapter_complete(Path(lfm))
+    ):
+        return False
+    seed = result.get("seed_vc_cfm")
+    if seed is not None and (
+        not isinstance(seed, str) or not _nonempty_file(Path(seed))
+    ):
+        return False
+    return True
+
+
 class StateStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -83,12 +233,7 @@ class StateStore:
 
     def save(self, state: dict[str, Any]) -> None:
         state["updated_at"] = _now()
-        temp = self.path.with_suffix(".json.tmp")
-        temp.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temp.replace(self.path)
+        atomic_write_json(self.path, state)
 
     def stage(self, name: str) -> dict[str, Any]:
         return self.load().setdefault("stages", {}).get(name, {})
@@ -97,7 +242,13 @@ class StateStore:
         stage = self.stage(name)
         if name == "prepare" and stage.get("cache_policy_version") != PREPARE_CACHE_POLICY_VERSION:
             return False
-        return stage.get("status") == "complete" and stage.get("fingerprint") == fingerprint
+        if stage.get("status") != "complete" or stage.get("fingerprint") != fingerprint:
+            return False
+        if name == "prepare":
+            return _prepare_artifacts_complete(self.path.parent, stage.get("result"))
+        if name == "train":
+            return _train_artifacts_complete(stage.get("result"))
+        return True
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
         if (
