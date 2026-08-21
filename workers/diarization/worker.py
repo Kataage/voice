@@ -13,6 +13,13 @@ from pyannote.audio import Pipeline
 MODEL_ID = "pyannote/speaker-diarization-community-1"
 MODEL_REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
 REVISION_MARKER = ".personavoice-revision"
+REQUIRED_MODEL_FILES = (
+    "config.yaml",
+    "embedding/pytorch_model.bin",
+    "segmentation/pytorch_model.bin",
+    "plda/plda.npz",
+    "plda/xvec_transform.npz",
+)
 
 
 def read_request(path: str) -> dict:
@@ -46,14 +53,23 @@ def _atomic_write_text(path: Path, text: str) -> None:
         temp.unlink(missing_ok=True)
 
 
+def _materialization_complete(local: Path) -> bool:
+    return all(_nonempty_file(local / relative) for relative in REQUIRED_MODEL_FILES)
+
+
 def local_source() -> str:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "pyannote" / "community-1"
-    config = local / "config.yaml"
     marker = local / REVISION_MARKER
-    if not _nonempty_file(config):
+    if not _materialization_complete(local):
+        missing = [
+            relative
+            for relative in REQUIRED_MODEL_FILES
+            if not _nonempty_file(local / relative)
+        ]
         raise FileNotFoundError(
-            f"Pinned pyannote model is missing or incomplete: {config}. "
+            "Pinned pyannote model is missing or incomplete: "
+            f"{local} (invalid: {', '.join(missing)}). "
             "Run `persona setup --download-models`."
         )
     actual_revision = _read_marker(marker)
@@ -158,10 +174,15 @@ def download(payload: dict) -> dict:
         cache_dir=Path(os.environ["HF_HOME"]),
         token=token,
     )
-    config = local / "config.yaml"
-    if not _nonempty_file(config):
+    if not _materialization_complete(local):
+        missing = [
+            relative
+            for relative in REQUIRED_MODEL_FILES
+            if not _nonempty_file(local / relative)
+        ]
         raise FileNotFoundError(
-            f"Pinned pyannote download completed without a valid config: {config}"
+            "Pinned pyannote download completed without required model files: "
+            f"{', '.join(missing)}"
         )
     _atomic_write_text(local / REVISION_MARKER, MODEL_REVISION + "\n")
     return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}
