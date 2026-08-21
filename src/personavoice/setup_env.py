@@ -41,6 +41,28 @@ SEED_VC_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
 REVISION_MARKER = ".personavoice-revision"
 IRODORI_LOCK_SWAP_MARKER = "irodori-lock-swap.json"
 SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
+_LFM_REQUIRED_FILES = (
+    "config.json",
+    "model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "chat_template.jinja",
+)
+_ASR_REQUIRED_FILES = (
+    "config.json",
+    "model.bin",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "vocabulary.json",
+)
+_PYANNOTE_REQUIRED_FILES = (
+    "config.yaml",
+    "embedding/pytorch_model.bin",
+    "segmentation/pytorch_model.bin",
+    "plda/plda.npz",
+    "plda/xvec_transform.npz",
+)
 
 
 def _irodori_swap_marker(repo_root: Path) -> Path:
@@ -283,6 +305,13 @@ def _verify_sha256(path: Path, expected: str, *, label: str) -> None:
         )
 
 
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _download_verified_file(
     *,
     model_id: str,
@@ -316,59 +345,23 @@ def _download_verified_file(
     return target, False
 
 
-def _snapshot_if_missing(
-    *,
-    model_id: str,
-    local_dir: Path,
-    marker: Path,
-    cache_dir: Path,
-    token: str | None = None,
-    revision: str | None = None,
-) -> bool:
-    revision_path = local_dir / REVISION_MARKER
-    current_revision = (
-        revision_path.read_text(encoding="utf-8").strip()
-        if revision_path.is_file()
-        else None
-    )
-    if marker.exists() and (revision is None or current_revision == revision):
-        return False
-
-    if local_dir.exists():
-        shutil.rmtree(local_dir)
-    local_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
-        repo_id=model_id,
-        revision=revision,
-        local_dir=local_dir,
-        cache_dir=cache_dir,
-        token=token,
-    )
-    if not marker.exists():
-        raise FileNotFoundError(
-            f"Model download for {model_id} completed but expected marker is missing: {marker}"
-        )
-    if revision is not None:
-        atomic_write_text(revision_path, revision + "\n")
-    return True
-
-
 def _snapshot_pinned(
     *,
     model_id: str,
     revision: str,
     local_dir: Path,
-    required_file: str,
+    required_files: tuple[str, ...],
     cache_dir: Path,
+    token: str | None = None,
 ) -> bool:
     revision_path = local_dir / REVISION_MARKER
-    required_path = local_dir / required_file
     current_revision = (
         revision_path.read_text(encoding="utf-8").strip()
         if revision_path.is_file()
         else None
     )
-    if required_path.is_file() and current_revision == revision:
+    complete = all(_nonempty_file(local_dir / relative) for relative in required_files)
+    if complete and current_revision == revision:
         return False
 
     shutil.rmtree(local_dir, ignore_errors=True)
@@ -378,11 +371,17 @@ def _snapshot_pinned(
         revision=revision,
         local_dir=local_dir,
         cache_dir=cache_dir,
+        token=token,
     )
-    if not required_path.is_file():
+    missing = [
+        relative
+        for relative in required_files
+        if not _nonempty_file(local_dir / relative)
+    ]
+    if missing:
         raise FileNotFoundError(
             f"Pinned model download for {model_id}@{revision} completed but "
-            f"expected file is missing: {required_path}"
+            f"required files are missing or empty: {', '.join(missing)}"
         )
     atomic_write_text(revision_path, revision + "\n")
     return True
@@ -439,7 +438,7 @@ def download_models(
         model_id=LFM_MODEL_ID,
         revision=LFM_MODEL_REVISION,
         local_dir=lfm_dir,
-        required_file="config.json",
+        required_files=_LFM_REQUIRED_FILES,
         cache_dir=hub_cache,
     ):
         downloaded.append(f"{LFM_MODEL_ID}@{LFM_MODEL_REVISION}")
@@ -451,7 +450,7 @@ def download_models(
         model_id=ASR_MODEL_ID,
         revision=ASR_MODEL_REVISION,
         local_dir=asr_dir,
-        required_file="model.bin",
+        required_files=_ASR_REQUIRED_FILES,
         cache_dir=hub_cache,
     ):
         downloaded.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
@@ -459,10 +458,9 @@ def download_models(
         reused.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
 
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
-    pyannote_marker = pyannote_dir / "config.yaml"
     pyannote_revision_marker = pyannote_dir / REVISION_MARKER
     pyannote_is_pinned = (
-        pyannote_marker.is_file()
+        all(_nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES)
         and pyannote_revision_marker.is_file()
         and pyannote_revision_marker.read_text(encoding="utf-8").strip()
         == PYANNOTE_MODEL_REVISION
@@ -473,11 +471,11 @@ def download_models(
             "Accept its Hugging Face usage terms, then set HF_TOKEN in the environment. "
             "The token is never stored by PersonaVoice."
         )
-    if _snapshot_if_missing(
+    if _snapshot_pinned(
         model_id=PYANNOTE_MODEL_ID,
         revision=PYANNOTE_MODEL_REVISION,
         local_dir=pyannote_dir,
-        marker=pyannote_marker,
+        required_files=_PYANNOTE_REQUIRED_FILES,
         cache_dir=hub_cache,
         token=token,
     ):

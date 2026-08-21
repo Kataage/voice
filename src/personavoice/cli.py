@@ -17,6 +17,7 @@ from personavoice.pipeline import prepare_persona
 from personavoice.project import find_repo_root, get_persona, init_persona
 from personavoice.repair import repair_failed_model_materializations
 from personavoice.setup_env import download_models, install_environments
+from personavoice.status import persona_status
 from personavoice.training import train_persona
 
 app = typer.Typer(no_args_is_help=True, help="PersonaVoice local-first voice persona toolkit")
@@ -139,10 +140,16 @@ def consent(
 
 
 @app.command()
-def status(name: str) -> None:
-    _, paths, cfg = _load(name)
-    state = json.loads(paths.state.read_text(encoding="utf-8"))
-    _print({"config": cfg.model_dump(mode="json"), "state": state})
+def status(
+    name: str,
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Re-hash current inputs and datasets to detect stale prepare/train fingerprints.",
+    ),
+) -> None:
+    root, paths, cfg = _load(name)
+    _print(persona_status(root, paths, cfg, verify_inputs=verify))
 
 
 @app.command()

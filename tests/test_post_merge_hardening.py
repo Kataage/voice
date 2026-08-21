@@ -42,31 +42,28 @@ def _state(path: Path, *, stage: str, fingerprint: str, result: dict) -> StateSt
     return StateStore(path)
 
 
-def _write_master(path: Path, clip: Path) -> None:
-    replace_utterances(
-        path,
-        [
-            {
-                "id": "source_000001",
-                "source_id": "source",
-                "source_path": "source.wav",
-                "start": 0.0,
-                "end": 1.0,
-                "speaker": "SPEAKER_00",
-                "target": True,
-                "speaker_similarity": 0.9,
-                "speaker_coverage": 1.0,
-                "overlap_ratio": 0.0,
-                "text": "a",
-                "text_annotated": "a",
-                "emotion": "NEUTRAL",
-                "events": [],
-                "caption": "",
-                "audio_path": str(clip.resolve()),
-                "quality": 1.0,
-            }
-        ],
-    )
+def _write_master(path: Path, clip: Path, source_id: str) -> dict:
+    row = {
+        "id": f"{source_id}_000001",
+        "source_id": source_id,
+        "source_path": "source.wav",
+        "start": 0.0,
+        "end": 1.0,
+        "speaker": "SPEAKER_00",
+        "target": True,
+        "speaker_similarity": 0.9,
+        "speaker_coverage": 1.0,
+        "overlap_ratio": 0.0,
+        "text": "a",
+        "text_annotated": "a",
+        "emotion": "NEUTRAL",
+        "events": [],
+        "caption": "",
+        "audio_path": str(clip.resolve()),
+        "quality": 1.0,
+    }
+    replace_utterances(path, [row])
+    return row
 
 
 def test_worker_sync_refuses_missing_lockfile(tmp_path: Path):
@@ -111,11 +108,16 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
     dataset = persona / "dataset"
     references = persona / "references"
     fingerprint = "prepare-fingerprint"
+    digest = "b" * 64
+    source_id = digest[:16]
 
-    _write(dataset / "source_inventory.json", b"[]")
-    _write(dataset / "master.json", b"[]")
     clip = _write(dataset / "clips" / "u.flac", b"audio")
-    _write_master(dataset / "master.sqlite3", clip)
+    row = _write_master(dataset / "master.sqlite3", clip, source_id)
+    (dataset / "source_inventory.json").write_text(
+        json.dumps([{"sha256": digest, "path": "source.wav"}]) + "\n",
+        encoding="utf-8",
+    )
+    (dataset / "master.json").write_text(json.dumps([row]) + "\n", encoding="utf-8")
     seed_clip = _write(dataset / "seed_vc" / "audio" / "u.flac", b"audio")
     (dataset / "irodori_source.jsonl").write_text(
         json.dumps({"audio": str(clip.resolve()), "text": "a"}) + "\n",
@@ -149,6 +151,11 @@ def test_prepare_cache_hit_requires_exported_artifacts(tmp_path: Path):
         "references": 1,
     }
     store = _state(persona / "state.json", stage="prepare", fingerprint=fingerprint, result=result)
+    assert store.is_complete("prepare", fingerprint)
+
+    (dataset / "master.json").write_text("[]\n", encoding="utf-8")
+    assert not store.is_complete("prepare", fingerprint)
+    (dataset / "master.json").write_text(json.dumps([row]) + "\n", encoding="utf-8")
     assert store.is_complete("prepare", fingerprint)
 
     clip.unlink()

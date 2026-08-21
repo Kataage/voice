@@ -26,13 +26,14 @@ def test_snapshot_pinned_replaces_unmarked_materialization(tmp_path: Path, monke
         target = Path(kwargs["local_dir"])
         target.mkdir(parents=True, exist_ok=True)
         (target / "config.json").write_text("pinned", encoding="utf-8")
+        (target / "weights.bin").write_bytes(b"weights")
 
     monkeypatch.setattr(setup_env, "snapshot_download", fake_snapshot_download)
     changed = setup_env._snapshot_pinned(
         model_id="org/model",
         revision="abc123",
         local_dir=local,
-        required_file="config.json",
+        required_files=("config.json", "weights.bin"),
         cache_dir=tmp_path / "cache",
     )
 
@@ -42,10 +43,11 @@ def test_snapshot_pinned_replaces_unmarked_materialization(tmp_path: Path, monke
     assert (local / setup_env.REVISION_MARKER).read_text(encoding="utf-8").strip() == "abc123"
 
 
-def test_snapshot_pinned_reuses_exact_materialization(tmp_path: Path, monkeypatch):
+def test_snapshot_pinned_reuses_only_complete_exact_materialization(tmp_path: Path, monkeypatch):
     local = tmp_path / "model"
     local.mkdir()
     (local / "config.json").write_text("pinned", encoding="utf-8")
+    (local / "weights.bin").write_bytes(b"weights")
     (local / setup_env.REVISION_MARKER).write_text("abc123\n", encoding="utf-8")
 
     def unexpected_download(**_kwargs):
@@ -56,10 +58,62 @@ def test_snapshot_pinned_reuses_exact_materialization(tmp_path: Path, monkeypatc
         model_id="org/model",
         revision="abc123",
         local_dir=local,
-        required_file="config.json",
+        required_files=("config.json", "weights.bin"),
         cache_dir=tmp_path / "cache",
     )
     assert changed is False
+
+
+def test_snapshot_pinned_rematerializes_when_secondary_asset_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    local = tmp_path / "model"
+    local.mkdir()
+    (local / "config.json").write_text("pinned", encoding="utf-8")
+    (local / setup_env.REVISION_MARKER).write_text("abc123\n", encoding="utf-8")
+    calls = []
+
+    def fake_snapshot_download(**kwargs):
+        calls.append(kwargs)
+        target = Path(kwargs["local_dir"])
+        (target / "config.json").write_text("pinned", encoding="utf-8")
+        (target / "weights.bin").write_bytes(b"weights")
+
+    monkeypatch.setattr(setup_env, "snapshot_download", fake_snapshot_download)
+    changed = setup_env._snapshot_pinned(
+        model_id="org/model",
+        revision="abc123",
+        local_dir=local,
+        required_files=("config.json", "weights.bin"),
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert changed is True
+    assert len(calls) == 1
+    assert (local / "weights.bin").read_bytes() == b"weights"
+
+
+def test_snapshot_pinned_never_finalizes_incomplete_download(tmp_path: Path, monkeypatch):
+    local = tmp_path / "model"
+
+    def incomplete_snapshot_download(**kwargs):
+        target = Path(kwargs["local_dir"])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "config.json").write_text("pinned", encoding="utf-8")
+        (target / "weights.bin").write_bytes(b"")
+
+    monkeypatch.setattr(setup_env, "snapshot_download", incomplete_snapshot_download)
+    with pytest.raises(FileNotFoundError, match="required files are missing or empty"):
+        setup_env._snapshot_pinned(
+            model_id="org/model",
+            revision="abc123",
+            local_dir=local,
+            required_files=("config.json", "weights.bin"),
+            cache_dir=tmp_path / "cache",
+        )
+
+    assert not (local / setup_env.REVISION_MARKER).exists()
 
 
 def test_verified_file_rejects_checksum_mismatch(tmp_path: Path):

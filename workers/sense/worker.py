@@ -6,6 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
+from uuid import uuid4
 
 import torch
 from funasr import AutoModel
@@ -56,10 +57,21 @@ def _local_dir() -> Path:
     return _root() / "models" / "sense" / "SenseVoiceSmall"
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 def _mark_verified() -> None:
-    runtime = _root() / ".runtime"
-    runtime.mkdir(parents=True, exist_ok=True)
-    (runtime / "sense-model-ready").write_text("verified\n", encoding="utf-8")
+    _atomic_write_text(_root() / ".runtime" / "sense-model-ready", "verified\n")
 
 
 def verify_local_assets() -> dict:

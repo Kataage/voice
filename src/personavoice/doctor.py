@@ -26,6 +26,33 @@ from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_RE
 from personavoice.workers import local_model_env, worker
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
+_LFM_REQUIRED_FILES = (
+    "config.json",
+    "model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "chat_template.jinja",
+)
+_ASR_REQUIRED_FILES = (
+    "config.json",
+    "model.bin",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "vocabulary.json",
+)
+_PYANNOTE_REQUIRED_FILES = (
+    "config.yaml",
+    "embedding/pytorch_model.bin",
+    "segmentation/pytorch_model.bin",
+    "plda/plda.npz",
+    "plda/xvec_transform.npz",
+)
+_SENSE_REQUIRED_FILES = (
+    "model.pt",
+    "am.mvn",
+    "chn_jpn_yue_eng_ko_spectok.bpe.model",
+)
 
 
 def _setup_state(repo_root: Path) -> dict:
@@ -254,13 +281,20 @@ def report(
 ) -> dict:
     required = {name: shutil.which(name) for name in ("uv", "git", "ffmpeg", "ffprobe")}
     runtime = repo_root / ".runtime"
+    lfm_dir = repo_root / "models" / "lfm" / "base"
+    asr_dir = repo_root / "models" / "asr" / "large-v3"
+    pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
+    sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
-        "lfm": _nonempty_file(repo_root / "models/lfm/base/config.json"),
-        "asr": _nonempty_file(repo_root / "models/asr/large-v3/model.bin"),
-        "pyannote": _nonempty_file(repo_root / "models/pyannote/community-1/config.yaml"),
-        "sense": _nonempty_file(runtime / "sense-model-ready"),
+        "lfm": all(_nonempty_file(lfm_dir / name) for name in _LFM_REQUIRED_FILES),
+        "asr": all(_nonempty_file(asr_dir / name) for name in _ASR_REQUIRED_FILES),
+        "pyannote": all(
+            _nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES
+        ),
+        "sense": all(_nonempty_file(sense_dir / name) for name in _SENSE_REQUIRED_FILES)
+        and _read_revision(runtime / "sense-model-ready") == "verified",
         "seed_vc_models": _nonempty_file(runtime / "seed-vc-models-ready"),
         "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
         "irodori_vendor": _nonempty_file(repo_root / "vendor/Irodori-TTS/infer.py"),

@@ -16,6 +16,14 @@ MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"
 MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
 REVISION_MARKER = ".personavoice-revision"
 ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
+REQUIRED_MODEL_FILES = (
+    "config.json",
+    "model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "chat_template.jinja",
+)
 
 
 def _nonempty_file(path: Path) -> bool:
@@ -45,6 +53,10 @@ def _atomic_write_text(path: Path, text: str) -> None:
         temp.unlink(missing_ok=True)
 
 
+def _materialization_complete(local: Path) -> bool:
+    return all(_nonempty_file(local / relative) for relative in REQUIRED_MODEL_FILES)
+
+
 def read_request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -52,11 +64,16 @@ def read_request(path: str) -> dict:
 def base_path() -> str:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "lfm" / "base"
-    config = local / "config.json"
     marker = local / REVISION_MARKER
-    if not _nonempty_file(config):
+    if not _materialization_complete(local):
+        missing = [
+            relative
+            for relative in REQUIRED_MODEL_FILES
+            if not _nonempty_file(local / relative)
+        ]
         raise FileNotFoundError(
-            f"Pinned LFM model is missing or incomplete: {local}. "
+            "Pinned LFM model is missing or incomplete: "
+            f"{local} (invalid: {', '.join(missing)}). "
             "Run `persona setup --download-models`."
         )
     actual_revision = _read_marker(marker)
@@ -144,10 +161,15 @@ def download_model(payload: dict) -> dict:
         local_dir=local,
         cache_dir=Path(os.environ["HF_HOME"]),
     )
-    config = local / "config.json"
-    if not _nonempty_file(config):
+    if not _materialization_complete(local):
+        missing = [
+            relative
+            for relative in REQUIRED_MODEL_FILES
+            if not _nonempty_file(local / relative)
+        ]
         raise FileNotFoundError(
-            f"Pinned LFM download completed without a valid config: {config}"
+            "Pinned LFM download completed without required model files: "
+            f"{', '.join(missing)}"
         )
     _atomic_write_text(local / REVISION_MARKER, MODEL_REVISION + "\n")
     return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}

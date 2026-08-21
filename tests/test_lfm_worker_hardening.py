@@ -45,20 +45,31 @@ def _load_worker(monkeypatch):
     return module
 
 
-def test_lfm_base_path_requires_nonempty_config_and_pinned_revision(tmp_path: Path, monkeypatch):
+def _write_complete_base(base: Path, worker) -> None:
+    base.mkdir(parents=True, exist_ok=True)
+    for name in worker.REQUIRED_MODEL_FILES:
+        path = base / name
+        if name.endswith(".json"):
+            path.write_text("{}\n", encoding="utf-8")
+        elif name.endswith(".jinja"):
+            path.write_text("{{ messages }}\n", encoding="utf-8")
+        else:
+            path.write_bytes(b"weights")
+
+
+def test_lfm_base_path_requires_complete_snapshot_and_pinned_revision(tmp_path: Path, monkeypatch):
     worker = _load_worker(monkeypatch)
     monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
     base = tmp_path / "models" / "lfm" / "base"
-    base.mkdir(parents=True)
-    config = base / "config.json"
+    _write_complete_base(base, worker)
     marker = base / worker.REVISION_MARKER
 
-    config.write_bytes(b"")
+    (base / "model.safetensors").write_bytes(b"")
     marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
     with pytest.raises(FileNotFoundError, match="missing or incomplete"):
         worker.base_path()
 
-    config.write_text("{}\n", encoding="utf-8")
+    (base / "model.safetensors").write_bytes(b"weights")
     marker.write_text("wrong\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="does not match the audited revision"):
         worker.base_path()
@@ -100,12 +111,11 @@ def test_lfm_download_refuses_incomplete_materialization(tmp_path: Path, monkeyp
     monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
-    with pytest.raises(FileNotFoundError, match="without a valid config"):
+    with pytest.raises(FileNotFoundError, match="required model files"):
         worker.download_model({})
 
     base = tmp_path / "models" / "lfm" / "base"
-    base.mkdir(parents=True, exist_ok=True)
-    (base / "config.json").write_text("{}\n", encoding="utf-8")
+    _write_complete_base(base, worker)
     result = worker.download_model({})
     assert result["revision"] == worker.MODEL_REVISION
     assert (base / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from faster_whisper import WhisperModel
 from huggingface_hub import snapshot_download
@@ -12,15 +13,49 @@ PINNED_MODEL_NAME = "large-v3"
 PINNED_MODEL_ID = "Systran/faster-whisper-large-v3"
 PINNED_MODEL_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
 REVISION_MARKER = ".personavoice-revision"
+REQUIRED_MODEL_FILES = (
+    "config.json",
+    "model.bin",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "vocabulary.json",
+)
 
 
 def request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _read_revision(local: Path) -> str | None:
     marker = local / REVISION_MARKER
-    return marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    try:
+        return marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    except OSError:
+        return None
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _materialization_complete(local: Path) -> bool:
+    return all(_nonempty_file(local / relative) for relative in REQUIRED_MODEL_FILES)
 
 
 def model_path(model: str) -> str:
@@ -30,9 +65,16 @@ def model_path(model: str) -> str:
         )
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "asr" / PINNED_MODEL_NAME
-    if not local.is_dir():
+    if not _materialization_complete(local):
+        missing = [
+            relative
+            for relative in REQUIRED_MODEL_FILES
+            if not _nonempty_file(local / relative)
+        ]
         raise FileNotFoundError(
-            f"Pinned ASR model is missing: {local}. Run `persona setup --download-models`."
+            "Pinned ASR model is missing or incomplete: "
+            f"{local} (invalid: {', '.join(missing)}). "
+            "Run `persona setup --download-models`."
         )
     actual_revision = _read_revision(local)
     if actual_revision != PINNED_MODEL_REVISION:
@@ -136,7 +178,17 @@ def download(payload: dict) -> dict:
         local_dir=local,
         cache_dir=Path(os.environ["HF_HOME"]),
     )
-    (local / REVISION_MARKER).write_text(PINNED_MODEL_REVISION + "\n", encoding="utf-8")
+    if not _materialization_complete(local):
+        missing = [
+            relative
+            for relative in REQUIRED_MODEL_FILES
+            if not _nonempty_file(local / relative)
+        ]
+        raise FileNotFoundError(
+            "Pinned ASR download completed without required model files: "
+            f"{', '.join(missing)}"
+        )
+    _atomic_write_text(local / REVISION_MARKER, PINNED_MODEL_REVISION + "\n")
     return {
         "model": PINNED_MODEL_ID,
         "revision": PINNED_MODEL_REVISION,
