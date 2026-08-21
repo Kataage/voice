@@ -18,24 +18,41 @@ from personavoice.model_assets import (
 )
 
 
-def _prepare_cache_policy() -> str:
-    """Return a compact prepare-semantics/model contract identifier.
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
-    Changing a preprocessing model pin must invalidate derived ASR, diarization,
-    identity, SenseVoice, and clip caches even when the raw files and user config
-    are unchanged. The explicit schema prefix covers code-level cache semantics.
+
+def _file_contract(path: Path) -> str:
+    if not path.is_file():
+        return "missing"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _prepare_cache_policy() -> str:
+    """Return a compact preprocessing/model/environment contract identifier.
+
+    A prepare cache is only reproducible when both the audited model assets and
+    the isolated worker dependency graphs are unchanged. Model pins alone are
+    insufficient because ASR segmentation, diarization, and acoustic analysis
+    behavior can change when their runtime libraries change.
     """
 
+    repo = _repo_root()
     contract = {
-        "schema": 4,
+        "schema": 5,
         "asr_revision": ASR_MODEL_REVISION,
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
         "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
         "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
+        "asr_lock_sha256": _file_contract(repo / "workers" / "asr" / "uv.lock"),
+        "diarization_lock_sha256": _file_contract(
+            repo / "workers" / "diarization" / "uv.lock"
+        ),
+        "sense_lock_sha256": _file_contract(repo / "workers" / "sense" / "uv.lock"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"4-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"5-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 # Cached prepare artifacts are valid only for this exact preprocessing contract.
@@ -81,9 +98,9 @@ class StateStore:
 
         The lossless source-audio cache is intentionally retained because it is
         content-addressed by source SHA. ASR/diarization/Sense caches and cut
-        clips are not safe to reuse across arbitrary prepare-setting, model, or
-        code changes, so they are rebuilt when the prepare fingerprint/policy
-        changes or the caller explicitly forces a rebuild.
+        clips are not safe to reuse across arbitrary prepare-setting, model,
+        dependency, or code changes, so they are rebuilt when the prepare
+        fingerprint/policy changes or the caller explicitly forces a rebuild.
         """
 
         persona_root = self.path.parent
