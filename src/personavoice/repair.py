@@ -4,14 +4,36 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+_NON_MATERIALIZATION_ERROR_HINTS = (
+    "local environments are stale",
+    "setup state is missing",
+    "setup state is unreadable",
+    "setup state has an invalid format",
+    "worker .venv is missing",
+    "runtime cannot see cuda",
+    "cuda driver",
+    "cuda initialization",
+    "cudnn",
+    "out of memory",
+)
+
 
 def _is_materialization_failure(health: Any) -> bool:
+    """Return True only when automatic model re-materialization is a safe response.
+
+    Deep worker health can fail because model files are damaged, but it can also
+    fail because the dependency generation is stale, the worker environment is
+    absent, or the GPU runtime is unhealthy. Deleting model snapshots cannot fix
+    those infrastructure failures and can destroy a healthy offline cache view,
+    so they are explicitly excluded from automatic repair.
+    """
+
     if not isinstance(health, dict) or health.get("ok") is not False:
         return False
-    error = str(health.get("error") or "")
-    # doctor adds this error after a worker health call succeeds. Re-downloading
-    # model files cannot fix an unavailable CUDA runtime/driver.
-    return not ("was installed for" in error and "runtime cannot see CUDA" in error)
+    error = str(health.get("error") or "").lower()
+    if any(hint in error for hint in _NON_MATERIALIZATION_ERROR_HINTS):
+        return False
+    return True
 
 
 def repair_failed_model_materializations(
@@ -25,7 +47,7 @@ def repair_failed_model_materializations(
     The shared Hugging Face/ModelScope caches remain intact, so a subsequent
     explicit `download_models` call can normally relink/reuse healthy blobs.
     This function never performs network I/O itself and deliberately does not
-    treat backend/CUDA visibility failures as model corruption.
+    treat environment/backend/GPU visibility failures as model corruption.
     """
 
     repaired: list[str] = []
@@ -47,14 +69,23 @@ def repair_failed_model_materializations(
 
     asset_integrity = verification.get("model_asset_integrity")
     asset_integrity = asset_integrity if isinstance(asset_integrity, dict) else {}
-    asset_error = str(asset_integrity.get("error") or "")
-    if "Irodori checkpoint checksum mismatch" in asset_error:
+    asset_errors = asset_integrity.get("errors")
+    if isinstance(asset_errors, list):
+        asset_messages = [str(value) for value in asset_errors]
+    else:
+        asset_messages = [str(asset_integrity.get("error") or "")]
+
+    if any("Irodori checkpoint checksum mismatch" in value for value in asset_messages):
         shutil.rmtree(repo_root / "models" / "irodori" / "v4.1-small", ignore_errors=True)
         repaired.append("irodori")
-    if "Irodori DACVAE checksum mismatch" in asset_error:
+    if any("Irodori DACVAE checksum mismatch" in value for value in asset_messages):
         shutil.rmtree(repo_root / "models" / "irodori" / "dacvae", ignore_errors=True)
         repaired.append("irodori_dacvae")
-    if "Irodori base checkpoint or DACVAE checkpoint is missing" in asset_error:
+    if any(
+        "Irodori base checkpoint or DACVAE checkpoint is missing/empty" in value
+        or "Irodori base checkpoint or DACVAE checkpoint is missing" in value
+        for value in asset_messages
+    ):
         # Removing both materialized views is safe: download_models verifies the
         # two pinned hashes and reuses the shared cache where possible.
         shutil.rmtree(repo_root / "models" / "irodori" / "v4.1-small", ignore_errors=True)
