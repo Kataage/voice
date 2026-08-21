@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 from huggingface_hub import snapshot_download
+from model_contract import audited_attention_lora_targets
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -109,10 +110,13 @@ def health(payload: dict) -> dict:
     }
     if payload.get("deep"):
         tokenizer, model = load_base()
+        lora_targets = audited_attention_lora_targets(model)
         result.update(
             {
                 "model_loaded": model is not None,
                 "tokenizer_loaded": tokenizer is not None,
+                "lora_targets_ok": True,
+                "lora_target_count": len(lora_targets),
             }
         )
     return result
