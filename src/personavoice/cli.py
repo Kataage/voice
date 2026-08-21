@@ -10,7 +10,9 @@ from rich.console import Console
 from rich.table import Table
 
 from personavoice.config import PersonaConfig
+from personavoice.media import inventory, inventory_fingerprint
 from personavoice.project import find_repo_root, init_persona
+from personavoice.state import StateStore
 
 app = typer.Typer(no_args_is_help=True, help="PersonaVoice local orchestration CLI")
 console = Console()
@@ -81,9 +83,27 @@ def _reserved(command: str) -> None:
 
 
 @app.command()
-def prepare(name: str) -> None:
-    _persona_root(name)
-    _reserved("prepare")
+def prepare(name: str, force: bool = typer.Option(False, "--force")) -> None:
+    """Inventory raw media and record reproducible source metadata."""
+    root = _persona_root(name)
+    config = PersonaConfig.load(root / "persona.yaml")
+    if not config.consent.authorized:
+        console.print("[red]Training preparation is blocked until consent.authorized=true.[/red]")
+        raise typer.Exit(code=3)
+
+    raw_dir = root / "raw"
+    fingerprint = inventory_fingerprint(raw_dir)
+    state = StateStore(root / "state.json")
+    if not force and state.is_complete("media_inventory", fingerprint):
+        console.print("Media inventory is unchanged; skipping.")
+        return
+
+    with state.running("media_inventory", fingerprint):
+        rows = inventory(raw_dir)
+        destination = root / "dataset" / "source_inventory.json"
+        destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    console.print(f"Inventoried [bold]{len(rows)}[/bold] media files -> {destination}")
 
 
 @app.command()
