@@ -30,6 +30,7 @@ IRODORI_REPO = "https://github.com/Aratako/Irodori-TTS.git"
 IRODORI_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 SEED_VC_REPO = "https://github.com/Plachtaa/seed-vc.git"
 SEED_VC_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
+REVISION_MARKER = ".personavoice-revision"
 
 
 def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
@@ -210,6 +211,44 @@ def _snapshot_if_missing(
     return True
 
 
+def _snapshot_pinned(
+    *,
+    model_id: str,
+    revision: str,
+    local_dir: Path,
+    required_file: str,
+    cache_dir: Path,
+) -> bool:
+    revision_path = local_dir / REVISION_MARKER
+    required_path = local_dir / required_file
+    current_revision = (
+        revision_path.read_text(encoding="utf-8").strip()
+        if revision_path.is_file()
+        else None
+    )
+    if required_path.is_file() and current_revision == revision:
+        return False
+
+    # An unmarked directory came from the older floating-revision setup. Remove
+    # only PersonaVoice's materialized view; Hugging Face's shared cache is kept,
+    # so unchanged blobs can still be reused without another network transfer.
+    shutil.rmtree(local_dir, ignore_errors=True)
+    local_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id=model_id,
+        revision=revision,
+        local_dir=local_dir,
+        cache_dir=cache_dir,
+    )
+    if not required_path.is_file():
+        raise FileNotFoundError(
+            f"Pinned model download for {model_id}@{revision} completed but "
+            f"expected file is missing: {required_path}"
+        )
+    revision_path.write_text(revision + "\n", encoding="utf-8")
+    return True
+
+
 def download_models(
     repo_root: Path,
     *,
@@ -250,8 +289,8 @@ def download_models(
     )
 
     # The pinned Irodori v4 training configuration explicitly references this
-    # ModernBERT commit. Keep the exact revision in the HF cache so both
-    # inference and training remain functional with HF_HUB_OFFLINE=1.
+    # ModernBERT commit. Ensuring it on every setup is cheap when cached and
+    # guarantees that offline training can resolve the exact revision.
     snapshot_download(
         repo_id=IRODORI_TEXT_ENCODER_ID,
         revision=IRODORI_TEXT_ENCODER_REVISION,
@@ -260,11 +299,11 @@ def download_models(
     reused.append(f"{IRODORI_TEXT_ENCODER_ID}@{IRODORI_TEXT_ENCODER_REVISION}")
 
     lfm_dir = repo_root / "models" / "lfm" / "base"
-    if _snapshot_if_missing(
+    if _snapshot_pinned(
         model_id=LFM_MODEL_ID,
         revision=LFM_MODEL_REVISION,
         local_dir=lfm_dir,
-        marker=lfm_dir / "config.json",
+        required_file="config.json",
         cache_dir=hub_cache,
     ):
         downloaded.append(f"{LFM_MODEL_ID}@{LFM_MODEL_REVISION}")
@@ -272,11 +311,11 @@ def download_models(
         reused.append(f"{LFM_MODEL_ID}@{LFM_MODEL_REVISION}")
 
     asr_dir = repo_root / "models" / "asr" / "large-v3"
-    if _snapshot_if_missing(
+    if _snapshot_pinned(
         model_id=ASR_MODEL_ID,
         revision=ASR_MODEL_REVISION,
         local_dir=asr_dir,
-        marker=asr_dir / "model.bin",
+        required_file="model.bin",
         cache_dir=hub_cache,
     ):
         downloaded.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
