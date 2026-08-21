@@ -7,10 +7,16 @@ import yaml
 from huggingface_hub import hf_hub_download
 
 from personavoice.hardware import detect_irodori_backend, safe_batch_profile
+from personavoice.model_assets import (
+    IRODORI_DACVAE_FILENAME,
+    IRODORI_MODEL_FILENAME,
+    IRODORI_MODEL_ID,
+    IRODORI_TEXT_ENCODER_ID,
+    IRODORI_TEXT_ENCODER_REVISION,
+)
 from personavoice.process import run
 from personavoice.workers import local_model_env
 
-MODEL_ID = "Aratako/Irodori-TTS-v4.1-Small"
 SUPPORTED_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
 
 
@@ -46,10 +52,20 @@ def backend_device(backend: str) -> str:
     raise ValueError(f"Unsupported Irodori backend: {backend!r}")
 
 
+def codec_checkpoint(repo_root: Path) -> Path:
+    expected = repo_root / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
+    if not expected.is_file():
+        raise FileNotFoundError(
+            f"Irodori DACVAE is not materialized at {expected}. "
+            "Run `persona setup --download-models`."
+        )
+    return expected
+
+
 def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
     env = local_model_env(repo_root, offline=not online)
     local_dir = repo_root / "models" / "irodori" / "v4.1-small"
-    expected = local_dir / "model.safetensors"
+    expected = local_dir / IRODORI_MODEL_FILENAME
     if expected.exists():
         return expected
     if not online:
@@ -59,8 +75,8 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
         )
     local_dir.mkdir(parents=True, exist_ok=True)
     hf_hub_download(
-        repo_id=MODEL_ID,
-        filename="model.safetensors",
+        repo_id=IRODORI_MODEL_ID,
+        filename=IRODORI_MODEL_FILENAME,
         local_dir=local_dir,
         cache_dir=Path(env["HUGGINGFACE_HUB_CACHE"]),
     )
@@ -82,6 +98,7 @@ def prepare_manifest(
     vendor = vendor_dir(repo_root)
     backend = configured_backend(repo_root)
     device = backend_device(backend)
+    codec = codec_checkpoint(repo_root)
     env = local_model_env(repo_root)
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     latent_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +127,8 @@ def prepare_manifest(
             output_manifest,
             "--latent-dir",
             latent_dir,
+            "--codec-repo",
+            codec,
             "--device",
             device,
         ],
@@ -118,6 +137,27 @@ def prepare_manifest(
     )
     if not output_manifest.exists() or output_manifest.stat().st_size == 0:
         raise RuntimeError("Irodori manifest preparation produced no training examples")
+
+
+def _validate_pinned_model_config(data: dict, *, source: Path) -> None:
+    model_cfg = data.get("model")
+    if not isinstance(model_cfg, dict):
+        raise ValueError(f"Irodori training config has invalid model section: {source}")
+    actual_repo = model_cfg.get("text_tokenizer_repo")
+    actual_revision = model_cfg.get("text_encoder_revision")
+    if actual_repo != IRODORI_TEXT_ENCODER_ID or actual_revision != IRODORI_TEXT_ENCODER_REVISION:
+        raise RuntimeError(
+            "Pinned Irodori training config no longer matches the audited text encoder: "
+            f"repo={actual_repo!r}, revision={actual_revision!r}; expected "
+            f"{IRODORI_TEXT_ENCODER_ID!r}@{IRODORI_TEXT_ENCODER_REVISION}. "
+            "Update PersonaVoice asset pins and re-audit before training."
+        )
+    caption_repo = model_cfg.get("caption_tokenizer_repo")
+    if caption_repo not in {None, IRODORI_TEXT_ENCODER_ID}:
+        raise RuntimeError(
+            "Pinned Irodori caption tokenizer no longer matches the audited text encoder: "
+            f"{caption_repo!r}"
+        )
 
 
 def _patched_config(
@@ -130,6 +170,7 @@ def _patched_config(
     data = yaml.safe_load(source.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"Irodori training config is not a YAML mapping: {source}")
+    _validate_pinned_model_config(data, source=source)
     profile = safe_batch_profile(backend=backend)
     train_cfg = data.setdefault("train", {})
     if not isinstance(train_cfg, dict):
@@ -142,6 +183,10 @@ def _patched_config(
     train_cfg["warmup_steps"] = min(250, max(20, int(max_steps * 0.05)))
     train_cfg["save_every"] = max(100, min(500, max_steps // 4 or 100))
     train_cfg["valid_every"] = train_cfg["save_every"]
+    if backend == "cpu":
+        train_cfg["dataloader_cuda_prefetch"] = False
+        train_cfg["precision"] = "fp32"
+        train_cfg["allow_tf32"] = False
     if "gradient_checkpointing" in train_cfg or profile["gradient_checkpointing"]:
         train_cfg["gradient_checkpointing"] = bool(profile["gradient_checkpointing"])
     destination.parent.mkdir(parents=True, exist_ok=True)
