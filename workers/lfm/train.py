@@ -71,10 +71,10 @@ def main() -> None:
         target_modules=audited_attention_lora_targets(model),
         task_type="CAUSAL_LM",
     )
+    has_cuda = torch.cuda.is_available()
     batch = (
         2
-        if torch.cuda.is_available()
-        and torch.cuda.get_device_properties(0).total_memory >= 16 * 1024**3
+        if has_cuda and torch.cuda.get_device_properties(0).total_memory >= 16 * 1024**3
         else 1
     )
     grad_accum = 8 if batch == 1 else 4
@@ -84,8 +84,9 @@ def main() -> None:
         per_device_train_batch_size=batch,
         gradient_accumulation_steps=grad_accum,
         learning_rate=args.learning_rate,
-        bf16=bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
-        fp16=bool(torch.cuda.is_available() and not torch.cuda.is_bf16_supported()),
+        use_cpu=not has_cuda,
+        bf16=bool(has_cuda and torch.cuda.is_bf16_supported()),
+        fp16=bool(has_cuda and not torch.cuda.is_bf16_supported()),
         logging_steps=5,
         save_strategy="epoch",
         save_total_limit=2,
