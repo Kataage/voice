@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from personavoice.environment_contract import require_current_environment
 from personavoice.process import run, run_json
+from personavoice.worker_contracts import validate_worker_response
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ class Worker:
         request_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         try:
             env = local_model_env(repo_root, offline=offline)
-            return run_json(
+            result = run_json(
                 [
                     "uv",
                     "run",
@@ -51,6 +52,8 @@ class Worker:
                 cwd=repo_root,
                 env=env,
             )
+            validate_worker_response(self.name, command, result)
+            return result
         finally:
             request_path.unlink(missing_ok=True)
 
