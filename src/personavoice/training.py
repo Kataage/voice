@@ -20,7 +20,7 @@ from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.state import StateStore
 from personavoice.workers import local_model_env, worker
 
-TRAIN_SCHEMA_VERSION = 3
+TRAIN_SCHEMA_VERSION = 4
 
 
 def _line_count(path: Path) -> int:
@@ -30,9 +30,16 @@ def _line_count(path: Path) -> int:
         return sum(1 for line in handle if line.strip())
 
 
+def _file_contract(path: Path) -> str:
+    if not path.is_file():
+        return "missing"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     digest = hashlib.sha256()
     digest.update(f"train-schema:{TRAIN_SCHEMA_VERSION}".encode())
+    repo_root = paths.root.parents[1]
     model_contract = {
         "irodori_source_revision": IRODORI_REVISION,
         "irodori_model_sha256": IRODORI_MODEL_SHA256,
@@ -40,6 +47,12 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
         "lfm_revision": LFM_MODEL_REVISION,
         "seed_vc_source_revision": SEED_VC_REVISION,
+        # Dependency-graph changes can alter optimization/inference behavior even
+        # when model weights and user settings are identical. Treat the audited
+        # lockfiles as part of training provenance.
+        "irodori_lock_sha256": _file_contract(repo_root / "locks" / "Irodori-TTS.uv.lock"),
+        "lfm_lock_sha256": _file_contract(repo_root / "workers" / "lfm" / "uv.lock"),
+        "seed_vc_lock_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "uv.lock"),
     }
     digest.update(
         json.dumps(model_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
