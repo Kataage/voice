@@ -178,3 +178,24 @@ def test_doctor_pyannote_static_check_requires_full_offline_snapshot(tmp_path: P
     (local / "plda" / "plda.npz").unlink()
     result = doctor_report(tmp_path, require_seed_vc=False)
     assert result["models"]["pyannote"] is False
+
+
+def test_doctor_sense_static_check_requires_assets_and_verified_marker(tmp_path: Path):
+    local = tmp_path / "models" / "sense" / "SenseVoiceSmall"
+    local.mkdir(parents=True)
+    runtime = tmp_path / ".runtime"
+    runtime.mkdir(parents=True)
+    marker = runtime / "sense-model-ready"
+    marker.write_text("verified\n", encoding="utf-8")
+
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["sense"] is False
+
+    for name in ("model.pt", "am.mvn", "chn_jpn_yue_eng_ko_spectok.bpe.model"):
+        (local / name).write_bytes(b"asset")
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["sense"] is True
+
+    (local / "am.mvn").unlink()
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["sense"] is False
