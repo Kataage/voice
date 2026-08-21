@@ -60,17 +60,54 @@ def hardware_report() -> dict:
     }
 
 
-def safe_batch_profile() -> dict[str, int | bool]:
-    gpus = nvidia_gpus()
+def safe_batch_profile(*, backend: str | None = None) -> dict[str, int | bool]:
+    """Return a conservative Irodori training profile for the selected backend.
+
+    NVIDIA VRAM is only relevant when the configured Irodori backend is cu128.
+    This prevents an explicitly selected CPU/ROCm/XPU backend from accidentally
+    receiving an NVIDIA-sized batch merely because nvidia-smi is installed.
+    """
+
+    gpus = nvidia_gpus() if backend in {None, "cu128"} else []
     if not gpus:
-        return {"batch_size": 1, "gradient_accumulation_steps": 8, "num_workers": 2, "gradient_checkpointing": True}
+        return {
+            "batch_size": 1,
+            "gradient_accumulation_steps": 8,
+            "num_workers": 2,
+            "gradient_checkpointing": True,
+        }
     vram = max(gpu.total_mib for gpu in gpus)
     if vram >= 48000:
-        return {"batch_size": 12, "gradient_accumulation_steps": 1, "num_workers": 8, "gradient_checkpointing": False}
+        return {
+            "batch_size": 12,
+            "gradient_accumulation_steps": 1,
+            "num_workers": 8,
+            "gradient_checkpointing": False,
+        }
     if vram >= 24000:
-        return {"batch_size": 6, "gradient_accumulation_steps": 2, "num_workers": 6, "gradient_checkpointing": True}
+        return {
+            "batch_size": 6,
+            "gradient_accumulation_steps": 2,
+            "num_workers": 6,
+            "gradient_checkpointing": True,
+        }
     if vram >= 16000:
-        return {"batch_size": 3, "gradient_accumulation_steps": 4, "num_workers": 4, "gradient_checkpointing": True}
+        return {
+            "batch_size": 3,
+            "gradient_accumulation_steps": 4,
+            "num_workers": 4,
+            "gradient_checkpointing": True,
+        }
     if vram >= 12000:
-        return {"batch_size": 2, "gradient_accumulation_steps": 6, "num_workers": 3, "gradient_checkpointing": True}
-    return {"batch_size": 1, "gradient_accumulation_steps": 12, "num_workers": 2, "gradient_checkpointing": True}
+        return {
+            "batch_size": 2,
+            "gradient_accumulation_steps": 6,
+            "num_workers": 3,
+            "gradient_checkpointing": True,
+        }
+    return {
+        "batch_size": 1,
+        "gradient_accumulation_steps": 12,
+        "num_workers": 2,
+        "gradient_checkpointing": True,
+    }
