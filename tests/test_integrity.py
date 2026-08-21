@@ -76,7 +76,7 @@ def _write_minimal_complete_prepare_artifacts(paths) -> dict:
     bank = paths.references / "bank.json"
     bank.write_text(json.dumps({"files": [], "seconds": 0.0}), encoding="utf-8")
     return {
-        "prepare_schema": 3,
+        "prepare_schema": 4,
         "sources": 1,
         "skipped_sources": 0,
         "utterances": 1,
