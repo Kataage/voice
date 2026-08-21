@@ -94,12 +94,22 @@ def _irodori_health(repo_root: Path, setup: dict) -> dict:
         )
         if not output.exists() or output.stat().st_size <= 44:
             return {"ok": False, "device": device, "error": "Irodori produced no valid WAV"}
-        return {"ok": True, "device": device, "model_loaded": True, "smoke_inference": True}
+        return {
+            "ok": True,
+            "device": device,
+            "model_loaded": True,
+            "smoke_inference": True,
+        }
     finally:
         output.unlink(missing_ok=True)
 
 
-def report(repo_root: Path, *, deep: bool = False) -> dict:
+def report(
+    repo_root: Path,
+    *,
+    deep: bool = False,
+    require_seed_vc: bool = True,
+) -> dict:
     required = {name: shutil.which(name) for name in ("uv", "git", "ffmpeg", "ffprobe")}
     runtime = repo_root / ".runtime"
     models = {
@@ -116,10 +126,13 @@ def report(repo_root: Path, *, deep: bool = False) -> dict:
         name: (repo_root / "workers" / name / ".venv").exists()
         for name in WORKER_NAMES
     }
+    active_workers = tuple(
+        name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc"
+    )
     setup = _setup_state(repo_root)
     worker_health: dict[str, dict] = {}
     if deep:
-        for name in WORKER_NAMES:
+        for name in active_workers:
             if not workers[name]:
                 worker_health[name] = {"ok": False, "error": "worker .venv is missing"}
                 continue
@@ -160,7 +173,25 @@ def report(repo_root: Path, *, deep: bool = False) -> dict:
         },
         "irodori_managed": (repo_root / "locks" / "Irodori-TTS.uv.lock").exists(),
     }
-    base_ready = all(required.values()) and all(models.values()) and all(workers.values())
+    required_model_keys = {
+        "irodori",
+        "lfm",
+        "asr",
+        "pyannote",
+        "sense",
+        "irodori_vendor",
+    }
+    required_worker_keys = set(active_workers)
+    required_lock_keys = {"root", "asr", "diarization", "sense", "lfm", "irodori_managed"}
+    if require_seed_vc:
+        required_model_keys.update({"seed_vc_models", "seed_vc_vendor"})
+        required_lock_keys.add("seed_vc")
+
+    base_ready = (
+        all(required.values())
+        and all(models[key] for key in required_model_keys)
+        and all(workers[key] for key in required_worker_keys)
+    )
     deep_ready = all(bool(value.get("ok")) for value in worker_health.values()) if deep else True
     return {
         "python": sys.version.split()[0],
@@ -172,6 +203,7 @@ def report(repo_root: Path, *, deep: bool = False) -> dict:
         "workers": workers,
         "worker_health": worker_health if deep else None,
         "lockfiles": lockfiles,
-        "reproducible_environment": all(lockfiles.values()),
+        "reproducible_environment": all(lockfiles[key] for key in required_lock_keys),
         "ready_offline": base_ready and deep_ready,
+        "seed_vc_required": require_seed_vc,
     }
