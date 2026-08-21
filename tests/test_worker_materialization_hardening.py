@@ -52,6 +52,42 @@ def _load_diarization_worker(monkeypatch):
     return module
 
 
+def _load_lfm_worker(monkeypatch):
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: False,
+        is_bf16_supported=lambda: False,
+    )
+    torch.float32 = object()
+    torch.float16 = object()
+    torch.bfloat16 = object()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    hub = types.ModuleType("huggingface_hub")
+    hub.snapshot_download = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+
+    model_contract = types.ModuleType("model_contract")
+    model_contract.audited_attention_lora_targets = lambda model: []
+    monkeypatch.setitem(sys.modules, "model_contract", model_contract)
+
+    peft = types.ModuleType("peft")
+    peft.PeftModel = object
+    monkeypatch.setitem(sys.modules, "peft", peft)
+
+    transformers = types.ModuleType("transformers")
+    transformers.AutoModelForCausalLM = object
+    transformers.AutoTokenizer = object
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+
+    worker_path = Path(__file__).parents[1] / "workers" / "lfm" / "worker.py"
+    spec = importlib.util.spec_from_file_location("personavoice_test_lfm_worker", worker_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _write_complete_asr_files(local: Path, worker) -> None:
     local.mkdir(parents=True, exist_ok=True)
     for name in worker.REQUIRED_MODEL_FILES:
@@ -68,6 +104,18 @@ def _write_complete_pyannote_files(local: Path, worker) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if name.endswith(".yaml"):
             path.write_text("pipeline: {}\n", encoding="utf-8")
+        else:
+            path.write_bytes(b"weights")
+
+
+def _write_complete_lfm_files(local: Path, worker) -> None:
+    local.mkdir(parents=True, exist_ok=True)
+    for name in worker.REQUIRED_MODEL_FILES:
+        path = local / name
+        if name.endswith(".json"):
+            path.write_text("{}\n", encoding="utf-8")
+        elif name.endswith(".jinja"):
+            path.write_text("{{ messages }}\n", encoding="utf-8")
         else:
             path.write_bytes(b"weights")
 
@@ -178,6 +226,60 @@ def test_doctor_pyannote_static_check_requires_full_offline_snapshot(tmp_path: P
     (local / "plda" / "plda.npz").unlink()
     result = doctor_report(tmp_path, require_seed_vc=False)
     assert result["models"]["pyannote"] is False
+
+
+def test_lfm_base_path_requires_complete_snapshot_and_revision(tmp_path: Path, monkeypatch):
+    worker = _load_lfm_worker(monkeypatch)
+    monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
+    local = tmp_path / "models" / "lfm" / "base"
+    _write_complete_lfm_files(local, worker)
+    marker = local / worker.REVISION_MARKER
+    (local / "tokenizer.json").write_bytes(b"")
+    marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="missing or incomplete"):
+        worker.base_path()
+
+    (local / "tokenizer.json").write_text("{}\n", encoding="utf-8")
+    marker.write_text("wrong\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="audited revision"):
+        worker.base_path()
+
+    marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
+    assert Path(worker.base_path()) == local
+
+
+def test_lfm_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monkeypatch):
+    worker = _load_lfm_worker(monkeypatch)
+    monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+
+    with pytest.raises(FileNotFoundError, match="required model files"):
+        worker.download_model({})
+
+    local = tmp_path / "models" / "lfm" / "base"
+    _write_complete_lfm_files(local, worker)
+    result = worker.download_model({})
+    assert result["revision"] == worker.MODEL_REVISION
+    assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION
+
+
+def test_doctor_lfm_static_check_requires_full_offline_snapshot(tmp_path: Path, monkeypatch):
+    worker = _load_lfm_worker(monkeypatch)
+    local = tmp_path / "models" / "lfm" / "base"
+    local.mkdir(parents=True)
+    (local / "config.json").write_text("{}\n", encoding="utf-8")
+
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["lfm"] is False
+
+    _write_complete_lfm_files(local, worker)
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["lfm"] is True
+
+    (local / "model.safetensors").unlink()
+    result = doctor_report(tmp_path, require_seed_vc=False)
+    assert result["models"]["lfm"] is False
 
 
 def test_doctor_sense_static_check_requires_assets_and_verified_marker(tmp_path: Path):
