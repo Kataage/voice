@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -18,6 +19,7 @@ from personavoice.process import run
 from personavoice.workers import local_model_env
 
 SUPPORTED_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
+_CHECKPOINT_STEP_RE = re.compile(r"^checkpoint_(\d+)(?:\.speaker\.safetensors)?$")
 
 
 def vendor_dir(repo_root: Path) -> Path:
@@ -197,15 +199,20 @@ def _patched_config(
     return destination
 
 
+def _checkpoint_step(path: Path) -> int | None:
+    match = _CHECKPOINT_STEP_RE.fullmatch(path.name)
+    return int(match.group(1)) if match else None
+
+
+def _latest_numeric_checkpoint(paths: list[Path]) -> Path | None:
+    ranked = [(step, path) for path in paths if (step := _checkpoint_step(path)) is not None]
+    return max(ranked, key=lambda item: item[0])[1] if ranked else None
+
+
 def _latest_resume(output_dir: Path) -> Path | None:
     if not output_dir.exists():
         return None
-    candidates = [
-        path
-        for path in output_dir.glob("checkpoint_*")
-        if "best_val_loss" not in path.name and "final" not in path.name
-    ]
-    return sorted(candidates, key=lambda path: path.name)[-1] if candidates else None
+    return _latest_numeric_checkpoint(list(output_dir.glob("checkpoint_*")))
 
 
 def train_irodori(
@@ -254,13 +261,13 @@ def train_irodori(
                 "--device",
                 device,
             ]
-            checkpoints = (
-                sorted(out.glob("checkpoint_*.speaker.safetensors"))
+            checkpoint = (
+                _latest_numeric_checkpoint(list(out.glob("checkpoint_*.speaker.safetensors")))
                 if out.exists()
-                else []
+                else None
             )
-            if checkpoints:
-                args += ["--speaker-inversion-init-embedding", checkpoints[-1]]
+            if checkpoint is not None:
+                args += ["--speaker-inversion-init-embedding", checkpoint]
             run(args, cwd=vendor, env=env)
         if not final.exists():
             raise RuntimeError("Irodori Speaker Inversion did not produce checkpoint_final")

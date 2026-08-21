@@ -78,14 +78,17 @@ def test_lfm_export_collapses_consecutive_target_segments_into_one_reply(tmp_pat
     assert export_lfm(db, output, "alice") == 2
     examples = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
 
-    first_user = examples[0]["messages"][1]["content"]
-    first_answer = json.loads(examples[0]["messages"][2]["content"])
+    first_user = examples[0]["prompt"][1]["content"]
+    first_answer = json.loads(examples[0]["completion"][0]["content"])
+    assert [message["role"] for message in examples[0]["prompt"]] == ["system", "user"]
+    assert [message["role"] for message in examples[0]["completion"]] == ["assistant"]
+    assert "messages" not in examples[0]
     assert "相手: 今日はどうだった？" in first_user
     assert "SPEAKER_01" not in first_user
     assert first_answer["text"] == "めっちゃ楽しかった。また行きたいな。"
     assert first_answer["voice"]["emotion"] == "HAPPY"
 
-    second_answer = json.loads(examples[1]["messages"][2]["content"])
+    second_answer = json.loads(examples[1]["completion"][0]["content"])
     assert second_answer["text"] == "景色かな。"
 
 

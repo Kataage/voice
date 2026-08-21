@@ -57,11 +57,58 @@ def initialize(path: Path) -> None:
         )
 
 
+def _write_json_atomic(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _publish_skipped_sources(master_db: Path, rows: list[dict[str, Any]]) -> None:
+    """Record source recordings that yielded no authorized target segments.
+
+    With explicit identity references, a recording can legitimately contain no
+    authorized speaker. The speaker selector returns a non-matching sentinel in
+    that case, so every row for the source remains non-target. Keep those rows in
+    the canonical transcript for provenance/conversation context, but publish a
+    source-level report so automated runs make the exclusion visible.
+    """
+
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_source.setdefault(str(row["source_id"]), []).append(row)
+    skipped = []
+    for source_id, source_rows in sorted(by_source.items()):
+        if any(bool(row.get("target")) for row in source_rows):
+            continue
+        speakers = sorted(
+            {str(row.get("speaker")) for row in source_rows if row.get("speaker") is not None}
+        )
+        skipped.append(
+            {
+                "source_id": source_id,
+                "source_path": source_rows[0].get("source_path"),
+                "reason": "authorized_speaker_not_selected",
+                "detected_speakers": speakers,
+                "utterances": len(source_rows),
+            }
+        )
+    _write_json_atomic(master_db.parent / "skipped_sources.json", skipped)
+
+
 def replace_utterances(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+    row_list = list(rows)
     initialize(path)
     with connect(path) as con:
         con.execute("DELETE FROM utterances")
-        for row in rows:
+        for row in row_list:
             con.execute(
                 """
                 INSERT INTO utterances(
@@ -90,6 +137,7 @@ def replace_utterances(path: Path, rows: Iterable[dict[str, Any]]) -> None:
                     json.dumps(row, ensure_ascii=False),
                 ),
             )
+    _publish_skipped_sources(path, row_list)
 
 
 def load_utterances(path: Path, *, target_only: bool = False) -> list[dict[str, Any]]:
@@ -209,6 +257,14 @@ def _conversation_blocks(source_rows: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
+    """Export conversational prompt/completion examples for persona SFT.
+
+    TRL applies the model chat template to conversational prompt/completion data
+    and, with completion-only loss, trains only on the authorized persona reply.
+    This avoids teaching the model to imitate system instructions or the other
+    speaker while preserving those turns as conditioning context.
+    """
+
     all_rows = load_utterances(master_db)
     examples: list[dict[str, Any]] = []
     by_source: dict[str, list[dict[str, Any]]] = {}
@@ -247,14 +303,16 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
             }
             examples.append(
                 {
-                    "messages": [
+                    "prompt": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
+                    ],
+                    "completion": [
                         {
                             "role": "assistant",
                             "content": json.dumps(answer, ensure_ascii=False),
-                        },
-                    ]
+                        }
+                    ],
                 }
             )
     return write_jsonl(output, examples)

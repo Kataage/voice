@@ -24,22 +24,24 @@ def _read_revision(local: Path) -> str | None:
 
 
 def model_path(model: str) -> str:
+    if model != PINNED_MODEL_NAME:
+        raise ValueError(
+            f"This audited ASR worker supports only {PINNED_MODEL_NAME!r}; got {model!r}."
+        )
     root = Path(os.environ["PERSONAVOICE_ROOT"])
-    local = root / "models" / "asr" / model
-    if model == PINNED_MODEL_NAME:
-        if not local.is_dir():
-            raise FileNotFoundError(
-                f"Pinned ASR model is missing: {local}. Run `persona setup --download-models`."
-            )
-        actual_revision = _read_revision(local)
-        if actual_revision != PINNED_MODEL_REVISION:
-            raise RuntimeError(
-                "Local ASR snapshot does not match the audited revision: "
-                f"expected {PINNED_MODEL_REVISION}, got {actual_revision!r}. "
-                "Re-run `persona setup --download-models`."
-            )
-        return str(local)
-    return str(local) if local.exists() else model
+    local = root / "models" / "asr" / PINNED_MODEL_NAME
+    if not local.is_dir():
+        raise FileNotFoundError(
+            f"Pinned ASR model is missing: {local}. Run `persona setup --download-models`."
+        )
+    actual_revision = _read_revision(local)
+    if actual_revision != PINNED_MODEL_REVISION:
+        raise RuntimeError(
+            "Local ASR snapshot does not match the audited revision: "
+            f"expected {PINNED_MODEL_REVISION}, got {actual_revision!r}. "
+            "Re-run `persona setup --download-models`."
+        )
+    return str(local)
 
 
 def cuda_available() -> bool:
@@ -121,20 +123,25 @@ def batch_transcribe(payload: dict) -> dict:
 
 
 def download(payload: dict) -> dict:
+    requested = payload.get("model", PINNED_MODEL_NAME)
+    if requested != PINNED_MODEL_NAME:
+        raise ValueError(
+            f"This audited ASR worker can download only {PINNED_MODEL_NAME!r}; got {requested!r}."
+        )
     root = Path(os.environ["PERSONAVOICE_ROOT"])
-    name = payload.get("model", PINNED_MODEL_NAME)
-    repo_id = f"Systran/faster-whisper-{name}"
-    local = root / "models" / "asr" / name
-    revision = PINNED_MODEL_REVISION if name == PINNED_MODEL_NAME else None
+    local = root / "models" / "asr" / PINNED_MODEL_NAME
     snapshot_download(
-        repo_id,
-        revision=revision,
+        PINNED_MODEL_ID,
+        revision=PINNED_MODEL_REVISION,
         local_dir=local,
         cache_dir=Path(os.environ["HF_HOME"]),
     )
-    if revision is not None:
-        (local / REVISION_MARKER).write_text(revision + "\n", encoding="utf-8")
-    return {"model": repo_id, "revision": revision, "path": str(local)}
+    (local / REVISION_MARKER).write_text(PINNED_MODEL_REVISION + "\n", encoding="utf-8")
+    return {
+        "model": PINNED_MODEL_ID,
+        "revision": PINNED_MODEL_REVISION,
+        "path": str(local),
+    }
 
 
 def health(payload: dict) -> dict:

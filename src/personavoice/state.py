@@ -18,24 +18,52 @@ from personavoice.model_assets import (
 )
 
 
-def _prepare_cache_policy() -> str:
-    """Return a compact prepare-semantics/model contract identifier.
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
-    Changing a preprocessing model pin must invalidate derived ASR, diarization,
-    identity, SenseVoice, and clip caches even when the raw files and user config
-    are unchanged. The explicit schema prefix covers code-level cache semantics.
+
+def _file_contract(path: Path) -> str:
+    if not path.is_file():
+        return "missing"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _prepare_cache_policy() -> str:
+    """Return the exact preprocessing/model/environment implementation contract.
+
+    Prepared artifacts are reproducible only when model assets, dependency
+    graphs, and the code that interprets their outputs are unchanged. Including
+    implementation hashes prevents a future code fix from accidentally reusing
+    stale ASR/diarization/Sense/segmentation results when a manual schema bump is
+    forgotten.
     """
 
+    repo = _repo_root()
     contract = {
-        "schema": 4,
+        "schema": 6,
         "asr_revision": ASR_MODEL_REVISION,
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
         "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
         "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
+        "asr_lock_sha256": _file_contract(repo / "workers" / "asr" / "uv.lock"),
+        "diarization_lock_sha256": _file_contract(
+            repo / "workers" / "diarization" / "uv.lock"
+        ),
+        "sense_lock_sha256": _file_contract(repo / "workers" / "sense" / "uv.lock"),
+        "pipeline_code_sha256": _file_contract(repo / "src" / "personavoice" / "pipeline.py"),
+        "media_code_sha256": _file_contract(repo / "src" / "personavoice" / "media.py"),
+        "speaker_code_sha256": _file_contract(repo / "src" / "personavoice" / "speaker.py"),
+        "captions_code_sha256": _file_contract(repo / "src" / "personavoice" / "captions.py"),
+        "dataset_code_sha256": _file_contract(repo / "src" / "personavoice" / "dataset.py"),
+        "asr_worker_code_sha256": _file_contract(repo / "workers" / "asr" / "worker.py"),
+        "diarization_worker_code_sha256": _file_contract(
+            repo / "workers" / "diarization" / "worker.py"
+        ),
+        "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"4-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"6-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 # Cached prepare artifacts are valid only for this exact preprocessing contract.
@@ -72,6 +100,17 @@ class StateStore:
         return stage.get("status") == "complete" and stage.get("fingerprint") == fingerprint
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
+        if (
+            name == "prepare"
+            and "usable_tts_utterances" in result
+            and int(result["usable_tts_utterances"]) <= 0
+        ):
+            raise RuntimeError(
+                "Preparation found no usable authorized-speaker utterances. Sources where the "
+                "authorized speaker was not selected are listed in dataset/skipped_sources.json. "
+                "Add/clean identity reference audio, add source recordings containing the target "
+                "speaker, or deliberately review prepare.min_identity_similarity."
+            )
         state = self.load()
         state.setdefault("stages", {}).setdefault(name, {})["result"] = result
         self.save(state)
@@ -81,9 +120,9 @@ class StateStore:
 
         The lossless source-audio cache is intentionally retained because it is
         content-addressed by source SHA. ASR/diarization/Sense caches and cut
-        clips are not safe to reuse across arbitrary prepare-setting, model, or
-        code changes, so they are rebuilt when the prepare fingerprint/policy
-        changes or the caller explicitly forces a rebuild.
+        clips are not safe to reuse across arbitrary prepare-setting, model,
+        dependency, or code changes, so they are rebuilt when the prepare
+        fingerprint/policy changes or the caller explicitly forces a rebuild.
         """
 
         persona_root = self.path.parent

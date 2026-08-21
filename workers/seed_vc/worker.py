@@ -12,8 +12,16 @@ def read_request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _root() -> Path:
+    return Path(os.environ["PERSONAVOICE_ROOT"])
+
+
+def _ready_marker() -> Path:
+    return _root() / ".runtime" / "seed-vc-models-ready"
+
+
 def vendor() -> Path:
-    path = Path(os.environ["PERSONAVOICE_ROOT"]) / "vendor" / "seed-vc"
+    path = _root() / "vendor" / "seed-vc"
     if not (path / "inference_v2.py").exists():
         raise FileNotFoundError("Seed-VC is not installed. Run `persona setup` first.")
     return path
@@ -46,7 +54,11 @@ def load_default_wrapper() -> dict:
 
 
 def download(payload: dict) -> dict:
-    return load_default_wrapper()
+    result = load_default_wrapper()
+    marker = _ready_marker()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("ready\n", encoding="utf-8")
+    return result
 
 
 def convert(payload: dict) -> dict:
@@ -104,7 +116,14 @@ def health(payload: dict) -> dict:
         "torch_version": torch.__version__,
     }
     if payload.get("deep"):
-        result.update(load_default_wrapper())
+        try:
+            result.update(load_default_wrapper())
+        except Exception:
+            # A readiness marker is only a cache hint. If the transitive HF
+            # assets were deleted/corrupted, invalidate it so the next
+            # `persona setup` re-materializes them instead of looping forever.
+            _ready_marker().unlink(missing_ok=True)
+            raise
     return result
 
 

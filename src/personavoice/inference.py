@@ -6,7 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from personavoice.captions import annotate_text, build_caption
+from personavoice.captions import (
+    annotate_text,
+    build_caption,
+    normalize_emotion,
+    normalize_events,
+)
 from personavoice.config import PersonaConfig
 from personavoice.hardware import nvidia_gpus
 from personavoice.irodori import (
@@ -257,7 +262,10 @@ def reenact(
     transfer_style: bool = True,
 ) -> Path:
     _ensure_authorized(cfg)
-    output_dir = paths.outputs / "reenact"
+    # Seed-VC upstream derives a deterministic filename from source/target/settings.
+    # Isolate each call so repeated or concurrent conversions cannot overwrite each
+    # other and confuse the worker's newly-created-output detection.
+    output_dir = paths.outputs / "reenact" / _stamp()
     cfm = paths.models / "seed_vc" / "cfm.pth"
     target = resolve_reference(paths, ref)[0] if ref is not None else _best_reference(paths)
     result = worker(repo_root, "seed_vc").call(
@@ -313,7 +321,7 @@ def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Pat
         cfg,
         text,
         emotion=sense.get("emotion"),
-        events=sense.get("events") or [],
+        events=normalize_events(sense.get("events") or []),
         candidates=1,
     )
 
@@ -344,6 +352,32 @@ def _extract_json(text: str) -> dict[str, Any]:
     }
 
 
+def _normalize_chat_plan(value: dict[str, Any]) -> dict[str, Any]:
+    text_value = value.get("text")
+    text = text_value.strip() if isinstance(text_value, str) else str(text_value or "").strip()
+    raw_voice = value.get("voice")
+    voice = raw_voice if isinstance(raw_voice, dict) else {}
+    caption_value = voice.get("caption")
+    caption = caption_value.strip() if isinstance(caption_value, str) else ""
+    emotion_value = voice.get("emotion")
+    emotion = normalize_emotion(emotion_value if isinstance(emotion_value, str) else None)
+    events_value = voice.get("events")
+    if isinstance(events_value, str):
+        raw_events = [events_value]
+    elif isinstance(events_value, (list, tuple)):
+        raw_events = [str(item) for item in events_value if isinstance(item, str)]
+    else:
+        raw_events = []
+    return {
+        "text": text,
+        "voice": {
+            "caption": caption or "自然に話している。",
+            "emotion": emotion,
+            "events": normalize_events(raw_events),
+        },
+    }
+
+
 def chat_turn(
     repo_root: Path,
     paths: PersonaPaths,
@@ -367,16 +401,16 @@ def chat_turn(
         "infer",
         {"messages": messages, "adapter": str(adapter) if adapter.exists() else None},
     )
-    plan = _extract_json(result["text"])
-    voice = plan.get("voice") if isinstance(plan.get("voice"), dict) else {}
+    plan = _normalize_chat_plan(_extract_json(str(result.get("text") or "")))
+    voice = plan["voice"]
     audio = synthesize(
         repo_root,
         paths,
         cfg,
-        str(plan.get("text") or ""),
-        style=voice.get("caption"),
-        emotion=voice.get("emotion"),
-        events=voice.get("events") or [],
+        plan["text"],
+        style=voice["caption"],
+        emotion=voice["emotion"],
+        events=voice["events"],
         candidates=1,
     )[0]
     plan["audio"] = str(audio)

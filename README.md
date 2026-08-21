@@ -16,7 +16,7 @@ uv run --locked persona ui
 
 ## 機能
 
-- faster-whisper: 日本語ASR + word timestamps
+- faster-whisper `large-v3`: 日本語ASR + word timestamps
 - pyannote Community-1: regular/exclusive diarization + speaker embeddings
 - `identity/`本人参照による対象話者自動選択
 - SenseVoiceSmall: 感情 + 笑い・泣き・息・咳・くしゃみ等のイベント解析
@@ -27,6 +27,7 @@ uv run --locked persona ui
 - canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidation
 - rootと各ML stackを独立した`uv`環境に隔離
 - root / worker / Irodoriを監査済み`uv.lock`へ固定
+- 推論・deep doctorは監査済みローカルmodelだけを使用し、欠損時にremote modelへ黙ってfallbackしない
 
 ## セットアップ
 
@@ -55,7 +56,7 @@ uv run --locked persona doctor
 uv run --locked persona doctor --deep
 ```
 
-`doctor --deep`はworkerのモデルロードだけでなく、Irodoriのoffline smoke synthesis、選択したGPU backend、lockfile、Irodori/Seed-VC vendorの固定revisionとclean状態も検証します。
+`doctor --deep`はworkerのモデルロードだけでなく、Irodoriのoffline smoke synthesis、選択したGPU backend、lockfile、Irodori/Seed-VC vendorの固定revisionとclean状態も検証します。通常の推論・`doctor --deep`はローカルにmaterialize済みの固定assetだけを使用します。モデル取得を許可する経路は明示的な`persona setup`です。
 
 ## 人物作成 / 学習
 
@@ -77,10 +78,12 @@ uv run --locked persona build alice
 ```text
 raw media
  -> SHA / ffprobe
+ -> identical-content deduplication
  -> 48kHz mono FLAC
  -> faster-whisper word timestamps
  -> pyannote regular/exclusive diarization + embeddings
  -> identity照合
+ -> 本人不在sourceは学習対象から除外して記録
  -> word-boundary発話分割
  -> overlap / speaker / ASR quality filtering
  -> target clips
@@ -93,7 +96,9 @@ raw media
  -> evaluation
 ```
 
-ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけロードします。同じfingerprintで失敗/中断した通常の再実行は安全なcache/checkpointから再開します。`raw/`, `identity/`, prepare設定、training dataset/設定が変わった場合は依存artifactを自動で無効化します。`--force`を指定した場合は、同じfingerprintの失敗後であってもprepare由来cacheを破棄して完全に作り直します。
+同じ音源を別名で`raw/`へ複数置いてもfull SHA256で1素材として扱い、重複パスはprovenanceとして記録します。`identity/`参照がある状態で、ある動画のbest speaker similarityが`prepare.min_identity_similarity`を下回った場合、その動画は「本人不在の可能性が高い正常な入力」としてTTS/VC学習対象から外し、`dataset/skipped_sources.json`へ記録して他の動画処理を継続します。diarizationがspeaker embedding自体を返せない等の処理異常はskipせずエラーにします。全素材から利用可能な本人発話が1件も得られなければprepare自体を失敗させます。
+
+ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけロードします。同じfingerprintで失敗/中断した通常の再実行は安全なcache/checkpointから再開します。`raw/`, `identity/`, prepare設定、固定model revision、前処理worker lock、training dataset/設定、training worker lockが変わった場合は依存artifactを自動で無効化します。リポジトリ/人物フォルダを移動した場合も、absolute-path exportを古い場所のまま再利用しません。`--force`を指定した場合は、同じfingerprintの失敗後であってもprepare由来cacheを破棄して完全に作り直します。
 
 ```bash
 uv run --locked persona prepare alice
@@ -102,6 +107,8 @@ uv run --locked persona eval alice
 uv run --locked persona status alice
 uv run --locked persona build alice --force
 ```
+
+`training.lfm_lora: true`では有効な会話教師例が2件以上必要です。`training.seed_vc_finetune: true`では対象話者audio clipが2件以上必要です。明示的に有効化された学習が最低条件を満たさない場合は黙って無効化せずエラーにし、不要な機能なら`persona.yaml`で明示的に`false`へ変更します。
 
 ## 生成
 
@@ -114,7 +121,7 @@ uv run --locked persona say alice "こんにちは" --ref happy
 uv run --locked persona say alice "こんにちは" --ref C:\path\to\reference.wav
 ```
 
-Irodori LoRAにvalidation-loss best checkpointがある場合は推論時に最良checkpointを優先し、なければ`checkpoint_final`へフォールバックします。生成後はWAVが実際に作成されたことも検証します。
+Irodori LoRAにvalidation-loss best checkpointがある場合は推論時に最良checkpointを優先し、なければ`checkpoint_final`へフォールバックします。生成後はWAVが実際に作成されたことも検証します。Irodori v4.1 Smallのcombined referenceは設定段階でも120秒以下へ制限します。
 
 ## Audio → Persona
 
@@ -124,7 +131,7 @@ uv run --locked persona reenact alice acting.wav --timbre-only
 uv run --locked persona repeat alice input.wav
 ```
 
-`reenact`はsourceの演技/間/抑揚をVoice Conversionで維持し、`repeat`は内容・感情を解析してIrodoriで本人として再演します。文字起こし不能な非言語音だけの場合、`repeat`は`reenact`へフォールバックします。
+`reenact`はsourceの演技/間/抑揚をVoice Conversionで維持し、`repeat`は内容・感情を解析してIrodoriで本人として再演します。文字起こし不能な非言語音だけの場合、`repeat`は`reenact`へフォールバックします。Seed-VC出力はrequestごとの独立directoryに保存され、再実行や同時requestでupstreamの決定的な出力名が衝突しないようにしています。
 
 ## 会話
 
@@ -133,7 +140,7 @@ uv run --locked persona chat alice
 uv run --locked persona chat alice "今日は何してた？"
 ```
 
-LFMが本文と`voice.caption`, `voice.emotion`, `voice.events`を計画しIrodoriへ渡します。構造化JSONが崩れた場合もplain-text fallbackで安全に処理します。
+LFMが本文と`voice.caption`, `voice.emotion`, `voice.events`を計画しIrodoriへ渡します。構造化JSONが崩れた場合もplain-text fallbackを行い、型の壊れたcaption/emotion/eventsは正規化してからTTSへ渡します。
 
 ## Web UI / API
 
@@ -153,7 +160,7 @@ API:
 - `POST /v1/repeat`
 - `POST /v1/chat`
 
-認証を持たないため非loopback bindは`--allow-remote`なしでは拒否します。
+認証を持たないため非loopback bindは`--allow-remote`なしでは拒否します。TTS/VC/repeat/chatの重量処理はサーバ内でsingle-flight実行し、1台のローカルGPUへ複数の巨大model処理が同時投入されてOOMする経路を抑えます。
 
 ## uv環境 / lock運用
 
@@ -169,7 +176,7 @@ vendor/Irodori-TTS/.venv   pinned official Irodori environment
 
 rootと全workerの`uv.lock`はリポジトリへコミットされています。Irodoriは固定upstream checkoutを直接変更しないため、監査済みlockを`locks/Irodori-TTS.uv.lock`として管理し、setup時だけ一時適用してvendor checkoutを元のclean状態へ戻します。
 
-通常利用ではbootstrap/setupが`--locked`で同期し、依存定義とlockがずれていれば失敗させます。依存を意図的に更新した時だけ次を実行し、生成されたlock差分をレビューしてください。
+通常利用ではbootstrap/setupが`--locked`で同期し、依存定義とlockがずれていれば失敗させます。依存を意図的に更新した時だけ次を実行し、生成されたlock差分をレビューしてください。prepare/training cache fingerprintにも関連worker lockのSHA256を含めているため、依存更新後に古い解析結果やadapterを黙って再利用しません。
 
 ```powershell
 .\scripts\lock_all.ps1
@@ -187,6 +194,6 @@ GitHub Actions `core-ci` はLinux/Windowsの両方でrootのlocked sync、Ruff�
 
 ## ローカルデータ / 同意
 
-素材、dataset、model、output、vendor、runtime request、personaの実行stateはgitignore対象です。`consent.authorized: true`でないpersonaではprepare/train/voice generationを拒否します。ローカル利用、配布、公開、商用利用の許可範囲は別々に管理してください。
+素材、dataset、model、output、vendor、runtime request、personaの実行stateはgitignore対象です。`consent.authorized: true`でないpersonaではprepare/train/voice generationを拒否します。`persona.yaml`の名前は格納directory名と一致している必要があります。ローカル利用、配布、公開、商用利用の許可範囲は別々に管理してください。
 
 詳細: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) / [`docs/MODELS.md`](docs/MODELS.md) / [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)

@@ -15,6 +15,7 @@ from personavoice.inference import reenact as reenact_audio
 from personavoice.inference import repeat as repeat_audio
 from personavoice.pipeline import prepare_persona
 from personavoice.project import find_repo_root, get_persona, init_persona
+from personavoice.repair import repair_failed_model_materializations
 from personavoice.setup_env import download_models, install_environments
 from personavoice.training import train_persona
 
@@ -79,12 +80,32 @@ def setup(
     if download:
         result["models"] = download_models(root, include_seed_vc=not skip_seed_vc_models)
     if verify:
-        result["verification"] = doctor_report(
+        verification = doctor_report(
             root,
             deep=True,
             require_seed_vc=not skip_seed_vc_models,
         )
-        if not result["verification"]["ready_offline"]:
+        if download and not verification["ready_offline"]:
+            repaired = repair_failed_model_materializations(
+                root,
+                verification,
+                include_seed_vc=not skip_seed_vc_models,
+            )
+            if repaired:
+                result["model_recovery"] = {
+                    "discarded_materializations": repaired,
+                    "download": download_models(
+                        root,
+                        include_seed_vc=not skip_seed_vc_models,
+                    ),
+                }
+                verification = doctor_report(
+                    root,
+                    deep=True,
+                    require_seed_vc=not skip_seed_vc_models,
+                )
+        result["verification"] = verification
+        if not verification["ready_offline"]:
             _print(result)
             raise typer.Exit(1)
     _print(result)

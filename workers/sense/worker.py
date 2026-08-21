@@ -86,11 +86,19 @@ def verify_local_assets() -> dict:
 
 
 def local_model() -> str:
+    """Return only the audited local model path.
+
+    Normal inference and deep health are intentionally fail-closed. The sole
+    operation allowed to contact ModelScope is the explicit `download` command.
+    """
+
     local = _local_dir()
-    if local.exists():
-        verify_local_assets()
-        return str(local)
-    return MODEL_ID
+    if not local.is_dir():
+        raise FileNotFoundError(
+            f"Pinned SenseVoice model is missing: {local}. Run `persona setup`."
+        )
+    verify_local_assets()
+    return str(local)
 
 
 def load_model() -> AutoModel:

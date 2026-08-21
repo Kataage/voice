@@ -19,14 +19,17 @@ class ConsentConfig(StrictConfigModel):
 
 class PrepareConfig(StrictConfigModel):
     language: str = Field(default="ja", min_length=1)
-    asr_model: str = Field(default="large-v3", min_length=1)
+    # PersonaVoice setup/cache contracts audit and materialize exactly this ASR model.
+    # Allowing an arbitrary model name here could silently bypass those guarantees.
+    asr_model: Literal["large-v3"] = "large-v3"
     asr_compute_type: str = Field(default="auto", min_length=1)
     min_clip_seconds: float = Field(default=1.0, gt=0)
     max_clip_seconds: float = Field(default=18.0, gt=0)
     merge_gap_seconds: float = Field(default=0.45, ge=0)
     max_overlap_ratio: float = Field(default=0.08, ge=0, le=1)
     min_identity_similarity: float = Field(default=0.45, ge=-1, le=1)
-    reference_seconds: float = Field(default=40.0, gt=0)
+    # Pinned Irodori v4.1 Small supports a combined reference window up to 120 s.
+    reference_seconds: float = Field(default=40.0, gt=0, le=120.0)
     reference_clip_max_seconds: float = Field(default=12.0, gt=0)
     keep_nonverbal_only: bool = True
     use_sensevoice: bool = True
@@ -90,7 +93,16 @@ class PersonaConfig(StrictConfigModel):
         value = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError(f"Persona config must contain a YAML mapping: {path}")
-        return cls.model_validate(value)
+        config = cls.model_validate(value)
+        # A persona.yaml is namespaced by its directory. Allowing the embedded
+        # name to drift would change speaker labels/model run names while the
+        # command still targets a different persona directory.
+        if path.name == "persona.yaml" and path.parent.name != config.name:
+            raise ValueError(
+                f"Persona config name {config.name!r} does not match directory "
+                f"{path.parent.name!r}: {path}"
+            )
+        return config
 
     def save(self, path: Path) -> None:
         path.write_text(

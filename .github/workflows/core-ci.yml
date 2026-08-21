@@ -17,8 +17,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
       - name: Install uv
@@ -44,18 +44,23 @@ jobs:
         include:
           - worker: asr
             extra: ''
+            gpu_extra: ''
           - worker: diarization
             extra: '--extra cpu'
+            gpu_extra: '--extra cu128'
           - worker: sense
             extra: '--extra cpu'
+            gpu_extra: '--extra cu128'
           - worker: lfm
             extra: '--extra cpu'
+            gpu_extra: '--extra cu128'
           - worker: seed_vc
             extra: '--extra cpu'
+            gpu_extra: '--extra cu124'
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
       - name: Install uv
@@ -71,3 +76,13 @@ jobs:
         run: |
           project="workers/${{ matrix.worker }}"
           uv run --project "$project" --no-sync python -m compileall -q "$project"
+      - name: Validate LFM trainer API
+        if: ${{ matrix.worker == 'lfm' }}
+        shell: bash
+        run: |
+          project="workers/${{ matrix.worker }}"
+          uv run --project "$project" --no-sync python -c "from trl import SFTConfig; c=SFTConfig(output_dir='.runtime/ci-lfm', completion_only_loss=True, use_cpu=True, bf16=False, fp16=False); assert c.completion_only_loss is True and c.use_cpu is True"
+      - name: Validate locked GPU extra
+        if: ${{ matrix.gpu_extra != '' }}
+        shell: bash
+        run: uv sync --project "workers/${{ matrix.worker }}" --locked --dry-run ${{ matrix.gpu_extra }}

@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 
+TARGET_NOT_FOUND = "__PERSONAVOICE_TARGET_NOT_FOUND__"
+
 
 def cosine_similarity(a: Iterable[float], b: Iterable[float]) -> float:
     av = [float(value) for value in a]
@@ -32,6 +34,16 @@ def select_target_speaker(
     *,
     threshold: float,
 ) -> tuple[str, float]:
+    """Resolve the authorized speaker for one source recording.
+
+    A low best-match score is not a processing failure when explicit identity
+    references exist: the source may simply not contain the authorized speaker.
+    Return a sentinel label so the pipeline can preserve the source transcript
+    while excluding every segment from target-speaker training. Structural
+    failures (no diarization embeddings, ambiguous multi-speaker audio without
+    identity references) remain fail-loud.
+    """
+
     if not speaker_embeddings:
         raise ValueError("diarization returned no speaker embeddings")
     if not identity_embeddings:
@@ -53,12 +65,7 @@ def select_target_speaker(
     )
     label, score = ranked[0]
     if score < threshold:
-        raise ValueError(
-            f"Target-speaker match is uncertain: best={label} "
-            f"similarity={score:.3f} < {threshold:.3f}. "
-            "Add cleaner identity reference audio or lower "
-            "prepare.min_identity_similarity deliberately."
-        )
+        return TARGET_NOT_FOUND, score
     return label, score
 
 

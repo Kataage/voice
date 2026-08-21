@@ -1,6 +1,6 @@
 # Pinned model/upstream contracts
 
-PersonaVoice treats source revisions, dependency lockfiles, and model assets as one reproducibility contract. The canonical machine-readable asset pins live in `src/personavoice/model_assets.py`; setup materializes them and `persona doctor` verifies that the local environment matches the audited contract.
+PersonaVoice treats source revisions, dependency lockfiles, model assets, and the implementation code that interprets them as one reproducibility contract. The canonical machine-readable asset pins live in `src/personavoice/model_assets.py`; setup materializes them and `persona doctor` verifies that the local environment matches the audited contract.
 
 ## Irodori-TTS
 
@@ -25,11 +25,20 @@ PersonaVoice intentionally calls upstream scripts instead of copying their model
 
 - Base: `LiquidAI/LFM2.5-1.2B-JP-202606`
 - Pinned snapshot revision: `b31023f2d69b95fbd7876898f8de9fae90e8afbd`
-- Purpose: conversation style / response planning
-- Fine-tune: TRL SFT + PEFT LoRA, target modules `q_proj`, `k_proj`, `v_proj`, `o_proj`
+- Purpose: Japanese conversation style / response planning and structured delivery planning
+- Architecture contract: 16 layers, including 6 `full_attention` blocks and 10 convolution blocks in the pinned model configuration
+- Fine-tune: TRL SFT + PEFT LoRA
+- SFT dataset: conversational `prompt` + `completion`; loss is explicitly restricted to the authorized persona completion
+- LoRA intent: attention q/k/v/output projections only
+- Actual Transformers LFM2 output-projection name: `out_proj` (the Liquid TRL documentation currently shows the stale spelling `o_proj`)
+- Target resolution: exact loaded module paths under `.self_attn.` for `q_proj`, `k_proj`, `v_proj`, and `out_proj`; ShortConv `out_proj` is deliberately excluded
+- Deep health: verifies the number of each projection matches the number of `full_attention` layers in the loaded pinned model
+- Generation defaults: `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`; no additional `top_p` restriction is injected
 - Output contract: JSON containing text plus voice caption/emotion/events
 
 The materialized local snapshot contains `.personavoice-revision`. Setup does not accept a legacy floating-revision directory merely because `config.json` exists; it rematerializes the pinned snapshot when the marker is absent or mismatched.
+
+A finalized persona LoRA adapter must contain `adapter_config.json`, a non-empty PEFT adapter weight (`adapter_model.safetensors` or `adapter_model.bin`), and `.personavoice-base-revision` equal to the pinned JP-202606 revision. Both training orchestration and inference reject partial adapters or adapters finalized against another base revision.
 
 ## Diarization
 
@@ -67,12 +76,14 @@ SenseVoice is currently materialized through ModelScope, whose `master` label is
 - Upstream was archived in 2025, so it is isolated in a Python 3.10 environment.
 - V2 style conversion is used for `reenact`.
 - Fine-tuning is disabled by default and can be enabled in `persona.yaml`.
+- Fine-tune checkpoints are ordered by numeric step, not filename string order.
+- PersonaVoice records cumulative progress in staged run-directory offsets because the pinned upstream trainer can load prior weights but resets its local iteration counter.
 
 ## Cache/training reproducibility
 
-Prepare cache validity is bound to the audited ASR revision, pyannote revision, and SenseVoice asset hashes in addition to raw/identity/config fingerprints. Updating any of those contracts invalidates ASR/diarization/identity/Sense-derived caches before rebuilding the dataset.
+Prepare cache validity is bound to the audited ASR revision, pyannote revision, SenseVoice asset hashes, relevant worker `uv.lock` hashes, and preprocessing implementation hashes in addition to raw/identity/config fingerprints. Updating any of those contracts invalidates derived ASR/diarization/identity/Sense artifacts before rebuilding the dataset. The materialization root is part of the prepare fingerprint because downstream manifests intentionally contain local absolute paths.
 
-Training fingerprints include the pinned Irodori source revision, Irodori base/DACVAE hashes, ModernBERT revision, LFM base revision, and Seed-VC source revision. A base/source update therefore invalidates old persona adapters/checkpoints even if exported dataset bytes are unchanged. If training artifacts exist without a recorded train-stage fingerprint, PersonaVoice treats them as untracked and rebuilds them instead of guessing their provenance.
+Training fingerprints include the pinned Irodori source revision, Irodori base/DACVAE hashes, ModernBERT revision, LFM base revision, Seed-VC source revision, relevant worker/managed lockfile hashes, and the training/Irodori/LFM-contract/Seed worker implementation hashes. A base/source/dependency/implementation update therefore invalidates old persona adapters/checkpoints even if exported dataset bytes are unchanged. If training artifacts exist without a recorded train-stage fingerprint, PersonaVoice treats them as untracked and rebuilds them instead of guessing their provenance.
 
 ## Backend contract
 
