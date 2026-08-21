@@ -1,0 +1,40 @@
+# Python / uv
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local runtime and large artifacts
+.runtime/
+models/
+vendor/
+personas/*/raw/*
+personas/*/identity/*
+personas/*/dataset/*
+personas/*/references/*
+personas/*/models/*
+personas/*/outputs/*
+personas/*/cache/*
+personas/*/logs/*
+
+# Keep directory markers and persona config/state if explicitly committed
+!personas/*/raw/.gitkeep
+!personas/*/identity/.gitkeep
+!personas/*/dataset/.gitkeep
+!personas/*/references/.gitkeep
+!personas/*/models/.gitkeep
+!personas/*/outputs/.gitkeep
+!personas/*/cache/.gitkeep
+!personas/*/logs/.gitkeep
+
+# Secrets
+.env
+*.token
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
