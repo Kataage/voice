@@ -83,8 +83,7 @@ def test_prepare_force_after_complete_invalidates_unsafe_subcaches(tmp_path: Pat
         pass
     stale = _stale_prepare_paths(paths)
     _write_stale(stale)
-    # Reaching running again with the same completed fingerprint represents --force.
-    with store.running("prepare", "same"):
+    with store.running("prepare", "same", force=True):
         assert all(not path.exists() for path in stale)
 
 
@@ -97,6 +96,17 @@ def test_prepare_failed_resume_keeps_expensive_subcaches(tmp_path: Path):
     _write_stale(stale)
     with store.running("prepare", "same"):
         assert all(path.exists() for path in stale)
+
+
+def test_prepare_force_after_failed_run_invalidates_unsafe_subcaches(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    store = StateStore(paths.state)
+    with pytest.raises(RuntimeError), store.running("prepare", "same"):
+        raise RuntimeError("interrupted")
+    stale = _stale_prepare_paths(paths)
+    _write_stale(stale)
+    with store.running("prepare", "same", force=True):
+        assert all(not path.exists() for path in stale)
 
 
 def test_speaker_math():
