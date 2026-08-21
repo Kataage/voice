@@ -4,8 +4,9 @@ import json
 import os
 import shutil
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 SCHEMA_VERSION = 1
 
@@ -69,12 +70,22 @@ def replace_utterances(path: Path, rows: Iterable[dict[str, Any]]) -> None:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    row["id"], row["source_id"], row["start"], row["end"], row.get("speaker"),
-                    1 if row.get("target") else 0, row.get("speaker_similarity"),
-                    row.get("speaker_coverage"), row.get("overlap_ratio", 0.0), row.get("text", ""),
-                    row.get("text_annotated", row.get("text", "")), row.get("emotion"),
-                    json.dumps(row.get("events", []), ensure_ascii=False), row.get("caption", ""),
-                    row.get("audio_path"), row.get("quality", 0.0),
+                    row["id"],
+                    row["source_id"],
+                    row["start"],
+                    row["end"],
+                    row.get("speaker"),
+                    1 if row.get("target") else 0,
+                    row.get("speaker_similarity"),
+                    row.get("speaker_coverage"),
+                    row.get("overlap_ratio", 0.0),
+                    row.get("text", ""),
+                    row.get("text_annotated", row.get("text", "")),
+                    row.get("emotion"),
+                    json.dumps(row.get("events", []), ensure_ascii=False),
+                    row.get("caption", ""),
+                    row.get("audio_path"),
+                    row.get("quality", 0.0),
                     json.dumps(row, ensure_ascii=False),
                 ),
             )
@@ -152,14 +163,18 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
         for index, row in enumerate(source_rows):
             if not row.get("target") or not row.get("text"):
                 continue
-            context = source_rows[max(0, index - 4):index]
+            context = source_rows[max(0, index - 4) : index]
             if not context:
                 continue
             lines = []
-            for ctx in context:
-                speaker = persona_name if ctx.get("target") else (ctx.get("speaker") or "相手")
-                if ctx.get("text"):
-                    lines.append(f"{speaker}: {ctx['text']}")
+            for context_row in context:
+                speaker = (
+                    persona_name
+                    if context_row.get("target")
+                    else (context_row.get("speaker") or "相手")
+                )
+                if context_row.get("text"):
+                    lines.append(f"{speaker}: {context_row['text']}")
             if not lines:
                 continue
             user = "直前の会話:\n" + "\n".join(lines) + "\nこの続きとして自然に返答してください。"
@@ -176,7 +191,10 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
-                        {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
+                        {
+                            "role": "assistant",
+                            "content": json.dumps(answer, ensure_ascii=False),
+                        },
                     ]
                 }
             )
