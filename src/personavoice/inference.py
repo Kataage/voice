@@ -9,7 +9,12 @@ from typing import Any
 from personavoice.captions import annotate_text, build_caption
 from personavoice.config import PersonaConfig
 from personavoice.hardware import nvidia_gpus
-from personavoice.irodori import base_checkpoint, reference_files, vendor_dir
+from personavoice.irodori import (
+    base_checkpoint,
+    codec_checkpoint,
+    reference_files,
+    vendor_dir,
+)
 from personavoice.process import run
 from personavoice.project import PersonaPaths
 from personavoice.workers import local_model_env, worker
@@ -167,6 +172,7 @@ def synthesize(
         raise ValueError("text is empty; provide text or a supported non-verbal --event")
     vendor = vendor_dir(repo_root)
     base = base_checkpoint(repo_root)
+    codec = codec_checkpoint(repo_root)
     output = output or (paths.outputs / f"tts_{_stamp()}.wav")
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -190,6 +196,8 @@ def synthesize(
         vendor / "infer.py",
         "--checkpoint",
         base,
+        "--codec-repo",
+        codec,
         "--text",
         text,
         "--caption",
