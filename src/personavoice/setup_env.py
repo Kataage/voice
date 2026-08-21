@@ -8,6 +8,21 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from personavoice.hardware import detect_irodori_backend
+from personavoice.media import sha256_file
+from personavoice.model_assets import (
+    ASR_MODEL_ID,
+    ASR_MODEL_REVISION,
+    IRODORI_DACVAE_FILENAME,
+    IRODORI_DACVAE_ID,
+    IRODORI_DACVAE_SHA256,
+    IRODORI_MODEL_FILENAME,
+    IRODORI_MODEL_ID,
+    IRODORI_MODEL_SHA256,
+    IRODORI_TEXT_ENCODER_ID,
+    IRODORI_TEXT_ENCODER_REVISION,
+    LFM_MODEL_ID,
+    LFM_MODEL_REVISION,
+)
 from personavoice.process import CommandError, run
 from personavoice.workers import local_model_env, worker
 
@@ -117,6 +132,13 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         "worker_backends": worker_extras,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
+        "model_assets": {
+            "irodori_model_sha256": IRODORI_MODEL_SHA256,
+            "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
+            "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
+            "lfm_revision": LFM_MODEL_REVISION,
+            "asr_revision": ASR_MODEL_REVISION,
+        },
     }
     (runtime / "setup.json").write_text(
         json.dumps(setup_state, ensure_ascii=False, indent=2) + "\n",
@@ -129,6 +151,40 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     }
 
 
+def _verify_sha256(path: Path, expected: str, *, label: str) -> None:
+    actual = sha256_file(path)
+    if actual.lower() != expected.lower():
+        raise RuntimeError(
+            f"{label} checksum mismatch: expected {expected}, got {actual}. "
+            "The local file may be corrupted or the upstream asset changed; "
+            "remove the file and retry with an audited PersonaVoice revision."
+        )
+
+
+def _download_verified_file(
+    *,
+    model_id: str,
+    filename: str,
+    local_dir: Path,
+    cache_dir: Path,
+    sha256: str,
+) -> tuple[Path, bool]:
+    local_dir.mkdir(parents=True, exist_ok=True)
+    target = local_dir / filename
+    existed = target.exists()
+    if not existed:
+        hf_hub_download(
+            repo_id=model_id,
+            filename=filename,
+            local_dir=local_dir,
+            cache_dir=cache_dir,
+        )
+    if not target.is_file():
+        raise FileNotFoundError(f"Expected model file was not created: {target}")
+    _verify_sha256(target, sha256, label=f"{model_id}:{filename}")
+    return target, existed
+
+
 def _snapshot_if_missing(
     *,
     model_id: str,
@@ -136,11 +192,13 @@ def _snapshot_if_missing(
     marker: Path,
     cache_dir: Path,
     token: str | None = None,
+    revision: str | None = None,
 ) -> bool:
     if marker.exists():
         return False
     snapshot_download(
         repo_id=model_id,
+        revision=revision,
         local_dir=local_dir,
         cache_dir=cache_dir,
         token=token,
@@ -168,42 +226,62 @@ def download_models(
     reused: list[str] = []
 
     irodori_dir = repo_root / "models" / "irodori" / "v4.1-small"
-    irodori_model = irodori_dir / "model.safetensors"
-    if irodori_model.exists():
-        reused.append("Aratako/Irodori-TTS-v4.1-Small:model.safetensors")
-    else:
-        irodori_dir.mkdir(parents=True, exist_ok=True)
-        hf_hub_download(
-            repo_id="Aratako/Irodori-TTS-v4.1-Small",
-            filename="model.safetensors",
-            local_dir=irodori_dir,
-            cache_dir=hub_cache,
-        )
-        if not irodori_model.exists():
-            raise FileNotFoundError(f"Expected Irodori checkpoint was not created: {irodori_model}")
-        downloaded.append("Aratako/Irodori-TTS-v4.1-Small:model.safetensors")
+    _, existed = _download_verified_file(
+        model_id=IRODORI_MODEL_ID,
+        filename=IRODORI_MODEL_FILENAME,
+        local_dir=irodori_dir,
+        cache_dir=hub_cache,
+        sha256=IRODORI_MODEL_SHA256,
+    )
+    (reused if existed else downloaded).append(
+        f"{IRODORI_MODEL_ID}:{IRODORI_MODEL_FILENAME}"
+    )
+
+    dacvae_dir = repo_root / "models" / "irodori" / "dacvae"
+    _, existed = _download_verified_file(
+        model_id=IRODORI_DACVAE_ID,
+        filename=IRODORI_DACVAE_FILENAME,
+        local_dir=dacvae_dir,
+        cache_dir=hub_cache,
+        sha256=IRODORI_DACVAE_SHA256,
+    )
+    (reused if existed else downloaded).append(
+        f"{IRODORI_DACVAE_ID}:{IRODORI_DACVAE_FILENAME}"
+    )
+
+    # The pinned Irodori v4 training configuration explicitly references this
+    # ModernBERT commit. Keep the exact revision in the HF cache so both
+    # inference and training remain functional with HF_HUB_OFFLINE=1.
+    snapshot_download(
+        repo_id=IRODORI_TEXT_ENCODER_ID,
+        revision=IRODORI_TEXT_ENCODER_REVISION,
+        cache_dir=hub_cache,
+    )
+    reused.append(f"{IRODORI_TEXT_ENCODER_ID}@{IRODORI_TEXT_ENCODER_REVISION}")
 
     lfm_dir = repo_root / "models" / "lfm" / "base"
     if _snapshot_if_missing(
-        model_id="LiquidAI/LFM2.5-1.2B-JP-202606",
+        model_id=LFM_MODEL_ID,
+        revision=LFM_MODEL_REVISION,
         local_dir=lfm_dir,
         marker=lfm_dir / "config.json",
         cache_dir=hub_cache,
     ):
-        downloaded.append("LiquidAI/LFM2.5-1.2B-JP-202606")
+        downloaded.append(f"{LFM_MODEL_ID}@{LFM_MODEL_REVISION}")
     else:
-        reused.append("LiquidAI/LFM2.5-1.2B-JP-202606")
+        reused.append(f"{LFM_MODEL_ID}@{LFM_MODEL_REVISION}")
 
     asr_dir = repo_root / "models" / "asr" / "large-v3"
     if _snapshot_if_missing(
-        model_id="Systran/faster-whisper-large-v3",
+        model_id=ASR_MODEL_ID,
+        revision=ASR_MODEL_REVISION,
         local_dir=asr_dir,
         marker=asr_dir / "model.bin",
         cache_dir=hub_cache,
     ):
-        downloaded.append("Systran/faster-whisper-large-v3")
+        downloaded.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
     else:
-        reused.append("Systran/faster-whisper-large-v3")
+        reused.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
 
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
     pyannote_marker = pyannote_dir / "config.yaml"
@@ -223,15 +301,6 @@ def download_models(
         downloaded.append("pyannote/speaker-diarization-community-1")
     else:
         reused.append("pyannote/speaker-diarization-community-1")
-
-    # Irodori resolves these by repo id at runtime, so they must be placed in the
-    # exact cache directory used by HF_HUB_OFFLINE/HUGGINGFACE_HUB_CACHE.
-    for model_id in (
-        "Aratako/Semantic-DACVAE-Japanese-32dim",
-        "sbintuitions/modernbert-ja-310m",
-    ):
-        snapshot_download(repo_id=model_id, cache_dir=hub_cache)
-        downloaded.append(model_id)
 
     runtime = repo_root / ".runtime"
     runtime.mkdir(parents=True, exist_ok=True)
