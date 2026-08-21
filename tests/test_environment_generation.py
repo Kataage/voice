@@ -25,6 +25,11 @@ def _dependency_tree(root: Path) -> None:
     _write(root / "pyproject.toml", b"root")
     _write(root / "uv.lock", b"root-lock")
     _write(root / "locks" / "Irodori-TTS.uv.lock", b"irodori-lock")
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "seed_vc_assets.json").write_text(
+        json.dumps({"schema_version": 1, "snapshots": {}}),
+        encoding="utf-8",
+    )
     for name in ("asr", "diarization", "sense", "lfm", "seed_vc"):
         _write(root / "workers" / name / "pyproject.toml", name.encode())
         _write(root / "workers" / name / "uv.lock", f"{name}-lock".encode())
