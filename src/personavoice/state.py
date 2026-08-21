@@ -55,7 +55,7 @@ class StateStore:
         content-addressed by source SHA. ASR/diarization/Sense caches and cut
         clips are not safe to reuse across arbitrary prepare-setting or code
         changes, so they are rebuilt when the prepare fingerprint/policy changes
-        or a completed prepare is explicitly forced.
+        or the caller explicitly forces a rebuild.
         """
 
         persona_root = self.path.parent
@@ -69,20 +69,26 @@ class StateStore:
             shutil.rmtree(persona_root / relative, ignore_errors=True)
 
     @contextmanager
-    def running(self, name: str, fingerprint: str) -> Iterator[dict[str, Any]]:
+    def running(
+        self,
+        name: str,
+        fingerprint: str,
+        *,
+        force: bool = False,
+    ) -> Iterator[dict[str, Any]]:
         state = self.load()
         stage = state.setdefault("stages", {}).setdefault(name, {})
 
         if name == "prepare":
             old_fingerprint = stage.get("fingerprint")
             old_policy = stage.get("cache_policy_version")
-            # A completed stage reaching `running` means the caller explicitly
-            # requested a force rebuild. Failed/running stages with an unchanged
-            # fingerprint keep their expensive caches for resumability.
+            # Same-fingerprint failed/running stages keep expensive caches for
+            # normal resumability. Explicit --force always starts from fresh
+            # prepare-derived caches regardless of the prior stage status.
             must_invalidate = (
-                old_policy != PREPARE_CACHE_POLICY_VERSION
+                force
+                or old_policy != PREPARE_CACHE_POLICY_VERSION
                 or (old_fingerprint is not None and old_fingerprint != fingerprint)
-                or stage.get("status") == "complete"
             )
             if must_invalidate:
                 self._invalidate_prepare_derived()
