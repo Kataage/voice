@@ -1201,16 +1201,23 @@ dependencies = [
     { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32') or (sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'linux' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128')" },
     { name = "torch", version = "2.10.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
     { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cu128') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+    { name = "torchaudio", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32') or (sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'linux' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128')" },
+    { name = "torchaudio", version = "2.10.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+    { name = "torchaudio", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cu128') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
 ]
 
 [package.optional-dependencies]
 cpu = [
     { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu') or (sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
     { name = "torch", version = "2.10.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+    { name = "torchaudio", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu') or (sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+    { name = "torchaudio", version = "2.10.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
 ]
 cu128 = [
     { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
     { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cu128') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+    { name = "torchaudio", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+    { name = "torchaudio", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cu128') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
 ]
 
 [package.metadata]
@@ -1222,6 +1229,11 @@ requires-dist = [
     { name = "torch", marker = "(sys_platform == 'linux' and extra == 'cu128') or (sys_platform == 'win32' and extra == 'cu128')", specifier = ">=2.10,<2.11", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "personavoice-worker-sense", extra = "cu128" } },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'cpu'", specifier = ">=2.10,<2.11" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'cu128'", specifier = ">=2.10,<2.11" },
+    { name = "torchaudio", specifier = ">=2.10,<2.11" },
+    { name = "torchaudio", marker = "(sys_platform == 'linux' and extra == 'cpu') or (sys_platform == 'win32' and extra == 'cpu')", specifier = ">=2.10,<2.11", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "personavoice-worker-sense", extra = "cpu" } },
+    { name = "torchaudio", marker = "(sys_platform == 'linux' and extra == 'cu128') or (sys_platform == 'win32' and extra == 'cu128')", specifier = ">=2.10,<2.11", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "personavoice-worker-sense", extra = "cu128" } },
+    { name = "torchaudio", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'cpu'", specifier = ">=2.10,<2.11" },
+    { name = "torchaudio", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'cu128'", specifier = ">=2.10,<2.11" },
 ]
 provides-extras = ["cpu", "cu128"]
 
@@ -2073,6 +2085,87 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/bf/2b/17cb15a383cf2135330371e034d13b9043dc6d8bd07c871b5aa3064fbed1/torch_complex-0.4.4.tar.gz", hash = "sha256:4153fd6b24a0bad689e6f193bfbd00f38283b1890d808bef684ddc6d1f63fd3f", size = 10025, upload-time = "2024-06-28T07:10:28.136Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/c5/9b4d756a7ada951e9b17dcc636f98ed1073c737ae809b150ef408afb6298/torch_complex-0.4.4-py3-none-any.whl", hash = "sha256:6ab4ecd4f3a16e3adb70a7f7cd2e769a9dfd07d7a8e27d04ff9c621ebbe34b13", size = 9125, upload-time = "2024-06-28T07:10:26.651Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.10.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.12' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version >= '3.12' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version == '3.11.*' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version < '3.11' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version < '3.11' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128'",
+    "python_full_version < '3.11' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128'",
+]
+dependencies = [
+    { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32') or (sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'linux' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra != 'extra-25-personavoice-worker-sense-cpu' and extra != 'extra-25-personavoice-worker-sense-cu128')" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/59/88ab8ebff9d91f1f1365088b30f1b9ccce07c5eeac666038a5dee5e2f9b1/torchaudio-2.10.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:4cde383582a6240c1315443df5c5638863e96b03acf1cb44a298aff07a72d373", size = 734944, upload-time = "2026-01-21T16:28:49.535Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/d6/41f25f9ae9b37c191bed4cd474e403626685d2be8f7d20d011e6601fede1/torchaudio-2.10.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:cfb2ad4b7847d81931989127d803487263c8284f21156e9000daec1ac16c0831", size = 390449, upload-time = "2026-01-21T16:28:48.585Z" },
+    { url = "https://files.pythonhosted.org/packages/43/ac/a14425fddd1cf56bb052a3bfd38880258008f8c3cd17f37bba55b3a88ce7/torchaudio-2.10.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:316cdb15fb37290fca89894b095d97b4dc14a90c4c61148ae5c96bb334d962cd", size = 1891070, upload-time = "2026-01-21T16:28:47.323Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/03/d1898db1bf7ecd47ca9b4e1b70927597d236cf721e3736d953d555901832/torchaudio-2.10.0-cp310-cp310-win_amd64.whl", hash = "sha256:013079d1ba2a652184703e671b8339cbc7991f17e4ed927071fe7635f908a4a1", size = 474045, upload-time = "2026-01-21T16:28:46.191Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/e7/401fe1d024bf9352371d854be6f339ad9928669e6bc8a5ba08e9dbce81cf/torchaudio-2.10.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:bcab0e39eb18da84cba1a0c87f600abb6ce97c882200cb46e841caea106f037f", size = 736373, upload-time = "2026-01-21T16:28:41.589Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/b7/c66dc34a27441d78997e20d0ffe2f5ad73db9f7b1267511be255bb94ac9b/torchaudio-2.10.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:87c841a21e82703ebd4a29170c4e60c25a2b47312dc212930087ad58965ac0c8", size = 391843, upload-time = "2026-01-21T16:28:43.093Z" },
+    { url = "https://files.pythonhosted.org/packages/13/ae/a2a34a64947c4fa4a61b4c86d8f36fbcb4ebfec30fdde140267db260f96c/torchaudio-2.10.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:b2c77fb9114dd463dc805560bf55a1ac2a52e219794cc32b7b32cf2aeffd2826", size = 1894140, upload-time = "2026-01-21T16:28:35.892Z" },
+    { url = "https://files.pythonhosted.org/packages/69/26/cd2aec609b4f8918e4e85e5c6a3f569bc7b5f72a7ecba3f784077102749c/torchaudio-2.10.0-cp311-cp311-win_amd64.whl", hash = "sha256:4c6e9609046143b30a30183893d23ff1ce5de603dbe914b3cce5cc29f5aa5a9c", size = 474792, upload-time = "2026-01-21T16:28:45.254Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/36/28a6f3e857616cf7576bdbf8170e483b8c5d0a1f8d349ecb2b75921236aa/torchaudio-2.10.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:9d0fbdbfd2f621c51d28571050d6d0c7287791034e5c7303b31480af1258f33f", size = 737144, upload-time = "2026-01-21T16:28:44.189Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/3f/df620439a76ece170472d41438d11a1545d5db5dc9f1eaeab8c6e055a328/torchaudio-2.10.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:42b148a0921a3721abd1f6ae098b1ec9f89703e555c4f7a0d44da87b8decbcb9", size = 391973, upload-time = "2026-01-21T16:28:39.732Z" },
+    { url = "https://files.pythonhosted.org/packages/98/25/e55a30d7138f8fe56ed006df25b0a3c27681f0ec7bc9989e1778e6d559c3/torchaudio-2.10.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:0e77b2956448d63790a99beed0b74ac8b8cd3a94dcdd9ad01974411078f46278", size = 1895234, upload-time = "2026-01-21T16:28:37.034Z" },
+    { url = "https://files.pythonhosted.org/packages/be/a0/da53c7d20fac15f66f8838653b91162de1bf21fb40fee88cf839e4ef5174/torchaudio-2.10.0-cp312-cp312-win_amd64.whl", hash = "sha256:7f76a01ecebf1869e1f2c50a261f1cf07e5fccb24402b4e9bbb82d6725b9c7dd", size = 475470, upload-time = "2026-01-21T16:28:40.615Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.10.0+cpu"
+source = { registry = "https://download.pytorch.org/whl/cpu" }
+resolution-markers = [
+    "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')",
+    "(python_full_version < '3.11' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform == 'win32')",
+]
+dependencies = [
+    { name = "torch", version = "2.10.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cpu') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cpu') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:2e923e36c6e6240a70a2ea7a002c8ff6094a386e3014894d20402c42bd6aab1c", upload-time = "2026-01-21T15:05:37Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:18079d35314af1fc6a80eaa4f9d7b8e6c53317fc51dbe2ec48703e59b490eb90", upload-time = "2026-01-21T15:05:37Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp310-cp310-win_amd64.whl", hash = "sha256:15a7da0c9e7928e3f3c0fe442d22aee7dd8ecca67718c2ac662d1fb0d1fb6385", upload-time = "2026-01-21T15:05:37Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:08981b656c71bcb990165f45b2421136df286de46ced976dba372fba5a627d2e", upload-time = "2026-01-21T15:05:37Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:d578c9bc636623c83103054d797c3a889d7f733c1375fedf48d0be4dd9ff0031", upload-time = "2026-01-21T15:05:37Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp311-cp311-win_amd64.whl", hash = "sha256:2a78b81a7a21d39a309e5df6e7473c814f5e2de68ef054788a633e618fe5baa8", upload-time = "2026-01-21T15:05:38Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:2ef1f8d0f0feba5a9364620925c864890b90abc98a65f35895256dd6aa1710be", upload-time = "2026-01-21T15:05:38Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:502b19a5bd0ef8fc97adf06c24146c5e2b94bc3c43b768174407c031cd21c3a5", upload-time = "2026-01-21T15:05:37Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.10.0%2Bcpu-cp312-cp312-win_amd64.whl", hash = "sha256:32707736ef079a673433ca36c227c135375602b74d41ee21ff18d1e75caee0b0", upload-time = "2026-01-21T15:05:37Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.10.0+cu128"
+source = { registry = "https://download.pytorch.org/whl/cu128" }
+resolution-markers = [
+    "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')",
+    "(python_full_version < '3.11' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform == 'win32')",
+]
+dependencies = [
+    { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-sense-cu128') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-sense-cu128') or (extra == 'extra-25-personavoice-worker-sense-cpu' and extra == 'extra-25-personavoice-worker-sense-cu128')" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:4a216a274d1ceae9e7a4903b0bc140e61d304efef1bf010826fccd059648abf4", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:7065bd10ab6994d30667568e8c6498794678ce1ee23d2f0756fb28ce6d623482", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp310-cp310-win_amd64.whl", hash = "sha256:4c4a5976ae4ca70ed2e99b92c56cf42630d34c2f71f0e021a4c6b917b375cea7", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:502d5bcdbfde751fc8d79169f66da412d28570a09a86526136fe55708edee693", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:c50ed1f4bf6743a82f8e621eed1108ffd66c5812d00a9f695c749f9ce5fecde4", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp311-cp311-win_amd64.whl", hash = "sha256:680fb8dd4e682ecb67c9465ffb3c08cf87926a08b2431eddfc527cc5facefdab", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:08b56d10d1cd8536d40e18caceedc5567a30f5eb24381cde1dfa620724187c92", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:d26b91a173cee6db9abff68b48d64236950ffc5628d06448ecdd7ac56841e10a", upload-time = "2026-01-21T15:05:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu128/torchaudio-2.10.0%2Bcu128-cp312-cp312-win_amd64.whl", hash = "sha256:9a890dfbc7a3301f5ce7930f3ce452841f0c34e51686609628e99ed52c5cc775", upload-time = "2026-01-21T15:05:48Z" },
 ]
 
 [[package]]

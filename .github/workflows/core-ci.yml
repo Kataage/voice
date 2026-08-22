@@ -76,6 +76,12 @@ jobs:
         run: |
           project="workers/${{ matrix.worker }}"
           uv run --project "$project" --no-sync python -m compileall -q "$project"
+      - name: Validate SenseVoice runtime imports
+        if: ${{ matrix.worker == 'sense' }}
+        shell: bash
+        run: |
+          project="workers/${{ matrix.worker }}"
+          uv run --project "$project" --no-sync python -c "import torch, torchaudio; from funasr import AutoModel; assert torch.__version__.split('+')[0] == torchaudio.__version__.split('+')[0]"
       - name: Validate LFM trainer API
         if: ${{ matrix.worker == 'lfm' }}
         shell: bash
