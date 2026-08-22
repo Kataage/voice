@@ -105,6 +105,15 @@ def test_root_and_isolated_worker_checksum_constants_stay_aligned():
         assert f'"{relative}": "{digest}"' in diarization
 
 
+def test_model_docs_checksum_contract_stays_aligned():
+    models_doc = (ROOT / "docs" / "MODELS.md").read_text(encoding="utf-8")
+
+    assert f'`model.bin` SHA256: `{ASR_MODEL_WEIGHT_SHA256}`' in models_doc
+    assert f'`model.safetensors` SHA256: `{LFM_MODEL_WEIGHT_SHA256}`' in models_doc
+    for relative, digest in PYANNOTE_MODEL_ASSET_SHA256.items():
+        assert f'`{relative}` SHA256: `{digest}`' in models_doc
+
+
 def test_worker_runtime_paths_verify_hashes_before_model_load():
     asr = (ROOT / "workers" / "asr" / "worker.py").read_text(encoding="utf-8")
     lfm = (ROOT / "workers" / "lfm" / "worker.py").read_text(encoding="utf-8")
