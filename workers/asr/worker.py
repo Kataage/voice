@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,6 +14,7 @@ from huggingface_hub import snapshot_download
 PINNED_MODEL_NAME = "large-v3"
 PINNED_MODEL_ID = "Systran/faster-whisper-large-v3"
 PINNED_MODEL_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
+PINNED_MODEL_WEIGHT_SHA256 = "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1"
 REVISION_MARKER = ".personavoice-revision"
 REQUIRED_MODEL_FILES = (
     "config.json",
@@ -31,6 +34,25 @@ def _nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_weight(local: Path) -> None:
+    path = local / "model.bin"
+    actual = _sha256(path)
+    if actual != PINNED_MODEL_WEIGHT_SHA256:
+        raise RuntimeError(
+            "ASR model.bin checksum mismatch: "
+            f"expected {PINNED_MODEL_WEIGHT_SHA256}, got {actual}. "
+            "Re-run `persona setup --download-models` to restore the audited snapshot."
+        )
 
 
 def _read_revision(local: Path) -> str | None:
@@ -83,6 +105,7 @@ def model_path(model: str) -> str:
             f"expected {PINNED_MODEL_REVISION}, got {actual_revision!r}. "
             "Re-run `persona setup --download-models`."
         )
+    _verify_weight(local)
     return str(local)
 
 
@@ -172,6 +195,7 @@ def download(payload: dict) -> dict:
         )
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "asr" / PINNED_MODEL_NAME
+    shutil.rmtree(local, ignore_errors=True)
     snapshot_download(
         PINNED_MODEL_ID,
         revision=PINNED_MODEL_REVISION,
@@ -188,6 +212,7 @@ def download(payload: dict) -> dict:
             "Pinned ASR download completed without required model files: "
             f"{', '.join(missing)}"
         )
+    _verify_weight(local)
     _atomic_write_text(local / REVISION_MARKER, PINNED_MODEL_REVISION + "\n")
     return {
         "model": PINNED_MODEL_ID,
