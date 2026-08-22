@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 CUDA_AUTO_PREFERENCE = ("float16", "int8_float32", "float32")
 CPU_AUTO_PREFERENCE = ("int8", "int8_float32", "float32")
 
