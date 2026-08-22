@@ -26,6 +26,45 @@ patch(
     "from pyannote.audio import Pipeline  # noqa: E402\n",
 )
 
+# Irodori's pinned v4 Small configs default to bf16 + TF32. Pascal (sm_6x)
+# supports neither of those acceleration paths, so cu126 must force fp16 while
+# keeping CUDA prefetch enabled.
+patch(
+    "src/personavoice/irodori.py",
+    '    if backend == "cpu":\n'
+    '        train_cfg["dataloader_cuda_prefetch"] = False\n'
+    '        train_cfg["precision"] = "fp32"\n'
+    '        train_cfg["allow_tf32"] = False\n',
+    '    if backend == "cu126":\n'
+    '        train_cfg["precision"] = "fp16"\n'
+    '        train_cfg["allow_tf32"] = False\n'
+    '    elif backend == "cpu":\n'
+    '        train_cfg["dataloader_cuda_prefetch"] = False\n'
+    '        train_cfg["precision"] = "fp32"\n'
+    '        train_cfg["allow_tf32"] = False\n',
+)
+
+# If the user explicitly asks for cu128 on a known Pascal GPU, reject it before
+# mutating environments instead of allowing a wheel that installs but has no
+# executable kernel image for sm_61.
+patch(
+    "src/personavoice/setup_env.py",
+    "from personavoice.hardware import detect_irodori_backend\n",
+    "from personavoice.hardware import cuda_backend_for_gpu, detect_irodori_backend, nvidia_gpus\n",
+)
+patch(
+    "src/personavoice/setup_env.py",
+    "def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:\n",
+    '''def _validate_explicit_backend(backend: str | None) -> None:\n    if backend != "cu128":\n        return\n    gpus = nvidia_gpus()\n    if not gpus:\n        return\n    gpu0 = min(gpus, key=lambda gpu: gpu.index)\n    compatible = cuda_backend_for_gpu(gpu0)\n    if compatible == "cu126":\n        capability = gpu0.compute_capability or "unknown"\n        raise ValueError(\n            f"The selected NVIDIA GPU {gpu0.name} has compute capability {capability}; "\n            "the audited PyTorch CUDA 12.8 stack requires sm_70 or newer. "\n            "Use `--backend auto` or `--backend cu126` for this GPU."\n        )\n\n\ndef install_environments(repo_root: Path, *, backend: str | None = None) -> dict:\n''',
+)
+patch(
+    "src/personavoice/setup_env.py",
+    '    require_ffmpeg_runtime()\n    selected_backend = backend or detect_irodori_backend()\n',
+    '    require_ffmpeg_runtime()\n'
+    '    _validate_explicit_backend(backend)\n'
+    '    selected_backend = backend or detect_irodori_backend()\n',
+)
+
 # Environment fixtures now fingerprint the managed Irodori project overlay as
 # well as the generated lock.
 patch(
@@ -77,6 +116,10 @@ anchor = "\ndef test_runtime_environment_contract_accepts_current_rejects_stale_
 insert = '''\ndef test_environment_contract_detects_irodori_project_overlay_change(tmp_path: Path):\n    _dependency_tree(tmp_path)\n    recorded = environment_contract(tmp_path)\n    assert environment_contract_status(tmp_path, recorded)["ok"]\n\n    (tmp_path / "locks" / "Irodori-TTS.pyproject.toml").write_bytes(b"new-overlay")\n    status = environment_contract_status(tmp_path, recorded)\n    assert not status["ok"]\n    assert "different dependency contract" in status["error"]\n\n\n'''
 if anchor not in text:
     raise RuntimeError("Environment-contract insertion anchor not found")
-append_path.write_text(text.replace(anchor, "\n" + insert + anchor.lstrip("\n"), 1), encoding="utf-8", newline="\n")
+append_path.write_text(
+    text.replace(anchor, "\n" + insert + anchor.lstrip("\n"), 1),
+    encoding="utf-8",
+    newline="\n",
+)
 
 print("Pascal follow-up patches applied")
