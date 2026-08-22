@@ -65,15 +65,6 @@ patch(
     '    selected_backend = backend or detect_irodori_backend()\n',
 )
 
-# Environment fixtures now fingerprint the managed Irodori project overlay as
-# well as the generated lock.
-patch(
-    "tests/test_environment_generation.py",
-    '    _write(root / "locks" / "Irodori-TTS.uv.lock", b"irodori-lock")\n',
-    '    _write(root / "locks" / "Irodori-TTS.pyproject.toml", b"irodori-project")\n'
-    '    _write(root / "locks" / "Irodori-TTS.uv.lock", b"irodori-lock")\n',
-)
-
 # Unit tests isolate setup from the machine's real FFmpeg installation. Production
 # setup still calls require_ffmpeg_runtime before mutating any environment.
 patch(
