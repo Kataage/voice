@@ -124,7 +124,11 @@ def test_worker_call_rejects_invalid_subprocess_result_before_return(tmp_path: P
     project.mkdir(parents=True)
     instance = workers.Worker(name="asr", project_dir=project)
 
-    monkeypatch.setattr(workers, "require_current_environment", lambda _root: None)
+    monkeypatch.setattr(
+        workers,
+        "require_current_environment",
+        lambda _root: {"irodori_backend": "cpu"},
+    )
     monkeypatch.setattr(
         workers,
         "run_json",
@@ -189,7 +193,11 @@ def test_seed_vc_worker_call_runs_vendor_preflight_before_subprocess(tmp_path: P
     project.mkdir(parents=True)
     instance = workers.Worker(name="seed_vc", project_dir=project)
 
-    monkeypatch.setattr(workers, "require_current_environment", lambda _root: None)
+    monkeypatch.setattr(
+        workers,
+        "require_current_environment",
+        lambda _root: {"irodori_backend": "cpu"},
+    )
     monkeypatch.setattr(
         workers,
         "_require_seed_vc_vendor_integrity",
