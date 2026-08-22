@@ -80,4 +80,14 @@ patch(
     '        "environment_contract": environment,\n        "runtime_hardware": runtime_hardware,\n',
 )
 
+# This old private inference hook disappeared during the runtime-integrity
+# refactor. The test only verifies stale environment generation rejection, which
+# occurs before model runtime, so retaining this monkeypatch is both unnecessary
+# and brittle.
+patch(
+    "tests/test_environment_generation.py",
+    '    monkeypatch.setattr(inference, "_verify_irodori_runtime", lambda *_args, **_kwargs: None)\n',
+    "",
+)
+
 print("GPU-generalization integration patches applied")
