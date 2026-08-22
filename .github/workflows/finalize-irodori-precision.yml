@@ -1,0 +1,52 @@
+name: finalize-irodori-precision
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]' && github.event.pull_request.head.ref == 'fix/pascal-ffmpeg-runtime'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: fix/pascal-ffmpeg-runtime
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Patch legacy CUDA precision
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/personavoice/irodori.py')
+          text = path.read_text(encoding='utf-8')
+          old = '    if backend == "cu126":\n        train_cfg["precision"] = "fp16"\n        train_cfg["allow_tf32"] = False\n'
+          new = '    if backend == "cu126":\n        train_cfg["precision"] = "fp32"\n        train_cfg["allow_tf32"] = False\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one audited precision block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+          PY
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.5
+      - name: Validate root suite
+        run: |
+          uv sync --dev --locked
+          uv run --locked ruff check src tests workers
+          uv run --locked pytest
+          uv run --locked python -m compileall -q src tests workers
+      - name: Commit finalized policy
+        shell: bash
+        run: |
+          git rm .github/workflows/finalize-irodori-precision.yml
+          git add src/personavoice/irodori.py
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "fix: use audited FP32 precision on legacy CUDA"
+          git push origin HEAD:fix/pascal-ffmpeg-runtime
