@@ -1,6 +1,5 @@
 from personavoice import model_assets
 
-
 V4_MODEL_REVISION = "c0097bd1be75833b44498bb6fcf0bee9298262a7"
 V41_MODEL_REVISION = "df20e70ca3a5ceaedda6cb98e82029b68c800857"
 V41_MODEL_SHA256 = "c85de88c01700cb53538e706f128ebcb1b8513ad21d7d0e75f58bc82cdbf89f6"
