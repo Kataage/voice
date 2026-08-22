@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from personavoice import environment_contract as env_contract
-from personavoice import hardware, setup_env
+from personavoice import hardware, setup_env, workers
 
 
-def _gpu(index: int, capability: str, *, uuid: str | None = None, name: str = "GPU"):
+def _gpu(
+    index: int,
+    capability: str,
+    *,
+    uuid: str | None = None,
+    pci_bus_id: str | None = None,
+    name: str = "GPU",
+):
     return hardware.GpuInfo(
         index=index,
         name=name,
@@ -14,13 +23,15 @@ def _gpu(index: int, capability: str, *, uuid: str | None = None, name: str = "G
         free_mib=12000,
         compute_capability=capability,
         uuid=uuid,
+        pci_bus_id=pci_bus_id,
     )
 
 
-def test_selected_gpu_honors_cuda_visible_devices_numeric_order(monkeypatch):
-    gpus = [_gpu(0, "6.1"), _gpu(1, "8.6")]
+def test_selected_gpu_honors_cuda_visible_devices_numeric_pci_order(monkeypatch):
+    pascal = _gpu(7, "6.1", pci_bus_id="00000000:01:00.0")
+    modern = _gpu(2, "8.6", pci_bus_id="00000000:65:00.0")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
-    assert hardware.selected_nvidia_gpu(gpus) == gpus[1]
+    assert hardware.selected_nvidia_gpu([modern, pascal]) == modern
 
 
 def test_selected_gpu_honors_cuda_visible_devices_uuid_prefix(monkeypatch):
@@ -39,11 +50,17 @@ def test_selected_gpu_fails_closed_for_hidden_or_unresolvable_device(monkeypatch
     assert hardware.selected_nvidia_gpu(gpus) is None
 
 
-def test_selected_gpu_defaults_to_lowest_physical_index(monkeypatch):
+def test_selected_gpu_defaults_to_pci_bus_order_not_nvidia_index(monkeypatch):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    high = _gpu(4, "8.6")
-    low = _gpu(1, "6.1")
-    assert hardware.selected_nvidia_gpu([high, low]) == low
+    first_pci = _gpu(9, "6.1", pci_bus_id="00000000:01:00.0")
+    lower_nvidia_index = _gpu(1, "8.6", pci_bus_id="00000000:65:00.0")
+    assert hardware.selected_nvidia_gpu([lower_nvidia_index, first_pci]) == first_pci
+
+
+def test_worker_environment_forces_same_cuda_pci_order(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(workers, "ffmpeg_environment", lambda: {})
+    env = workers.local_model_env(tmp_path)
+    assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
 
 
 @pytest.mark.parametrize(
