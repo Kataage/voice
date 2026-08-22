@@ -52,6 +52,21 @@ patch(
     "from personavoice.hardware import detect_irodori_backend\n",
     "from personavoice.hardware import cuda_backend_for_gpu, detect_irodori_backend, nvidia_gpus\n",
 )
+# Keep the patched setup imports in Ruff's canonical project-module order.
+patch(
+    "src/personavoice/setup_env.py",
+    "from personavoice.hardware import cuda_backend_for_gpu, detect_irodori_backend, nvidia_gpus\n"
+    "from personavoice.runtime_dependencies import require_ffmpeg_runtime\n"
+    "from personavoice.media import sha256_file\n",
+    "from personavoice.hardware import cuda_backend_for_gpu, detect_irodori_backend, nvidia_gpus\n"
+    "from personavoice.media import sha256_file\n",
+)
+patch(
+    "src/personavoice/setup_env.py",
+    "from personavoice.process import CommandError, run\n",
+    "from personavoice.process import CommandError, run\n"
+    "from personavoice.runtime_dependencies import require_ffmpeg_runtime\n",
+)
 patch(
     "src/personavoice/setup_env.py",
     "def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:\n",
