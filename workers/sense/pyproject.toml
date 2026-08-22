@@ -6,11 +6,18 @@ dependencies = [
   "funasr>=1.2.0,<2",
   "modelscope>=1.28.0,<2",
   "torch>=2.10,<2.11",
+  "torchaudio>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.10,<2.11"]
-cu128 = ["torch>=2.10,<2.11"]
+cpu = [
+  "torch>=2.10,<2.11",
+  "torchaudio>=2.10,<2.11",
+]
+cu128 = [
+  "torch>=2.10,<2.11",
+  "torchaudio>=2.10,<2.11",
+]
 
 [tool.uv]
 conflicts = [
@@ -22,6 +29,10 @@ conflicts = [
 
 [tool.uv.sources]
 torch = [
+  { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
   { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
   { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
