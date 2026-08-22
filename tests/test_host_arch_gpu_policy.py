@@ -20,7 +20,9 @@ def test_unknown_host_architecture_does_not_reuse_x86_cuda_matrix(monkeypatch):
     assert not hardware.backend_supports_gpu("cu128", _gpu("8.6"))
 
 
-def test_seed_vc_cuda_is_x86_64_only_until_separately_audited(monkeypatch):
+def test_aarch64_cuda_fails_closed_until_full_stack_is_ci_audited(monkeypatch):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "aarch64")
-    assert hardware.cuda_backend_for_gpu(_gpu("9.0")) == "cu128"
+    assert hardware.cuda_backend_for_gpu(_gpu("9.0")) == "cpu"
+    assert not hardware.backend_supports_gpu("cu126", _gpu("9.0"))
+    assert not hardware.backend_supports_gpu("cu128", _gpu("9.0"))
     assert not hardware.seed_vc_cuda_supported(_gpu("9.0"))
