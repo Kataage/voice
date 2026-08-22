@@ -9,6 +9,7 @@ from uuid import uuid4
 from personavoice.environment_contract import require_current_environment
 from personavoice.model_assets import SEED_VC_SOURCE_REVISION
 from personavoice.process import run, run_json
+from personavoice.runtime_dependencies import ffmpeg_environment
 from personavoice.worker_contracts import validate_worker_response
 
 
@@ -114,6 +115,7 @@ def local_model_env(repo_root: Path, *, offline: bool = True) -> dict[str, str]:
         "MODELSCOPE_CACHE": str((repo_root / "models" / "modelscope-cache").resolve()),
         "PERSONAVOICE_ROOT": str(repo_root.resolve()),
         "TOKENIZERS_PARALLELISM": "false",
+        **ffmpeg_environment(),
     }
     if offline:
         env.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
