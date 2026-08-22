@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ class GpuInfo:
     total_mib: int
     free_mib: int
     compute_capability: str | None = None
+    uuid: str | None = None
 
 
 def _run_nvidia_query(fields: str) -> subprocess.CompletedProcess[str] | None:
@@ -49,15 +51,15 @@ def _parse_compute_capability(value: str | None) -> tuple[int, int] | None:
 
 
 def nvidia_gpus() -> list[GpuInfo]:
-    completed = _run_nvidia_query("index,name,memory.total,memory.free,compute_cap")
+    completed = _run_nvidia_query("index,uuid,name,memory.total,memory.free,compute_cap")
     include_compute_cap = completed is not None and completed.returncode == 0
     if not include_compute_cap:
-        completed = _run_nvidia_query("index,name,memory.total,memory.free")
+        completed = _run_nvidia_query("index,uuid,name,memory.total,memory.free")
     if completed is None or completed.returncode != 0:
         return []
 
     out = []
-    expected_parts = 5 if include_compute_cap else 4
+    expected_parts = 6 if include_compute_cap else 5
     for line in completed.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
         if len(parts) != expected_parts:
@@ -66,10 +68,11 @@ def nvidia_gpus() -> list[GpuInfo]:
             out.append(
                 GpuInfo(
                     index=int(parts[0]),
-                    name=parts[1],
-                    total_mib=int(float(parts[2])),
-                    free_mib=int(float(parts[3])),
-                    compute_capability=parts[4] if include_compute_cap else None,
+                    uuid=parts[1] or None,
+                    name=parts[2],
+                    total_mib=int(float(parts[3])),
+                    free_mib=int(float(parts[4])),
+                    compute_capability=parts[5] if include_compute_cap else None,
                 )
             )
         except ValueError:
@@ -77,45 +80,154 @@ def nvidia_gpus() -> list[GpuInfo]:
     return out
 
 
-def cuda_backend_for_gpu(gpu: GpuInfo) -> str:
-    """Return the audited PyTorch CUDA wheel family for one NVIDIA GPU.
+def selected_nvidia_gpu(gpus: list[GpuInfo] | None = None) -> GpuInfo | None:
+    """Return the physical GPU exposed as logical CUDA device 0.
 
-    PyTorch 2.10 CUDA 12.8 wheels used by PersonaVoice require compute
-    capability 7.0 or newer. Pascal-class 6.x GPUs instead use the CUDA 12.6
-    wheel family, which keeps those architectures available. Unknown or older
-    capabilities fail closed to CPU rather than selecting a CUDA wheel that can
-    install successfully but later raise ``cudaErrorNoKernelImageForDevice``.
+    CUDA workers default to device 0. When ``CUDA_VISIBLE_DEVICES`` remaps the
+    process-visible devices, selecting physical nvidia-smi index 0 would inspect
+    the wrong GPU and can install an incompatible wheel. Numeric indexes and GPU
+    UUIDs are handled explicitly; MIG IDs and malformed selectors fail closed.
+    """
+
+    candidates = nvidia_gpus() if gpus is None else gpus
+    if not candidates:
+        return None
+
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is None:
+        return min(candidates, key=lambda gpu: gpu.index)
+    visible = visible.strip()
+    if not visible or visible == "-1":
+        return None
+
+    first = visible.split(",", 1)[0].strip()
+    if not first or first == "-1" or first.upper().startswith("MIG-"):
+        return None
+    try:
+        physical_index = int(first)
+    except ValueError:
+        token = first.casefold()
+        matches = [
+            gpu
+            for gpu in candidates
+            if gpu.uuid
+            and (
+                gpu.uuid.casefold() == token
+                or gpu.uuid.casefold().startswith(token)
+                or token.startswith(gpu.uuid.casefold())
+            )
+        ]
+        return matches[0] if len(matches) == 1 else None
+    return next((gpu for gpu in candidates if gpu.index == physical_index), None)
+
+
+def _host_arch() -> str:
+    value = platform.machine().lower()
+    if value in {"amd64", "x86_64", "x64"}:
+        return "x86_64"
+    if value in {"arm64", "aarch64"}:
+        return "aarch64"
+    return value
+
+
+def _known_pytorch_210_architecture(capability: tuple[int, int], *, backend: str) -> bool:
+    """Match the audited PyTorch 2.10 binary architecture matrix.
+
+    PersonaVoice intentionally fails closed for unknown future architectures.
+    Updating support for a new NVIDIA generation therefore requires an audited
+    dependency change instead of silently installing a wheel that may expose
+    ``torch.cuda.is_available()`` yet fail on the first CUDA kernel.
+    """
+
+    major, minor = capability
+    host = _host_arch()
+    if host == "aarch64":
+        if backend == "cu126":
+            return (major, minor) in {(8, 0), (9, 0)}
+        if backend == "cu128":
+            return (major, minor) in {(8, 0), (9, 0), (10, 0), (12, 0)}
+        return False
+
+    # Linux x86_64 and Windows official wheels. Ada sm_89 executes the Ampere
+    # sm_86 code path and is an audited member of the 8.x family.
+    if backend == "cu126":
+        return (
+            (major == 6 and minor in {0, 1})
+            or (major == 7 and minor in {0, 5})
+            or (major == 8 and minor in {0, 6, 9})
+            or (major == 9 and minor == 0)
+        )
+    if backend == "cu128":
+        return (
+            (major == 7 and minor == 5)
+            or (major == 8 and minor in {0, 6, 9})
+            or (major == 9 and minor == 0)
+            or (major == 10 and minor in {0, 3})
+            or (major == 12 and minor == 0)
+        )
+    return False
+
+
+def backend_supports_gpu(backend: str, gpu: GpuInfo) -> bool:
+    if backend == "cpu":
+        return True
+    if backend not in {"cu126", "cu128"}:
+        return False
+    capability = _parse_compute_capability(gpu.compute_capability)
+    return bool(capability and _known_pytorch_210_architecture(capability, backend=backend))
+
+
+def seed_vc_cuda_supported(gpu: GpuInfo) -> bool:
+    """Whether Seed-VC's audited PyTorch 2.4/cu124 stack can use this GPU.
+
+    That older stack covers Pascal through Hopper but predates Blackwell. Newer
+    GPUs therefore keep the rest of PersonaVoice on cu128 while Seed-VC falls
+    back to its audited CPU environment rather than risking a no-kernel-image
+    failure.
     """
 
     capability = _parse_compute_capability(gpu.compute_capability)
     if capability is None:
-        return "cpu"
-    if capability >= (7, 0):
+        return False
+    major, minor = capability
+    return (
+        (major == 6 and minor in {0, 1})
+        or (major == 7 and minor in {0, 5})
+        or (major == 8 and minor in {0, 6, 9})
+        or (major == 9 and minor == 0)
+    )
+
+
+def cuda_backend_for_gpu(gpu: GpuInfo) -> str:
+    """Return the safest audited PyTorch CUDA wheel family for one NVIDIA GPU."""
+
+    if backend_supports_gpu("cu128", gpu):
         return "cu128"
-    if capability >= (6, 0):
+    if backend_supports_gpu("cu126", gpu):
         return "cu126"
     return "cpu"
 
 
 def detect_irodori_backend() -> str:
-    gpus = nvidia_gpus()
-    if gpus:
-        # Model workers use CUDA device 0 unless a future explicit device
-        # selection contract says otherwise, so auto-selection must describe
-        # the same device rather than an arbitrary second GPU.
-        gpu0 = min(gpus, key=lambda gpu: gpu.index)
-        return cuda_backend_for_gpu(gpu0)
+    gpu = selected_nvidia_gpu()
+    if gpu is not None:
+        return cuda_backend_for_gpu(gpu)
     if platform.system() == "Darwin":
         return "cpu"
     return "cpu"
 
 
 def hardware_report() -> dict:
+    gpus = nvidia_gpus()
+    selected = selected_nvidia_gpu(gpus)
+    backend = cuda_backend_for_gpu(selected) if selected is not None else "cpu"
     return {
         "platform": platform.platform(),
         "machine": platform.machine(),
-        "nvidia_gpus": [asdict(gpu) for gpu in nvidia_gpus()],
-        "irodori_backend": detect_irodori_backend(),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "nvidia_gpus": [asdict(gpu) for gpu in gpus],
+        "selected_nvidia_gpu": asdict(selected) if selected is not None else None,
+        "irodori_backend": backend,
     }
 
 
@@ -123,20 +235,19 @@ def safe_batch_profile(*, backend: str | None = None) -> dict[str, int | bool]:
     """Return a conservative Irodori training profile for the selected backend.
 
     NVIDIA VRAM is only relevant when the configured Irodori backend is one of
-    the audited CUDA wheel families. This prevents an explicitly selected
-    CPU/ROCm/XPU backend from accidentally receiving an NVIDIA-sized batch merely
-    because nvidia-smi is installed.
+    the audited CUDA wheel families. Use the GPU exposed as logical CUDA device
+    0 rather than the largest physical GPU in a multi-GPU host.
     """
 
-    gpus = nvidia_gpus() if backend in {None, "cu126", "cu128"} else []
-    if not gpus:
+    gpu = selected_nvidia_gpu() if backend in {None, "cu126", "cu128"} else None
+    if gpu is None:
         return {
             "batch_size": 1,
             "gradient_accumulation_steps": 8,
             "num_workers": 2,
             "gradient_checkpointing": True,
         }
-    vram = max(gpu.total_mib for gpu in gpus)
+    vram = gpu.total_mib
     if vram >= 48000:
         return {
             "batch_size": 12,
