@@ -12,15 +12,16 @@ class GpuInfo:
     name: str
     total_mib: int
     free_mib: int
+    compute_capability: str | None = None
 
 
-def nvidia_gpus() -> list[GpuInfo]:
+def _run_nvidia_query(fields: str) -> subprocess.CompletedProcess[str] | None:
     if not shutil.which("nvidia-smi"):
-        return []
-    completed = subprocess.run(
+        return None
+    return subprocess.run(
         [
             "nvidia-smi",
-            "--query-gpu=index,name,memory.total,memory.free",
+            f"--query-gpu={fields}",
             "--format=csv,noheader,nounits",
         ],
         capture_output=True,
@@ -29,23 +30,75 @@ def nvidia_gpus() -> list[GpuInfo]:
         errors="replace",
         check=False,
     )
-    if completed.returncode != 0:
+
+
+def _parse_compute_capability(value: str | None) -> tuple[int, int] | None:
+    if not value:
+        return None
+    try:
+        major, minor = value.strip().split(".", 1)
+        return int(major), int(minor)
+    except (ValueError, AttributeError):
+        return None
+
+
+def nvidia_gpus() -> list[GpuInfo]:
+    completed = _run_nvidia_query("index,name,memory.total,memory.free,compute_cap")
+    include_compute_cap = completed is not None and completed.returncode == 0
+    if not include_compute_cap:
+        completed = _run_nvidia_query("index,name,memory.total,memory.free")
+    if completed is None or completed.returncode != 0:
         return []
+
     out = []
+    expected_parts = 5 if include_compute_cap else 4
     for line in completed.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 4:
+        if len(parts) != expected_parts:
             continue
         try:
-            out.append(GpuInfo(int(parts[0]), parts[1], int(float(parts[2])), int(float(parts[3]))))
+            out.append(
+                GpuInfo(
+                    index=int(parts[0]),
+                    name=parts[1],
+                    total_mib=int(float(parts[2])),
+                    free_mib=int(float(parts[3])),
+                    compute_capability=parts[4] if include_compute_cap else None,
+                )
+            )
         except ValueError:
             continue
     return out
 
 
-def detect_irodori_backend() -> str:
-    if nvidia_gpus():
+def cuda_backend_for_gpu(gpu: GpuInfo) -> str:
+    """Return the audited PyTorch CUDA wheel family for one NVIDIA GPU.
+
+    PyTorch 2.10 CUDA 12.8 wheels used by PersonaVoice require compute
+    capability 7.0 or newer. Pascal-class 6.x GPUs instead use the CUDA 12.6
+    wheel family, which keeps those architectures available. Unknown or older
+    capabilities fail closed to CPU rather than selecting a CUDA wheel that can
+    install successfully but later raise ``cudaErrorNoKernelImageForDevice``.
+    """
+
+    capability = _parse_compute_capability(gpu.compute_capability)
+    if capability is None:
+        return "cpu"
+    if capability >= (7, 0):
         return "cu128"
+    if capability >= (6, 0):
+        return "cu126"
+    return "cpu"
+
+
+def detect_irodori_backend() -> str:
+    gpus = nvidia_gpus()
+    if gpus:
+        # Model workers use CUDA device 0 unless a future explicit device
+        # selection contract says otherwise, so auto-selection must describe
+        # the same device rather than an arbitrary second GPU.
+        gpu0 = min(gpus, key=lambda gpu: gpu.index)
+        return cuda_backend_for_gpu(gpu0)
     if platform.system() == "Darwin":
         return "cpu"
     return "cpu"
@@ -63,12 +116,13 @@ def hardware_report() -> dict:
 def safe_batch_profile(*, backend: str | None = None) -> dict[str, int | bool]:
     """Return a conservative Irodori training profile for the selected backend.
 
-    NVIDIA VRAM is only relevant when the configured Irodori backend is cu128.
-    This prevents an explicitly selected CPU/ROCm/XPU backend from accidentally
-    receiving an NVIDIA-sized batch merely because nvidia-smi is installed.
+    NVIDIA VRAM is only relevant when the configured Irodori backend is one of
+    the audited CUDA wheel families. This prevents an explicitly selected
+    CPU/ROCm/XPU backend from accidentally receiving an NVIDIA-sized batch merely
+    because nvidia-smi is installed.
     """
 
-    gpus = nvidia_gpus() if backend in {None, "cu128"} else []
+    gpus = nvidia_gpus() if backend in {None, "cu126", "cu128"} else []
     if not gpus:
         return {
             "batch_size": 1,
