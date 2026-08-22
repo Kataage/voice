@@ -16,16 +16,20 @@ from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     IRODORI_DACVAE_FILENAME,
     IRODORI_DACVAE_ID,
+    IRODORI_DACVAE_REVISION,
     IRODORI_DACVAE_SHA256,
     IRODORI_MODEL_FILENAME,
     IRODORI_MODEL_ID,
+    IRODORI_MODEL_REVISION,
     IRODORI_MODEL_SHA256,
+    IRODORI_SOURCE_REVISION,
     IRODORI_TEXT_ENCODER_ID,
     IRODORI_TEXT_ENCODER_REVISION,
     LFM_MODEL_ID,
     LFM_MODEL_REVISION,
     PYANNOTE_MODEL_ID,
     PYANNOTE_MODEL_REVISION,
+    SEED_VC_SOURCE_REVISION,
     SENSE_MODEL_CMVN_SHA256,
     SENSE_MODEL_ID,
     SENSE_MODEL_TOKENIZER_SHA256,
@@ -44,9 +48,9 @@ from personavoice.seed_vc_assets import (
 from personavoice.workers import local_model_env, worker
 
 IRODORI_REPO = "https://github.com/Aratako/Irodori-TTS.git"
-IRODORI_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
+IRODORI_REVISION = IRODORI_SOURCE_REVISION
 SEED_VC_REPO = "https://github.com/Plachtaa/seed-vc.git"
-SEED_VC_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
+SEED_VC_REVISION = SEED_VC_SOURCE_REVISION
 REVISION_MARKER = ".personavoice-revision"
 IRODORI_LOCK_SWAP_MARKER = "irodori-lock-swap.json"
 SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
@@ -326,6 +330,7 @@ def _download_verified_file(
     *,
     model_id: str,
     filename: str,
+    revision: str,
     local_dir: Path,
     cache_dir: Path,
     sha256: str,
@@ -345,6 +350,7 @@ def _download_verified_file(
     hf_hub_download(
         repo_id=model_id,
         filename=filename,
+        revision=revision,
         local_dir=local_dir,
         cache_dir=cache_dir,
         force_download=force_download,
@@ -416,6 +422,7 @@ def download_models(
     _, existed = _download_verified_file(
         model_id=IRODORI_MODEL_ID,
         filename=IRODORI_MODEL_FILENAME,
+        revision=IRODORI_MODEL_REVISION,
         local_dir=irodori_dir,
         cache_dir=hub_cache,
         sha256=IRODORI_MODEL_SHA256,
@@ -428,6 +435,7 @@ def download_models(
     _, existed = _download_verified_file(
         model_id=IRODORI_DACVAE_ID,
         filename=IRODORI_DACVAE_FILENAME,
+        revision=IRODORI_DACVAE_REVISION,
         local_dir=dacvae_dir,
         cache_dir=hub_cache,
         sha256=IRODORI_DACVAE_SHA256,
