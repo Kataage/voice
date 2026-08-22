@@ -57,12 +57,12 @@ def test_blackwell_is_not_sent_to_legacy_cu126_or_seed_vc_cu124(monkeypatch):
     assert hardware.seed_vc_cuda_supported(gpu("9.0"))
 
 
-def test_aarch64_matrix_fails_closed_for_unlisted_architectures(monkeypatch):
+def test_non_x86_cuda_fails_closed_until_full_stack_is_ci_audited(monkeypatch):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "aarch64")
-    assert hardware.backend_supports_gpu("cu126", gpu("8.0"))
-    assert hardware.backend_supports_gpu("cu128", gpu("10.0"))
-    assert not hardware.backend_supports_gpu("cu126", gpu("6.1"))
-    assert not hardware.backend_supports_gpu("cu128", gpu("8.7"))
+    assert not hardware.backend_supports_gpu("cu126", gpu("8.0"))
+    assert not hardware.backend_supports_gpu("cu128", gpu("10.0"))
+    assert hardware.cuda_backend_for_gpu(gpu("9.0")) == "cpu"
+    assert not hardware.seed_vc_cuda_supported(gpu("9.0"))
 
 
 def test_cuda_visible_devices_numeric_mapping_selects_logical_device_zero(monkeypatch):
