@@ -4,10 +4,13 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from uuid import uuid4
 
 _DLL_DIRECTORY_HANDLES: list[object] = []
+_AUDIO_SAMPLE_RATE = 16000
 
 
 def _configure_windows_ffmpeg_dll_search() -> None:
@@ -135,6 +138,66 @@ def local_source() -> str:
     return str(local)
 
 
+def _ffmpeg_executable() -> str:
+    explicit = os.getenv("PERSONAVOICE_FFMPEG_BIN")
+    if explicit:
+        executable = Path(explicit) / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        if executable.is_file():
+            return str(executable)
+    discovered = shutil.which("ffmpeg")
+    if discovered:
+        return discovered
+    raise FileNotFoundError(
+        "A verified FFmpeg executable is required to preload audio for pyannote. "
+        "Run `persona setup` or `scripts/bootstrap.ps1` first."
+    )
+
+
+def _preload_audio(audio: str) -> dict:
+    """Decode a local file to a pyannote waveform without TorchCodec file I/O."""
+
+    source = Path(audio)
+    if not source.is_file():
+        raise FileNotFoundError(f"Diarization input is not a local file: {source}")
+    completed = subprocess.run(
+        [
+            _ffmpeg_executable(),
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(_AUDIO_SAMPLE_RATE),
+            "-acodec",
+            "pcm_f32le",
+            "-f",
+            "f32le",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg failed to decode diarization audio: {stderr or 'unknown error'}")
+    if not completed.stdout:
+        raise RuntimeError("FFmpeg produced no PCM samples for diarization audio")
+    if len(completed.stdout) % 4:
+        raise RuntimeError("FFmpeg produced a malformed float32 PCM stream for diarization audio")
+
+    # Convert the pipe-owned bytearray to an owned float32 tensor before the
+    # local buffer goes out of scope. Shape is [channels, samples] as pyannote
+    # expects for in-memory waveform input.
+    waveform = torch.frombuffer(bytearray(completed.stdout), dtype=torch.float32).clone().unsqueeze(0)
+    return {"waveform": waveform, "sample_rate": _AUDIO_SAMPLE_RATE}
+
+
 def load_pipeline() -> Pipeline:
     token = os.getenv("HF_TOKEN")
     pipeline = Pipeline.from_pretrained(local_source(), token=token)
@@ -157,7 +220,7 @@ def annotation_rows(annotation) -> list[dict]:
 
 
 def diarize_with_pipeline(pipeline: Pipeline, audio: str, *, force_one: bool = False) -> dict:
-    output = pipeline(audio, num_speakers=1 if force_one else None)
+    output = pipeline(_preload_audio(audio), num_speakers=1 if force_one else None)
     diarization = output.speaker_diarization
     labels = [str(label) for label in diarization.labels()]
     embeddings = getattr(output, "speaker_embeddings", None)
