@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -178,7 +177,6 @@ def infer(payload: dict) -> dict:
 def download_model(payload: dict) -> dict:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "lfm" / "base"
-    shutil.rmtree(local, ignore_errors=True)
     snapshot_download(
         MODEL_ID,
         revision=MODEL_REVISION,
