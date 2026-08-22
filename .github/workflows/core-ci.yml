@@ -45,18 +45,23 @@ jobs:
           - worker: asr
             extra: ''
             gpu_extra: ''
+            legacy_gpu_extra: ''
           - worker: diarization
             extra: '--extra cpu'
             gpu_extra: '--extra cu128'
+            legacy_gpu_extra: '--extra cu126'
           - worker: sense
             extra: '--extra cpu'
             gpu_extra: '--extra cu128'
+            legacy_gpu_extra: '--extra cu126'
           - worker: lfm
             extra: '--extra cpu'
             gpu_extra: '--extra cu128'
+            legacy_gpu_extra: '--extra cu126'
           - worker: seed_vc
             extra: '--extra cpu'
             gpu_extra: '--extra cu124'
+            legacy_gpu_extra: ''
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -98,3 +103,38 @@ jobs:
         if: ${{ matrix.gpu_extra != '' }}
         shell: bash
         run: uv sync --project "workers/${{ matrix.worker }}" --locked --dry-run ${{ matrix.gpu_extra }}
+      - name: Validate locked Pascal GPU extra
+        if: ${{ matrix.legacy_gpu_extra != '' }}
+        shell: bash
+        run: uv sync --project "workers/${{ matrix.worker }}" --locked --dry-run ${{ matrix.legacy_gpu_extra }}
+
+  irodori-lock:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.5
+      - name: Materialize pinned Irodori dependency overlay
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/Aratako/Irodori-TTS.git vendor/Irodori-TTS
+          git -C vendor/Irodori-TTS checkout --detach 8224dafb46d0aba89209a8f905f1cb7e3299d9c1
+          cp locks/Irodori-TTS.pyproject.toml vendor/Irodori-TTS/pyproject.toml
+          cp locks/Irodori-TTS.uv.lock vendor/Irodori-TTS/uv.lock
+      - name: Validate CPU lock
+        shell: bash
+        run: uv sync --project vendor/Irodori-TTS --locked --dry-run --extra cpu
+      - name: Validate Pascal CUDA 12.6 lock
+        shell: bash
+        run: uv sync --project vendor/Irodori-TTS --locked --dry-run --extra cu126
+      - name: Validate modern CUDA 12.8 lock
+        shell: bash
+        run: uv sync --project vendor/Irodori-TTS --locked --dry-run --extra cu128
