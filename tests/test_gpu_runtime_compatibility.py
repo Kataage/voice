@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import types
 from pathlib import Path
 
 import pytest
 
-from personavoice import environment_contract as env_contract
+from personavoice import doctor, environment_contract as env_contract
 from personavoice import hardware, setup_env, workers
 
 
@@ -25,6 +26,31 @@ def _gpu(
         uuid=uuid,
         pci_bus_id=pci_bus_id,
     )
+
+
+def test_nvidia_query_parses_uuid_pci_bus_and_compute_capability(monkeypatch):
+    calls = []
+
+    def fake_query(fields: str):
+        calls.append(fields)
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="7, GPU-abcdef, 00000000:65:00.0, NVIDIA RTX, 24576, 23000, 8.6\n",
+        )
+
+    monkeypatch.setattr(hardware, "_run_nvidia_query", fake_query)
+    assert hardware.nvidia_gpus() == [
+        hardware.GpuInfo(
+            index=7,
+            uuid="GPU-abcdef",
+            pci_bus_id="00000000:65:00.0",
+            name="NVIDIA RTX",
+            total_mib=24576,
+            free_mib=23000,
+            compute_capability="8.6",
+        )
+    ]
+    assert calls == ["index,uuid,pci.bus_id,name,memory.total,memory.free,compute_cap"]
 
 
 def test_selected_gpu_honors_cuda_visible_devices_numeric_pci_order(monkeypatch):
@@ -61,6 +87,22 @@ def test_worker_environment_forces_same_cuda_pci_order(tmp_path: Path, monkeypat
     monkeypatch.setattr(workers, "ffmpeg_environment", lambda: {})
     env = workers.local_model_env(tmp_path)
     assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+
+
+def test_asr_honors_recorded_cpu_policy_and_cuda_runtime_fallback_policy():
+    assert workers._asr_device_environment({"irodori_backend": "cpu"}) == {
+        "CUDA_VISIBLE_DEVICES": ""
+    }
+    assert workers._asr_device_environment({"irodori_backend": "rocm"}) == {
+        "CUDA_VISIBLE_DEVICES": ""
+    }
+    assert workers._asr_device_environment({"irodori_backend": "cu126"}) == {}
+    assert workers._asr_device_environment({"irodori_backend": "cu128"}) == {}
+    assert doctor._expected_worker_backend("asr", {"irodori_backend": "cpu"}) == "cpu"
+    assert (
+        doctor._expected_worker_backend("asr", {"irodori_backend": "cu126"})
+        == "runtime-auto"
+    )
 
 
 @pytest.mark.parametrize(
