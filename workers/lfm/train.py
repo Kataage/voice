@@ -16,10 +16,23 @@ REVISION_MARKER = ".personavoice-revision"
 ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 
 
+def _bf16_supported() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        capability = torch.cuda.get_device_capability(0)
+    except (RuntimeError, AssertionError):
+        return False
+    # BF16 tensor-core execution is an Ampere-or-newer capability. Some CUDA
+    # builds can report a broad bf16 API capability even when the selected GPU
+    # architecture cannot execute the required kernels, so gate both signals.
+    return capability >= (8, 0) and bool(torch.cuda.is_bf16_supported())
+
+
 def _model_dtype() -> torch.dtype:
     if not torch.cuda.is_available():
         return torch.float32
-    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return torch.bfloat16 if _bf16_supported() else torch.float16
 
 
 def _verify_base(base: Path) -> None:
@@ -80,6 +93,7 @@ def main() -> None:
         task_type="CAUSAL_LM",
     )
     has_cuda = torch.cuda.is_available()
+    use_bf16 = _bf16_supported()
     batch = (
         2
         if has_cuda and torch.cuda.get_device_properties(0).total_memory >= 16 * 1024**3
@@ -93,8 +107,8 @@ def main() -> None:
         gradient_accumulation_steps=grad_accum,
         learning_rate=args.learning_rate,
         use_cpu=not has_cuda,
-        bf16=bool(has_cuda and torch.cuda.is_bf16_supported()),
-        fp16=bool(has_cuda and not torch.cuda.is_bf16_supported()),
+        bf16=bool(has_cuda and use_bf16),
+        fp16=bool(has_cuda and not use_bf16),
         logging_steps=5,
         # Periodic step checkpoints limit loss from hard crashes/OOMs while the
         # JIT checkpoint below covers graceful SIGTERM shutdowns.
