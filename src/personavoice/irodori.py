@@ -266,7 +266,7 @@ def _patched_config(
     train_cfg["save_every"] = max(100, min(500, max_steps // 4 or 100))
     train_cfg["valid_every"] = train_cfg["save_every"]
     if backend == "cu126":
-        train_cfg["precision"] = "fp16"
+        train_cfg["precision"] = "fp32"
         train_cfg["allow_tf32"] = False
     elif backend == "cpu":
         train_cfg["dataloader_cuda_prefetch"] = False
