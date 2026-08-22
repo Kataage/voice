@@ -134,13 +134,15 @@ def test_seed_vc_falls_back_to_cpu_only_when_legacy_stack_cannot_run(monkeypatch
     assert blackwell["lfm"] == "cu128"
 
 
-def _write_setup(tmp_path, backend: str) -> dict:
+def _write_setup(tmp_path, backend: str, *, seed_vc_backend: str | None = None) -> dict:
     runtime = tmp_path / ".runtime"
     runtime.mkdir(parents=True)
     setup = {
         "irodori_backend": backend,
         "environment_contract": environment.environment_contract(tmp_path),
     }
+    if seed_vc_backend is not None:
+        setup["worker_backends"] = {"seed_vc": seed_vc_backend}
     (runtime / "setup.json").write_text(json.dumps(setup), encoding="utf-8")
     return setup
 
@@ -157,6 +159,21 @@ def test_direct_runtime_accepts_compatible_gpu_swap(tmp_path, monkeypatch):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
     setup = _write_setup(tmp_path, "cu126")
     monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("8.6"))
+    assert environment.require_current_environment(tmp_path) == setup
+
+
+def test_direct_runtime_rejects_legacy_seed_vc_after_blackwell_swap(tmp_path, monkeypatch):
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
+    _write_setup(tmp_path, "cu128", seed_vc_backend="cu124")
+    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("12.0"))
+    with pytest.raises(RuntimeError, match="Seed-VC was set up for cu124"):
+        environment.require_current_environment(tmp_path)
+
+
+def test_direct_runtime_accepts_blackwell_when_seed_vc_is_cpu(tmp_path, monkeypatch):
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
+    setup = _write_setup(tmp_path, "cu128", seed_vc_backend="cpu")
+    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("12.0"))
     assert environment.require_current_environment(tmp_path) == setup
 
 
