@@ -186,11 +186,13 @@ rootと全workerの`uv.lock`はリポジトリへコミットされています�
 ./scripts/lock_all.sh
 ```
 
-Irodori backendは`persona setup --backend auto|cu126|cu128|cpu|rocm|xpu`で選択できます。`auto`はNVIDIA device 0のcompute capabilityを見てPascal 6.xをCUDA 12.6、7.0以上をCUDA 12.8へ分けます。互換性のためTorch 2.4に固定しているSeed-VCはCUDA 12.4系へ明示的に解決します。
+Irodori backendは`persona setup --backend auto|cu126|cu128|cpu|rocm|xpu`で選択できます。NVIDIAでは`auto`を推奨し、実際にlogical CUDA device 0として見えるGPU（`CUDA_VISIBLE_DEVICES`の数値/UUID指定を含む）のcompute capabilityを監査済みbinary matrixと照合します。x86_64/WindowsではPascal 6.x・Volta 7.0をCUDA 12.6、Turing 7.5以降の監査済み世代をCUDA 12.8へ分け、未知/未監査世代は推測せずCPUへfail-closedします。PyTorch 2.4/cu124固定のSeed-VCはPascal〜HopperではCUDAを維持し、Blackwellでは他workerをcu128のままSeed-VCだけCPUへ安全にfallbackします。
+
+GPUを交換・取り外ししたり`CUDA_VISIBLE_DEVICES`を変更した場合、既存setupが新しいlogical device 0と互換ならそのまま利用できます。非互換ならdirect model processを起動する前に失敗させ、`persona setup --backend auto`で再同期するよう明示します。CPU setupはGPU変更に依存せずそのまま利用できます。
 
 ## テスト / 実機検証
 
-GitHub Actions `core-ci` はLinux/Windowsの両方でrootのlocked sync、Ruff、pytest、compileall、CLI smokeを実行し、さらにASR / diarization / SenseVoice / LFM / Seed-VCの全worker環境を各OSで`uv sync --locked`して依存解決とPython compileを検証します。数GB級weight/GPUはCIに持ち込まず、対象実機上の`persona setup` + `persona doctor --deep`でoffline model loadとIrodori smoke synthesisを検証します。
+GitHub Actions `core-ci` はLinux/Windowsの両方でrootのlocked sync、Ruff、pytest、compileall、CLI smokeを実行します。さらにASR / diarization / SenseVoice / LFM / Seed-VCの全worker環境を各OSで`uv sync --locked`し、diarizationのPyTorch/TorchCodec ABI契約、SenseVoiceの実import、LFM trainer API、cu126/cu128/cu124のlocked dry-runを検証します。Irodoriも監査済みmanaged project/lockを固定upstreamへ一時materializeし、CPU/cu126/cu128の全lockをLinux/Windowsで検証します。数GB級weightと実GPUはhosted CIへ持ち込まないため、対象実機上の`persona setup --backend auto` + `persona doctor --deep`が最終offline model load / CUDA kernel / Irodori smoke synthesis gateです。
 
 ## ローカルデータ / 同意
 
