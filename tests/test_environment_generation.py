@@ -70,12 +70,8 @@ def test_inference_requires_current_environment_generation(tmp_path: Path, monke
     _dependency_tree(tmp_path)
     _record_setup(tmp_path)
     _write(tmp_path / "workers" / "sense" / "uv.lock", b"new-lock")
-    paths = PersonaPaths(tmp_path / "personas" / "alice")
-    paths.root.mkdir(parents=True)
-
-    monkeypatch.setattr(inference, "_verify_irodori_runtime", lambda *_args, **_kwargs: None)
     with pytest.raises(RuntimeError, match="different dependency contract"):
-        inference.synthesize(tmp_path, paths, "hello")
+        inference.configured_backend(tmp_path)
 
 
 def test_setup_transaction_marker_blocks_old_setup_state(tmp_path: Path):

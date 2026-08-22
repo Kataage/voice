@@ -9,7 +9,13 @@ from huggingface_hub import hf_hub_download, snapshot_download
 
 from personavoice.atomic import atomic_write_json, atomic_write_text
 from personavoice.environment_contract import SETUP_TRANSACTION_MARKER, environment_contract
-from personavoice.hardware import cuda_backend_for_gpu, detect_irodori_backend, nvidia_gpus
+from personavoice.hardware import (
+    backend_supports_gpu,
+    cuda_backend_for_gpu,
+    detect_irodori_backend,
+    seed_vc_cuda_supported,
+    selected_nvidia_gpu,
+)
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
     ASR_MODEL_ID,
@@ -223,17 +229,19 @@ def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
     return destination
 
 
-def _worker_extras(selected_backend: str) -> dict[str, str | None]:
-    """Map the Irodori backend to compatible isolated worker backends."""
+def _worker_extras(selected_backend: str, *, gpu=None) -> dict[str, str | None]:
+    """Map the selected backend to safe isolated worker environments."""
 
     if selected_backend in {"cu126", "cu128"}:
+        seed_backend = "cu124" if gpu is None or seed_vc_cuda_supported(gpu) else "cpu"
         return {
             "asr": None,
             "diarization": selected_backend,
             "sense": selected_backend,
             "lfm": selected_backend,
-            # Seed-VC intentionally remains on its audited Torch 2.4/CUDA 12.4 stack.
-            "seed_vc": "cu124",
+            # Seed-VC stays on its audited Torch 2.4 stack. Blackwell and newer
+            # GPUs predate that wheel's cubins, so only this worker falls back.
+            "seed_vc": seed_backend,
         }
     return {
         "asr": None,
@@ -288,21 +296,29 @@ def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
         marker.unlink(missing_ok=True)
 
 
-def _validate_explicit_backend(backend: str | None) -> None:
-    if backend != "cu128":
-        return
-    gpus = nvidia_gpus()
-    if not gpus:
-        return
-    gpu0 = min(gpus, key=lambda gpu: gpu.index)
-    compatible = cuda_backend_for_gpu(gpu0)
-    if compatible == "cu126":
-        capability = gpu0.compute_capability or "unknown"
+def _validate_cuda_backend(backend: str | None):
+    """Return the selected GPU or reject an unsafe explicit/automatic CUDA stack."""
+
+    if backend not in {"cu126", "cu128"}:
+        return None
+    gpu = selected_nvidia_gpu()
+    if gpu is None:
         raise ValueError(
-            f"The selected NVIDIA GPU {gpu0.name} has compute capability {capability}; "
-            "the audited PyTorch CUDA 12.8 stack requires sm_70 or newer. "
-            "Use `--backend auto` or `--backend cu126` for this GPU."
+            f"The selected backend {backend} requires an NVIDIA GPU exposed as CUDA device 0, "
+            "but no NVIDIA GPU could be selected. Check the driver and CUDA_VISIBLE_DEVICES, "
+            "or use `--backend auto`."
         )
+    if backend_supports_gpu(backend, gpu):
+        return gpu
+
+    preferred = cuda_backend_for_gpu(gpu)
+    capability = gpu.compute_capability or "unknown"
+    fallback = f"--backend {preferred}" if preferred in {"cu126", "cu128"} else "--backend cpu"
+    raise ValueError(
+        f"The selected NVIDIA GPU {gpu.name} has compute capability {capability}; "
+        f"the audited {backend} PyTorch stack does not contain a compatible kernel image. "
+        f"Use `--backend auto` (recommended) or `{fallback}`."
+    )
 
 
 def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:
@@ -311,13 +327,13 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     if not shutil.which("git"):
         raise RuntimeError("git was not found in PATH")
     require_ffmpeg_runtime()
-    _validate_explicit_backend(backend)
     selected_backend = backend or detect_irodori_backend()
     if selected_backend not in SUPPORTED_IRODORI_BACKENDS:
         expected = ", ".join(sorted(SUPPORTED_IRODORI_BACKENDS))
         raise ValueError(f"Unsupported Irodori backend {selected_backend!r}; choose one of: {expected}")
 
-    worker_extras = _worker_extras(selected_backend)
+    selected_gpu = _validate_cuda_backend(selected_backend)
+    worker_extras = _worker_extras(selected_backend, gpu=selected_gpu)
     runtime = repo_root / ".runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     transaction_marker = runtime / SETUP_TRANSACTION_MARKER

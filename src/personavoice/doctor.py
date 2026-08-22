@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from personavoice.environment_contract import environment_contract_status
+from personavoice.environment_contract import environment_contract_status, runtime_hardware_status
 from personavoice.hardware import hardware_report
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
@@ -337,6 +337,7 @@ def report(
     active_workers = tuple(name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc")
     setup = _setup_state(repo_root)
     environment = environment_contract_status(repo_root, setup.get("environment_contract"))
+    runtime_hardware = runtime_hardware_status(setup)
     model_assets = _model_asset_integrity(
         repo_root,
         setup,
@@ -375,10 +376,19 @@ def report(
                     "error": f"{type(exc).__name__}: {exc}",
                     "expected_backend": _expected_worker_backend(name, setup),
                 }
-        try:
-            worker_health["irodori"] = _irodori_health(repo_root, setup)
-        except Exception as exc:
-            worker_health["irodori"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if not runtime_hardware.get("ok"):
+            worker_health["irodori"] = {
+                "ok": False,
+                "error": str(runtime_hardware.get("error")),
+            }
+        else:
+            try:
+                worker_health["irodori"] = _irodori_health(repo_root, setup)
+            except Exception as exc:
+                worker_health["irodori"] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
 
     lockfiles = {
         "root": (repo_root / "uv.lock").is_file(),
@@ -407,7 +417,12 @@ def report(
 
     locks_ready = all(lockfiles[key] for key in required_lock_keys)
     vendors_ready = all(vendor_integrity[key].get("ok") for key in required_vendor_keys)
-    reproducible = locks_ready and bool(model_assets.get("ok")) and bool(environment.get("ok"))
+    reproducible = (
+        locks_ready
+        and bool(model_assets.get("ok"))
+        and bool(environment.get("ok"))
+        and bool(runtime_hardware.get("ok"))
+    )
     base_ready = (
         commands_ok
         and bool(setup)
@@ -425,6 +440,7 @@ def report(
         "hardware": hardware_report(),
         "setup": setup,
         "environment_contract": environment,
+        "runtime_hardware": runtime_hardware,
         "models": models,
         "model_asset_integrity": model_assets,
         "workers": workers,
