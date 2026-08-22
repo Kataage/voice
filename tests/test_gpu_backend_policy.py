@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from personavoice import environment_contract as environment, hardware, setup_env
+from personavoice import environment_contract as environment
+from personavoice import hardware, setup_env
 
 
 def gpu(capability: str, *, index: int = 0, mib: int = 16384, uuid: str | None = None):
