@@ -39,6 +39,19 @@ def _require_seed_vc_vendor_integrity(repo_root: Path) -> Path:
     return path
 
 
+def _asr_device_environment(setup: dict[str, Any]) -> dict[str, str]:
+    """Keep ASR on CPU when setup selected a non-NVIDIA backend.
+
+    CTranslate2 is intentionally runtime-adaptive for audited NVIDIA backends,
+    but an explicit CPU/ROCm/XPU setup must not start using an unrelated visible
+    NVIDIA GPU merely because the driver is installed.
+    """
+
+    if setup.get("irodori_backend") in {"cu126", "cu128"}:
+        return {}
+    return {"CUDA_VISIBLE_DEVICES": ""}
+
+
 @dataclass(frozen=True)
 class Worker:
     name: str
@@ -56,7 +69,7 @@ class Worker:
         # Every model worker executes from an isolated `.venv` with --no-sync.
         # Refuse to run it unless setup.json proves that environment was synced
         # from the exact dependency declarations and audited locks in this checkout.
-        require_current_environment(repo_root)
+        setup = require_current_environment(repo_root)
         if self.name == "seed_vc":
             _require_seed_vc_vendor_integrity(repo_root)
 
@@ -66,6 +79,8 @@ class Worker:
         request_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         try:
             env = local_model_env(repo_root, offline=offline)
+            if self.name == "asr":
+                env.update(_asr_device_environment(setup))
             result = run_json(
                 [
                     "uv",
