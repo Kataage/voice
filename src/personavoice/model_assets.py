@@ -9,7 +9,11 @@ SEED_VC_SOURCE_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
 
 IRODORI_MODEL_ID = "Aratako/Irodori-TTS-v4.1-Small"
 IRODORI_MODEL_FILENAME = "model.safetensors"
-IRODORI_MODEL_REVISION = "c0097bd1be75833b44498bb6fcf0bee9298262a7"
+# v4.1 is a separate Hugging Face repository from v4-Small. The old c0097bd...
+# revision belongs to Aratako/Irodori-TTS-v4-Small and therefore 404s when used
+# against the v4.1 repository. df20e70... is the audited v4.1 upload commit that
+# contains the checkpoint with the SHA256 pinned below.
+IRODORI_MODEL_REVISION = "df20e70ca3a5ceaedda6cb98e82029b68c800857"
 IRODORI_MODEL_SHA256 = "c85de88c01700cb53538e706f128ebcb1b8513ad21d7d0e75f58bc82cdbf89f6"
 
 IRODORI_DACVAE_ID = "Aratako/Semantic-DACVAE-Japanese-32dim"
