@@ -14,6 +14,7 @@ _WINDOWS_SHARED_DLL_PATTERNS = (
     "avcodec-*.dll",
     "avformat-*.dll",
     "swresample-*.dll",
+    "swscale-*.dll",
 )
 _FFMPEG_VERSION_RE = re.compile(r"^ffmpeg version\s+(?:n)?(\d+)(?:\.|\b)", re.IGNORECASE)
 
@@ -162,7 +163,7 @@ def ffmpeg_runtime() -> FfmpegRuntime:
         elif platform.system() == "Windows" and not best.shared_libraries:
             detail = (
                 "FFmpeg executables were found, but the shared avutil/avcodec/avformat/"
-                "swresample DLLs required by TorchCodec were not found beside them"
+                "swresample/swscale DLLs required by TorchCodec were not found beside them"
             )
         else:
             detail = "FFmpeg was found but is not compatible with the audited TorchCodec runtime"
