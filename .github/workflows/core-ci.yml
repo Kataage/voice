@@ -76,12 +76,12 @@ jobs:
         run: |
           project="workers/${{ matrix.worker }}"
           uv run --project "$project" --no-sync python -m compileall -q "$project"
-      - name: Validate diarization runtime imports
+      - name: Validate diarization ABI dependency contract
         if: ${{ matrix.worker == 'diarization' }}
         shell: bash
         run: |
           project="workers/${{ matrix.worker }}"
-          uv run --project "$project" --no-sync python -c "from importlib.metadata import version; import torch, torchaudio, torchcodec; from pyannote.audio import Pipeline; assert torch.__version__.split('+')[0] == torchaudio.__version__.split('+')[0] == '2.10.0'; assert version('torchcodec') == '0.10.0'"
+          uv run --project "$project" --no-sync python -c "from importlib.metadata import version; import torch, torchaudio; assert torch.__version__.split('+')[0] == torchaudio.__version__.split('+')[0] == '2.10.0'; assert version('torchcodec') == '0.10.0'; assert version('pyannote.audio') == '4.0.7'"
       - name: Validate SenseVoice runtime imports
         if: ${{ matrix.worker == 'sense' }}
         shell: bash
