@@ -7,6 +7,32 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+_DLL_DIRECTORY_HANDLES: list[object] = []
+
+
+def _configure_windows_ffmpeg_dll_search() -> None:
+    if os.name != "nt":
+        return
+    value = os.getenv("PERSONAVOICE_FFMPEG_BIN")
+    if not value:
+        return
+    directory = Path(value)
+    if not directory.is_dir():
+        return
+    # Python 3.8+ no longer searches arbitrary PATH directories for extension
+    # dependencies as broadly as older Windows runtimes did. Keep the handle
+    # alive for the entire worker process so TorchCodec can resolve FFmpeg's
+    # avutil/avcodec/avformat/swresample DLLs while pyannote imports.
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is not None:
+        _DLL_DIRECTORY_HANDLES.append(add_dll_directory(str(directory)))
+    current_path = os.environ.get("PATH", "")
+    if str(directory) not in current_path.split(os.pathsep):
+        os.environ["PATH"] = str(directory) + (os.pathsep + current_path if current_path else "")
+
+
+_configure_windows_ffmpeg_dll_search()
+
 import torch
 from huggingface_hub import snapshot_download
 from pyannote.audio import Pipeline
