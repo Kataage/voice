@@ -4,12 +4,17 @@ from __future__ import annotations
 # preparation, training, inference, and doctor all agree on the exact assets
 # PersonaVoice was audited against.
 
+IRODORI_SOURCE_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
+SEED_VC_SOURCE_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
+
 IRODORI_MODEL_ID = "Aratako/Irodori-TTS-v4.1-Small"
 IRODORI_MODEL_FILENAME = "model.safetensors"
+IRODORI_MODEL_REVISION = "c0097bd1be75833b44498bb6fcf0bee9298262a7"
 IRODORI_MODEL_SHA256 = "c85de88c01700cb53538e706f128ebcb1b8513ad21d7d0e75f58bc82cdbf89f6"
 
 IRODORI_DACVAE_ID = "Aratako/Semantic-DACVAE-Japanese-32dim"
 IRODORI_DACVAE_FILENAME = "weights.pth"
+IRODORI_DACVAE_REVISION = "818b64119d4fdc2476ccdce7836d746b279ae3fa"
 IRODORI_DACVAE_SHA256 = "db120339c5ee7eca1912cdf29bc612b947a0808e69c3cebfb4936b45a762c1d5"
 
 # This exact revision is referenced by the pinned Irodori v4 Small training

@@ -10,10 +10,15 @@ from huggingface_hub import hf_hub_download
 from personavoice.atomic import atomic_write_text
 from personavoice.environment_contract import require_current_environment
 from personavoice.hardware import safe_batch_profile
+from personavoice.media import sha256_file
 from personavoice.model_assets import (
     IRODORI_DACVAE_FILENAME,
+    IRODORI_DACVAE_SHA256,
     IRODORI_MODEL_FILENAME,
     IRODORI_MODEL_ID,
+    IRODORI_MODEL_REVISION,
+    IRODORI_MODEL_SHA256,
+    IRODORI_SOURCE_REVISION,
     IRODORI_TEXT_ENCODER_ID,
     IRODORI_TEXT_ENCODER_REVISION,
 )
@@ -28,8 +33,27 @@ _LORA_TRAINER_STATE = "trainer_state.pt"
 
 def vendor_dir(repo_root: Path) -> Path:
     path = repo_root / "vendor" / "Irodori-TTS"
-    if not (path / "infer.py").is_file():
+    if not (path / "infer.py").is_file() or not (path / ".git").exists():
         raise FileNotFoundError("Irodori-TTS is not installed. Run `persona setup` first.")
+    try:
+        head = run(["git", "rev-parse", "HEAD"], cwd=path, capture=True).stdout.strip()
+        status = run(
+            ["git", "status", "--porcelain"],
+            cwd=path,
+            capture=True,
+        ).stdout.strip()
+    except Exception as exc:
+        raise RuntimeError("Irodori vendor checkout integrity could not be verified") from exc
+    if head != IRODORI_SOURCE_REVISION:
+        raise RuntimeError(
+            f"Irodori vendor HEAD mismatch: expected {IRODORI_SOURCE_REVISION}, got {head}. "
+            "Run `persona setup` to restore the audited checkout."
+        )
+    if status:
+        raise RuntimeError(
+            "Irodori vendor checkout has local modifications or untracked files. "
+            "Restore the checkout and run `persona setup` before model work."
+        )
     return path
 
 
@@ -58,7 +82,22 @@ def backend_device(backend: str) -> str:
 
 
 def _nonempty_file(path: Path) -> bool:
-    return path.is_file() and path.stat().st_size > 0
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _verify_sha256(path: Path, expected: str, *, label: str) -> None:
+    try:
+        actual = sha256_file(path)
+    except OSError as exc:
+        raise RuntimeError(f"{label} checksum could not be read: {path}") from exc
+    if actual != expected:
+        raise RuntimeError(
+            f"{label} checksum mismatch: expected {expected}, got {actual}. "
+            "Run `persona setup --download-models` to restore the audited asset."
+        )
 
 
 def speaker_embedding_complete(path: Path) -> bool:
@@ -88,6 +127,7 @@ def codec_checkpoint(repo_root: Path) -> Path:
             f"Irodori DACVAE is not materialized at {expected}. "
             "Run `persona setup --download-models`."
         )
+    _verify_sha256(expected, IRODORI_DACVAE_SHA256, label="Irodori DACVAE")
     return expected
 
 
@@ -96,8 +136,14 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
     local_dir = repo_root / "models" / "irodori" / "v4.1-small"
     expected = local_dir / IRODORI_MODEL_FILENAME
     if _nonempty_file(expected):
-        return expected
-    if not online:
+        try:
+            _verify_sha256(expected, IRODORI_MODEL_SHA256, label="Irodori base checkpoint")
+            return expected
+        except RuntimeError:
+            if not online:
+                raise
+            expected.unlink(missing_ok=True)
+    elif not online:
         raise FileNotFoundError(
             f"Irodori base checkpoint is not materialized at {expected}. "
             "Run `persona setup --download-models`."
@@ -107,11 +153,17 @@ def base_checkpoint(repo_root: Path, *, online: bool = False) -> Path:
     hf_hub_download(
         repo_id=IRODORI_MODEL_ID,
         filename=IRODORI_MODEL_FILENAME,
+        revision=IRODORI_MODEL_REVISION,
         local_dir=local_dir,
         cache_dir=Path(env["HUGGINGFACE_HUB_CACHE"]),
     )
     if not _nonempty_file(expected):
         raise FileNotFoundError(f"Irodori download completed but {expected} was not created")
+    try:
+        _verify_sha256(expected, IRODORI_MODEL_SHA256, label="Irodori base checkpoint")
+    except Exception:
+        expected.unlink(missing_ok=True)
+        raise
     return expected
 
 

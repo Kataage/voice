@@ -9,6 +9,7 @@ import yaml
 from personavoice import irodori, setup_env
 from personavoice.environment_contract import environment_contract
 from personavoice.model_assets import (
+    IRODORI_DACVAE_SHA256,
     IRODORI_TEXT_ENCODER_ID,
     IRODORI_TEXT_ENCODER_REVISION,
 )
@@ -156,6 +157,11 @@ def test_prepare_manifest_passes_local_codec_and_recorded_cpu_backend(
 
     monkeypatch.setattr(irodori, "vendor_dir", lambda _root: vendor)
     monkeypatch.setattr(irodori, "run", fake_run)
+    monkeypatch.setattr(
+        irodori,
+        "sha256_file",
+        lambda path: IRODORI_DACVAE_SHA256 if path == codec else "0" * 64,
+    )
     irodori.prepare_manifest(tmp_path, source, manifest, latents)
 
     assert captured[captured.index("--codec-repo") + 1] == str(codec)
