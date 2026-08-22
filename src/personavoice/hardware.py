@@ -151,23 +151,17 @@ def _host_arch() -> str:
 
 
 def _known_pytorch_210_architecture(capability: tuple[int, int], *, backend: str) -> bool:
-    """Match the audited PyTorch 2.10 binary architecture matrix.
+    """Match the PersonaVoice-audited PyTorch 2.10 binary architecture matrix.
 
-    PersonaVoice intentionally fails closed for unknown future architectures.
-    Updating support for a new NVIDIA generation therefore requires an audited
-    dependency change instead of silently installing a wheel that may expose
-    ``torch.cuda.is_available()`` yet fail on the first CUDA kernel.
+    The published PyTorch wheel matrix is broader than PersonaVoice's complete
+    model stack. CUDA is therefore enabled only on host architectures exercised
+    by PersonaVoice CI and only for GPU architectures explicitly covered below.
+    Unknown future GPUs and unaudited hosts fail closed instead of installing a
+    wheel that might expose CUDA but fail on the first real model kernel.
     """
 
     major, minor = capability
-    host = _host_arch()
-    if host == "aarch64":
-        if backend == "cu126":
-            return (major, minor) in {(8, 0), (9, 0)}
-        if backend == "cu128":
-            return (major, minor) in {(8, 0), (9, 0), (10, 0), (12, 0)}
-        return False
-    if host != "x86_64":
+    if _host_arch() != "x86_64":
         return False
 
     # Linux x86_64 and Windows official wheels. Ada sm_89 executes the Ampere
