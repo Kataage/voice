@@ -165,9 +165,10 @@ def _known_pytorch_210_architecture(capability: tuple[int, int], *, backend: str
         return False
 
     # Linux x86_64 and Windows official wheels. Ada sm_89 executes the Ampere
-    # sm_86 code path and is an audited member of the 8.x family. Maxwell is
-    # deliberately excluded from the whole-stack CUDA policy because the
-    # prebuilt CTranslate2 ASR runtime is not reliably executable on sm_5x.
+    # sm_86 compatibility path. Maxwell is deliberately excluded from the
+    # whole-stack CUDA policy because the prebuilt CTranslate2 ASR runtime is
+    # not reliably executable on sm_5x. sm_103 and other post-2.10 variants are
+    # intentionally excluded until the complete PersonaVoice stack is audited.
     if backend == "cu126":
         return (
             (major == 6 and minor in {0, 1})
@@ -180,7 +181,7 @@ def _known_pytorch_210_architecture(capability: tuple[int, int], *, backend: str
             (major == 7 and minor == 5)
             or (major == 8 and minor in {0, 6, 9})
             or (major == 9 and minor == 0)
-            or (major == 10 and minor in {0, 3})
+            or (major == 10 and minor == 0)
             or (major == 12 and minor == 0)
         )
     return False
