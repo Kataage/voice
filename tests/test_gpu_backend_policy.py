@@ -32,7 +32,9 @@ def gpu(capability: str, *, index: int = 0, mib: int = 16384, uuid: str | None =
         ("8.9", "cu128"),
         ("9.0", "cu128"),
         ("10.0", "cu128"),
+        ("10.3", "cpu"),
         ("12.0", "cu128"),
+        ("12.1", "cpu"),
         ("13.0", "cpu"),
     ],
 )
