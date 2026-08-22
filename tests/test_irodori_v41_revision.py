@@ -1,8 +1,4 @@
-from personavoice.model_assets import (
-    IRODORI_MODEL_ID,
-    IRODORI_MODEL_REVISION,
-    IRODORI_MODEL_SHA256,
-)
+from personavoice.model_assets import IRODORI_MODEL_ID, IRODORI_MODEL_REVISION, IRODORI_MODEL_SHA256
 
 
 V4_MODEL_REVISION = "c0097bd1be75833b44498bb6fcf0bee9298262a7"
