@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from personavoice.hardware import backend_supports_gpu, cuda_backend_for_gpu, selected_nvidia_gpu
+
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
 ENVIRONMENT_CONTRACT_SCHEMA = 3
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
@@ -85,14 +87,67 @@ def environment_contract_status(repo_root: Path, recorded: Any) -> dict[str, Any
     }
 
 
-def require_current_environment(repo_root: Path) -> dict[str, Any]:
-    """Return setup state only when it matches a completed dependency transaction.
+def runtime_hardware_status(setup: Any) -> dict[str, Any]:
+    """Verify that a recorded CUDA environment is safe for the current visible GPU.
 
-    Runtime code must not silently execute an older or partially replaced `.venv`
-    after the repository, worker projects, audited lockfiles, selected backend,
-    or immutable model-asset contract changes. This check is intentionally
-    independent from `persona doctor` so direct model commands fail closed.
+    GPU hardware is intentionally not part of the dependency hash: a compatible
+    GPU swap should keep working without reinstalling identical environments.
+    Incompatible swaps, GPU removal, or CUDA visibility changes fail closed at
+    every direct worker entry point and instruct the user to rerun auto setup.
     """
+
+    value = setup if isinstance(setup, dict) else {}
+    backend = value.get("irodori_backend")
+    if backend not in {"cu126", "cu128"}:
+        return {"ok": True, "backend": backend, "selected_gpu": None, "preferred_backend": None}
+
+    gpu = selected_nvidia_gpu()
+    if gpu is None:
+        return {
+            "ok": False,
+            "backend": backend,
+            "selected_gpu": None,
+            "preferred_backend": "cpu",
+            "error": (
+                f"PersonaVoice was set up for {backend}, but no NVIDIA GPU is currently exposed "
+                "as CUDA device 0. The GPU, driver, or CUDA_VISIBLE_DEVICES setting may have "
+                "changed; run `persona setup --backend auto` before model work."
+            ),
+        }
+
+    selected = {
+        "index": gpu.index,
+        "uuid": gpu.uuid,
+        "name": gpu.name,
+        "compute_capability": gpu.compute_capability,
+        "total_mib": gpu.total_mib,
+        "free_mib": gpu.free_mib,
+    }
+    preferred = cuda_backend_for_gpu(gpu)
+    if not backend_supports_gpu(str(backend), gpu):
+        return {
+            "ok": False,
+            "backend": backend,
+            "selected_gpu": selected,
+            "preferred_backend": preferred,
+            "error": (
+                f"PersonaVoice was set up for {backend}, but the current CUDA-visible GPU "
+                f"{gpu.name} (compute capability {gpu.compute_capability or 'unknown'}) is not "
+                "supported by that audited PyTorch wheel. The GPU selection appears to have "
+                "changed; run `persona setup --backend auto` before model work."
+            ),
+        }
+    return {
+        "ok": True,
+        "backend": backend,
+        "selected_gpu": selected,
+        "preferred_backend": preferred,
+        "error": None,
+    }
+
+
+def require_current_environment(repo_root: Path) -> dict[str, Any]:
+    """Return setup state only when dependency and current-hardware contracts are valid."""
 
     setup_path = repo_root / ".runtime" / "setup.json"
     if not setup_path.is_file():
@@ -113,4 +168,7 @@ def require_current_environment(repo_root: Path) -> dict[str, Any]:
     status = environment_contract_status(repo_root, setup.get("environment_contract"))
     if not status["ok"]:
         raise RuntimeError(str(status["error"]))
+    hardware = runtime_hardware_status(setup)
+    if not hardware["ok"]:
+        raise RuntimeError(str(hardware["error"]))
     return setup
