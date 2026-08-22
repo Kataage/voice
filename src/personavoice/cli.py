@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import typer
+from huggingface_hub.errors import GatedRepoError
 from rich.console import Console
 
 from personavoice.config import PersonaConfig
@@ -52,6 +53,25 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _download_models_or_explain(root: Path, *, include_seed_vc: bool) -> dict:
+    try:
+        return download_models(root, include_seed_vc=include_seed_vc)
+    except GatedRepoError as exc:
+        repo_id = getattr(exc, "repo_id", None) or "pyannote/speaker-diarization-community-1"
+        console.print(f"[bold red]Hugging Face access was denied for {repo_id}.[/bold red]")
+        console.print(
+            "Open the model page while signed in to the same Hugging Face account, "
+            "accept/request its access conditions, then use a token with read access."
+        )
+        console.print(f"Model page: https://huggingface.co/{repo_id}")
+        console.print("Token page: https://huggingface.co/settings/tokens")
+        console.print(
+            "Set HF_TOKEN in the current shell and rerun `uv run --locked persona setup`. "
+            "PersonaVoice never prints or stores the token."
+        )
+        raise typer.Exit(2) from None
+
+
 @app.command()
 def doctor(
     deep: bool = typer.Option(False, help="Load local models and verify offline readiness."),
@@ -79,7 +99,10 @@ def setup(
     root = find_repo_root()
     result = install_environments(root, backend=None if backend == "auto" else backend)
     if download:
-        result["models"] = download_models(root, include_seed_vc=not skip_seed_vc_models)
+        result["models"] = _download_models_or_explain(
+            root,
+            include_seed_vc=not skip_seed_vc_models,
+        )
     if verify:
         verification = doctor_report(
             root,
@@ -95,7 +118,7 @@ def setup(
             if repaired:
                 result["model_recovery"] = {
                     "discarded_materializations": repaired,
-                    "download": download_models(
+                    "download": _download_models_or_explain(
                         root,
                         include_seed_vc=not skip_seed_vc_models,
                     ),
