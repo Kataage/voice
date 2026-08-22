@@ -15,6 +15,7 @@ class GpuInfo:
     free_mib: int
     compute_capability: str | None = None
     uuid: str | None = None
+    pci_bus_id: str | None = None
 
 
 def _run_nvidia_query(fields: str) -> subprocess.CompletedProcess[str] | None:
@@ -51,15 +52,16 @@ def _parse_compute_capability(value: str | None) -> tuple[int, int] | None:
 
 
 def nvidia_gpus() -> list[GpuInfo]:
-    completed = _run_nvidia_query("index,uuid,name,memory.total,memory.free,compute_cap")
+    fields = "index,uuid,pci.bus_id,name,memory.total,memory.free"
+    completed = _run_nvidia_query(fields + ",compute_cap")
     include_compute_cap = completed is not None and completed.returncode == 0
     if not include_compute_cap:
-        completed = _run_nvidia_query("index,uuid,name,memory.total,memory.free")
+        completed = _run_nvidia_query(fields)
     if completed is None or completed.returncode != 0:
         return []
 
     out = []
-    expected_parts = 6 if include_compute_cap else 5
+    expected_parts = 7 if include_compute_cap else 6
     for line in completed.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
         if len(parts) != expected_parts:
@@ -69,10 +71,11 @@ def nvidia_gpus() -> list[GpuInfo]:
                 GpuInfo(
                     index=int(parts[0]),
                     uuid=parts[1] or None,
-                    name=parts[2],
-                    total_mib=int(float(parts[3])),
-                    free_mib=int(float(parts[4])),
-                    compute_capability=parts[5] if include_compute_cap else None,
+                    pci_bus_id=parts[2] or None,
+                    name=parts[3],
+                    total_mib=int(float(parts[4])),
+                    free_mib=int(float(parts[5])),
+                    compute_capability=parts[6] if include_compute_cap else None,
                 )
             )
         except ValueError:
@@ -80,22 +83,37 @@ def nvidia_gpus() -> list[GpuInfo]:
     return out
 
 
-def selected_nvidia_gpu(gpus: list[GpuInfo] | None = None) -> GpuInfo | None:
-    """Return the physical GPU exposed as logical CUDA device 0.
+def _pci_ordered(gpus: list[GpuInfo]) -> list[GpuInfo]:
+    """Mirror CUDA_DEVICE_ORDER=PCI_BUS_ID with a safe index fallback."""
 
-    CUDA workers default to device 0. When ``CUDA_VISIBLE_DEVICES`` remaps the
-    process-visible devices, selecting physical nvidia-smi index 0 would inspect
-    the wrong GPU and can install an incompatible wheel. Numeric indexes and GPU
-    UUIDs are handled explicitly; MIG IDs and malformed selectors fail closed.
+    return sorted(
+        gpus,
+        key=lambda gpu: (
+            gpu.pci_bus_id is None,
+            (gpu.pci_bus_id or "").casefold(),
+            gpu.index,
+        ),
+    )
+
+
+def selected_nvidia_gpu(gpus: list[GpuInfo] | None = None) -> GpuInfo | None:
+    """Return the physical GPU exposed as PersonaVoice logical CUDA device 0.
+
+    PersonaVoice CUDA subprocesses force ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` so
+    setup/runtime hardware detection can deterministically mirror the same
+    ordering without importing a CUDA framework in the root environment. When
+    ``CUDA_VISIBLE_DEVICES`` remaps devices, numeric ordinals are interpreted in
+    that PCI order and GPU UUIDs are resolved directly. MIG IDs and malformed or
+    unresolvable selectors fail closed rather than guessing.
     """
 
-    candidates = nvidia_gpus() if gpus is None else gpus
+    candidates = _pci_ordered(nvidia_gpus() if gpus is None else gpus)
     if not candidates:
         return None
 
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if visible is None:
-        return min(candidates, key=lambda gpu: gpu.index)
+        return candidates[0]
     visible = visible.strip()
     if not visible or visible == "-1":
         return None
@@ -104,7 +122,7 @@ def selected_nvidia_gpu(gpus: list[GpuInfo] | None = None) -> GpuInfo | None:
     if not first or first == "-1" or first.upper().startswith("MIG-"):
         return None
     try:
-        physical_index = int(first)
+        logical_index = int(first)
     except ValueError:
         token = first.casefold()
         matches = [
@@ -118,7 +136,9 @@ def selected_nvidia_gpu(gpus: list[GpuInfo] | None = None) -> GpuInfo | None:
             )
         ]
         return matches[0] if len(matches) == 1 else None
-    return next((gpu for gpu in candidates if gpu.index == physical_index), None)
+    if logical_index < 0 or logical_index >= len(candidates):
+        return None
+    return candidates[logical_index]
 
 
 def _host_arch() -> str:
@@ -149,7 +169,9 @@ def _known_pytorch_210_architecture(capability: tuple[int, int], *, backend: str
         return False
 
     # Linux x86_64 and Windows official wheels. Ada sm_89 executes the Ampere
-    # sm_86 code path and is an audited member of the 8.x family.
+    # sm_86 code path and is an audited member of the 8.x family. Maxwell is
+    # deliberately excluded from the whole-stack CUDA policy because the
+    # prebuilt CTranslate2 ASR runtime is not reliably executable on sm_5x.
     if backend == "cu126":
         return (
             (major == 6 and minor in {0, 1})
@@ -224,6 +246,7 @@ def hardware_report() -> dict:
     return {
         "platform": platform.platform(),
         "machine": platform.machine(),
+        "cuda_device_order": "PCI_BUS_ID",
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "nvidia_gpus": [asdict(gpu) for gpu in gpus],
         "selected_nvidia_gpu": asdict(selected) if selected is not None else None,
