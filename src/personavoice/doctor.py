@@ -73,7 +73,7 @@ def _setup_state(repo_root: Path) -> dict:
 
 def _expected_worker_backend(name: str, setup: dict) -> str | None:
     if name == "asr":
-        return "cuda" if setup.get("irodori_backend") in {"cu126", "cu128"} else "cpu"
+        return "runtime-auto" if setup.get("irodori_backend") in {"cu126", "cu128"} else "cpu"
     backends = setup.get("worker_backends")
     value = backends.get(name) if isinstance(backends, dict) else None
     return None if value is None else str(value)
