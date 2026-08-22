@@ -115,6 +115,9 @@ def local_model_env(repo_root: Path, *, offline: bool = True) -> dict[str, str]:
         "MODELSCOPE_CACHE": str((repo_root / "models" / "modelscope-cache").resolve()),
         "PERSONAVOICE_ROOT": str(repo_root.resolve()),
         "TOKENIZERS_PARALLELISM": "false",
+        # Make CUDA ordinal mapping deterministic across nvidia-smi/setup and all
+        # model subprocesses. CUDA_VISIBLE_DEVICES is preserved by process.run.
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
         **ffmpeg_environment(),
     }
     if offline:
