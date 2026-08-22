@@ -23,8 +23,10 @@ jobs:
           python-version: '3.12'
       - name: Install uv
         run: python -m pip install --disable-pip-version-check uv==0.12.5
-      - name: Apply GPU-generation integration patch
-        run: python scripts/_ci_gpu_generalize.py
+      - name: Apply GPU-generation integration patches
+        run: |
+          python scripts/_ci_gpu_generalize.py
+          python scripts/_ci_gpu_test_api.py
       - name: Validate locked backend matrix
         shell: bash
         run: |
@@ -48,7 +50,7 @@ jobs:
       - name: Commit final GPU policy
         shell: bash
         run: |
-          git rm scripts/_ci_gpu_generalize.py .github/workflows/gpu-generalize-finalize.yml
+          git rm scripts/_ci_gpu_generalize.py scripts/_ci_gpu_test_api.py .github/workflows/gpu-generalize-finalize.yml
           git add -A
           git diff --cached --check
           git config user.name github-actions[bot]
