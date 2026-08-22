@@ -165,8 +165,6 @@ def test_successful_setup_commits_state_then_clears_transaction_marker(
     assert ("lfm", "cu128") in synced
     assert ("seed_vc", "cu124") in synced
     assert not (tmp_path / ".runtime" / SETUP_TRANSACTION_MARKER).exists()
-    # The persisted environment contract must still be self-consistent. Runtime
-    # GPU compatibility is covered separately without requiring GPU hardware in CI.
     recorded = json.loads((tmp_path / ".runtime" / "setup.json").read_text(encoding="utf-8"))
     assert environment_contract_status(tmp_path, recorded["environment_contract"])["ok"] is True
 
@@ -191,14 +189,60 @@ def test_interrupted_irodori_lock_swap_rejects_vendor_head_change(
             {
                 "schema_version": 2,
                 "vendor_head": "old-head",
-                "original_exists": False,
-                "original_sha256": None,
-                "managed_sha256": "ignored",
+                "original_exists": True,
+                "original_sha256": "unused",
+                "managed_sha256": setup_env.sha256_file(vendor / "uv.lock"),
             }
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(setup_env, "_git_head", lambda _path: "different-head")
+    monkeypatch.setattr(setup_env, "_git_head", lambda _path: "new-head")
 
     with pytest.raises(RuntimeError, match="different vendor HEAD"):
         setup_env._recover_irodori_lock_swap(tmp_path, vendor)
+    assert marker.exists()
+
+
+def test_interrupted_irodori_lock_swap_restores_known_managed_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    vendor = tmp_path / "vendor" / "Irodori-TTS"
+    vendor.mkdir(parents=True)
+    lock = _write(vendor / "uv.lock", b"managed")
+    marker = tmp_path / ".runtime" / setup_env.IRODORI_LOCK_SWAP_MARKER
+    marker.parent.mkdir(parents=True)
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "vendor_head": "head",
+                "original_exists": True,
+                "original_sha256": "original-hash",
+                "managed_sha256": setup_env.sha256_file(lock),
+            }
+        ),
+        encoding="utf-8",
+    )
+    restored: list[tuple[Path, str]] = []
+    monkeypatch.setattr(setup_env, "_git_head", lambda _path: "head")
+    monkeypatch.setattr(
+        setup_env,
+        "_restore_vendor_file",
+        lambda path, relative: restored.append((path, relative)),
+    )
+
+    setup_env._recover_irodori_lock_swap(tmp_path, vendor)
+    assert restored == [(vendor, "uv.lock")]
+    assert not marker.exists()
+
+
+def test_best_irodori_adapter_ignores_partial_directories(tmp_path: Path):
+    paths = PersonaPaths(tmp_path / "personas" / "alice")
+    root = paths.models / "irodori" / "lora"
+    partial_best = root / "checkpoint_best_val_loss_0.01"
+    _write(partial_best / "adapter_config.json", b"{}")
+    final = root / "checkpoint_final"
+    _write(final / "adapter_config.json", b"{}")
+    _write(final / "adapter_model.safetensors", b"weights")
+
+    assert inference._best_lora_adapter(paths) == final
