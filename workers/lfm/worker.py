@@ -108,10 +108,20 @@ def base_path() -> str:
     return str(local)
 
 
+def _bf16_supported() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        capability = torch.cuda.get_device_capability(0)
+    except (RuntimeError, AssertionError):
+        return False
+    return capability >= (8, 0) and bool(torch.cuda.is_bf16_supported())
+
+
 def model_dtype() -> torch.dtype:
     if not torch.cuda.is_available():
         return torch.float32
-    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return torch.bfloat16 if _bf16_supported() else torch.float16
 
 
 def load_base():
@@ -204,6 +214,12 @@ def health(payload: dict) -> dict:
         "cuda": torch.cuda.is_available(),
         "dtype": str(model_dtype()).removeprefix("torch."),
     }
+    if torch.cuda.is_available():
+        try:
+            major, minor = torch.cuda.get_device_capability(0)
+            result["compute_capability"] = f"{major}.{minor}"
+        except (RuntimeError, AssertionError):
+            result["compute_capability"] = None
     if payload.get("deep"):
         tokenizer, model = load_base()
         lora_targets = audited_attention_lora_targets(model)

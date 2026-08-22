@@ -40,6 +40,7 @@ def test_extract_audio_does_not_publish_partial_cache_on_failure(tmp_path: Path,
         raise subprocess.CalledProcessError(1, args)
 
     monkeypatch.setattr(media.subprocess, "run", fake_run)
+    monkeypatch.setattr(media, "ffmpeg_command", lambda name: name)
     with pytest.raises(subprocess.CalledProcessError):
         media.extract_lossless_audio(source, destination)
 
@@ -57,6 +58,7 @@ def test_extract_audio_atomically_publishes_success(tmp_path: Path, monkeypatch)
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(media.subprocess, "run", fake_run)
+    monkeypatch.setattr(media, "ffmpeg_command", lambda name: name)
     media.extract_lossless_audio(source, destination)
 
     assert destination.read_bytes() == b"complete"

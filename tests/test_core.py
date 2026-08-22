@@ -225,6 +225,11 @@ def test_huggingface_cache_layout_is_consistent(tmp_path: Path):
 
 
 def test_worker_backend_mapping_is_explicit():
+    legacy_cuda = _worker_extras("cu126")
+    assert legacy_cuda["diarization"] == "cu126"
+    assert legacy_cuda["sense"] == "cu126"
+    assert legacy_cuda["lfm"] == "cu126"
+    assert legacy_cuda["seed_vc"] == "cu124"
     cuda = _worker_extras("cu128")
     assert cuda["diarization"] == "cu128"
     assert cuda["sense"] == "cu128"
@@ -232,6 +237,7 @@ def test_worker_backend_mapping_is_explicit():
     assert cuda["seed_vc"] == "cu124"
     cpu = _worker_extras("cpu")
     assert all(value in {None, "cpu"} for value in cpu.values())
+    assert _requires_cuda("cu126") is True
     assert _requires_cuda("cu128") is True
     assert _requires_cuda("cu124") is True
     assert _requires_cuda("cpu") is False
@@ -240,15 +246,16 @@ def test_worker_backend_mapping_is_explicit():
 def test_worker_pyprojects_pin_pytorch_indexes():
     root = Path(__file__).resolve().parents[1]
     expectations = {
-        "diarization": "pytorch-cu128",
-        "sense": "pytorch-cu128",
-        "lfm": "pytorch-cu128",
-        "seed_vc": "pytorch-cu124",
+        "diarization": ("pytorch-cu126", "pytorch-cu128"),
+        "sense": ("pytorch-cu126", "pytorch-cu128"),
+        "lfm": ("pytorch-cu126", "pytorch-cu128"),
+        "seed_vc": ("pytorch-cu124",),
     }
-    for name, index in expectations.items():
+    for name, indexes in expectations.items():
         text = (root / "workers" / name / "pyproject.toml").read_text(encoding="utf-8")
         assert "explicit = true" in text
-        assert index in text
+        for index in indexes:
+            assert index in text
         assert "pytorch-cpu" in text
 
 
@@ -261,9 +268,13 @@ def test_irodori_locked_sync_restores_vendor_checkout(
     repo_root = tmp_path
     vendor = repo_root / "vendor" / "Irodori-TTS"
     vendor.mkdir(parents=True)
-    managed = repo_root / "locks" / "Irodori-TTS.uv.lock"
-    managed.parent.mkdir(parents=True)
-    managed.write_bytes(b"audited-lock")
+    managed_project = repo_root / "locks" / setup_env.IRODORI_MANAGED_PROJECT
+    managed_lock = repo_root / "locks" / "Irodori-TTS.uv.lock"
+    managed_project.parent.mkdir(parents=True)
+    managed_project.write_bytes(b"audited-project")
+    managed_lock.write_bytes(b"audited-lock")
+    vendor_project = vendor / "pyproject.toml"
+    vendor_project.write_bytes(b"upstream-project")
     vendor_lock = vendor / "uv.lock"
     if original is not None:
         vendor_lock.write_bytes(original)
@@ -273,18 +284,20 @@ def test_irodori_locked_sync_restores_vendor_checkout(
         calls.append([str(value) for value in args])
 
     def fake_restore(path: Path):
+        (path / "pyproject.toml").write_bytes(b"upstream-project")
         if original is None:
             (path / "uv.lock").unlink(missing_ok=True)
         else:
             (path / "uv.lock").write_bytes(original)
 
     monkeypatch.setattr(setup_env, "_git_head", lambda _path: "audited-head")
-    monkeypatch.setattr(setup_env, "_restore_vendor_lock", fake_restore)
+    monkeypatch.setattr(setup_env, "_restore_vendor_setup_files", fake_restore)
     monkeypatch.setattr(setup_env, "run", fake_run)
     setup_env._install_irodori(repo_root, vendor, "cpu")
 
     assert any("--locked" in call for call in calls)
     assert not (repo_root / ".runtime" / setup_env.IRODORI_LOCK_SWAP_MARKER).exists()
+    assert vendor_project.read_bytes() == b"upstream-project"
     if original is None:
         assert not vendor_lock.exists()
     else:

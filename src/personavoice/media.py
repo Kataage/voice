@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from personavoice.runtime_dependencies import command as ffmpeg_command
+
 MEDIA_EXTENSIONS = {
     ".wav", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus",
     ".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v",
@@ -23,7 +25,16 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 def ffprobe(path: Path) -> dict[str, Any]:
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)],
+        [
+            ffmpeg_command("ffprobe"),
+            "-v",
+            "error",
+            "-show_format",
+            "-show_streams",
+            "-of",
+            "json",
+            str(path),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -112,7 +123,8 @@ def extract_lossless_audio(source: Path, destination: Path, *, sample_rate: int 
     try:
         subprocess.run(
             [
-                "ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(source),
+                ffmpeg_command("ffmpeg"),
+                "-nostdin", "-y", "-v", "error", "-i", str(source),
                 "-map", "0:a:0", "-vn", "-ac", "1", "-ar", str(sample_rate),
                 "-c:a", "flac", "-compression_level", "8", str(temp),
             ],
@@ -131,7 +143,8 @@ def cut_audio(source: Path, destination: Path, start: float, end: float) -> None
     try:
         subprocess.run(
             [
-                "ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", f"{start:.3f}",
+                ffmpeg_command("ffmpeg"),
+                "-nostdin", "-y", "-v", "error", "-ss", f"{start:.3f}",
                 "-i", str(source), "-t", f"{duration:.3f}", "-ac", "1", "-ar", "48000",
                 "-c:a", "flac", "-compression_level", "8", str(temp),
             ],

@@ -11,6 +11,14 @@ from personavoice.doctor import report as doctor_report
 
 
 def _load_asr_worker(monkeypatch):
+    ctranslate2 = types.ModuleType("ctranslate2")
+    ctranslate2.get_supported_compute_types = lambda _device: {"float32"}
+    monkeypatch.setitem(sys.modules, "ctranslate2", ctranslate2)
+
+    runtime_policy = types.ModuleType("runtime_policy")
+    runtime_policy.choose_compute_type = lambda _device: "float32"
+    monkeypatch.setitem(sys.modules, "runtime_policy", runtime_policy)
+
     faster_whisper = types.ModuleType("faster_whisper")
     faster_whisper.WhisperModel = object
     monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper)

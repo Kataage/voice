@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+import ctranslate2
 from faster_whisper import WhisperModel
 from huggingface_hub import snapshot_download
+from runtime_policy import choose_compute_type
 
 PINNED_MODEL_NAME = "large-v3"
 PINNED_MODEL_ID = "Systran/faster-whisper-large-v3"
@@ -108,20 +110,43 @@ def model_path(model: str) -> str:
     return str(local)
 
 
-def cuda_available() -> bool:
-    import ctranslate2
+def cuda_device_count() -> int:
+    try:
+        return int(ctranslate2.get_cuda_device_count())
+    except (RuntimeError, OSError):
+        return 0
 
-    return ctranslate2.get_cuda_device_count() > 0
+
+def cuda_available() -> bool:
+    return cuda_device_count() > 0
+
+
+def runtime_config(compute_type: str = "auto") -> tuple[str, str, set[str]]:
+    """Resolve a device/compute pair from CTranslate2's actual runtime capabilities."""
+
+    if cuda_available():
+        try:
+            cuda_types = set(ctranslate2.get_supported_compute_types("cuda", 0))
+            selected = choose_compute_type("cuda", cuda_types, compute_type)
+            return "cuda", selected, cuda_types
+        except (RuntimeError, OSError, ValueError):
+            # A CUDA device can be enumerated even when this CTranslate2 build or
+            # GPU architecture cannot execute the requested type. Auto mode must
+            # remain usable, so it falls through to the CPU capability query.
+            if compute_type != "auto":
+                raise
+
+    cpu_types = set(ctranslate2.get_supported_compute_types("cpu"))
+    selected = choose_compute_type("cpu", cpu_types, compute_type)
+    return "cpu", selected, cpu_types
 
 
 def make_model(name: str, compute_type: str = "auto") -> WhisperModel:
-    device = "cuda" if cuda_available() else "cpu"
-    if compute_type == "auto":
-        compute_type = "float16" if device == "cuda" else "int8"
+    device, selected_compute_type, _supported = runtime_config(compute_type)
     return WhisperModel(
         model_path(name),
         device=device,
-        compute_type=compute_type,
+        compute_type=selected_compute_type,
         download_root=str(Path(os.environ["HF_HOME"]) / "faster-whisper"),
     )
 
@@ -220,10 +245,18 @@ def download(payload: dict) -> dict:
 
 
 def health(payload: dict) -> dict:
-    has_cuda = cuda_available()
-    result = {"ok": True, "cuda": has_cuda, "device": "cuda" if has_cuda else "cpu"}
+    requested = payload.get("compute_type", "auto")
+    device, compute_type, supported = runtime_config(requested)
+    result = {
+        "ok": True,
+        "cuda": device == "cuda",
+        "cuda_detected": cuda_available(),
+        "device": device,
+        "compute_type": compute_type,
+        "supported_compute_types": sorted(supported),
+    }
     if payload.get("deep"):
-        model = make_model(payload.get("model", PINNED_MODEL_NAME), payload.get("compute_type", "auto"))
+        model = make_model(payload.get("model", PINNED_MODEL_NAME), requested)
         result["model_loaded"] = model is not None
     return result
 
