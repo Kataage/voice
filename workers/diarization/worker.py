@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,13 @@ from pyannote.audio import Pipeline
 
 MODEL_ID = "pyannote/speaker-diarization-community-1"
 MODEL_REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
+MODEL_ASSET_SHA256 = {
+    "config.yaml": "5ce2bfa9a938dc132cec1172592d65173cbb8f444ea1e4133f10f9391de155be",
+    "embedding/pytorch_model.bin": "6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929",
+    "segmentation/pytorch_model.bin": "7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e",
+    "plda/plda.npz": "9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255",
+    "plda/xvec_transform.npz": "325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f",
+}
 REVISION_MARKER = ".personavoice-revision"
 REQUIRED_MODEL_FILES = (
     "config.yaml",
@@ -31,6 +39,24 @@ def _nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_assets(local: Path) -> None:
+    for relative, expected in MODEL_ASSET_SHA256.items():
+        actual = _sha256(local / relative)
+        if actual != expected:
+            raise RuntimeError(
+                f"pyannote checksum mismatch for {relative}: expected {expected}, got {actual}. "
+                "Re-run `persona setup --download-models` with HF_TOKEN available."
+            )
 
 
 def _read_marker(path: Path) -> str | None:
@@ -79,6 +105,7 @@ def local_source() -> str:
             f"expected {MODEL_REVISION}, got {actual_revision!r}. "
             "Re-run `persona setup --download-models` with HF_TOKEN available."
         )
+    _verify_assets(local)
     return str(local)
 
 
@@ -184,6 +211,7 @@ def download(payload: dict) -> dict:
             "Pinned pyannote download completed without required model files: "
             f"{', '.join(missing)}"
         )
+    _verify_assets(local)
     _atomic_write_text(local / REVISION_MARKER, MODEL_REVISION + "\n")
     return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}
 

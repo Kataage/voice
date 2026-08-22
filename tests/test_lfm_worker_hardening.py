@@ -75,6 +75,9 @@ def test_lfm_base_path_requires_complete_snapshot_and_pinned_revision(tmp_path: 
         worker.base_path()
 
     marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.base_path()
+    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
     assert Path(worker.base_path()) == base
 
 
@@ -116,6 +119,10 @@ def test_lfm_download_refuses_incomplete_materialization(tmp_path: Path, monkeyp
 
     base = tmp_path / "models" / "lfm" / "base"
     _write_complete_base(base, worker)
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.download_model({})
+    assert not (base / worker.REVISION_MARKER).exists()
+    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
     result = worker.download_model({})
     assert result["revision"] == worker.MODEL_REVISION
     assert (base / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION

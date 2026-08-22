@@ -10,12 +10,15 @@ from personavoice.hardware import hardware_report
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
+    ASR_MODEL_WEIGHT_SHA256,
     IRODORI_DACVAE_FILENAME,
     IRODORI_DACVAE_SHA256,
     IRODORI_MODEL_FILENAME,
     IRODORI_MODEL_SHA256,
     IRODORI_TEXT_ENCODER_REVISION,
     LFM_MODEL_REVISION,
+    LFM_MODEL_WEIGHT_SHA256,
+    PYANNOTE_MODEL_ASSET_SHA256,
     PYANNOTE_MODEL_REVISION,
     SENSE_MODEL_CMVN_SHA256,
     SENSE_MODEL_TOKENIZER_SHA256,
@@ -144,11 +147,14 @@ def _model_asset_integrity(
         "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
         "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
         "lfm_revision": LFM_MODEL_REVISION,
+        "lfm_model_sha256": LFM_MODEL_WEIGHT_SHA256,
         "asr_revision": ASR_MODEL_REVISION,
+        "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
         "seed_vc_asset_contract_sha256": seed_vc_status.get("contract_sha256"),
     }
     expected_prepare = {
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
+        "pyannote_asset_sha256": PYANNOTE_MODEL_ASSET_SHA256,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
         "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
         "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,

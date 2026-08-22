@@ -25,6 +25,7 @@ PersonaVoice intentionally calls upstream scripts instead of copying their model
 
 - Base: `LiquidAI/LFM2.5-1.2B-JP-202606`
 - Pinned snapshot revision: `b31023f2d69b95fbd7876898f8de9fae90e8afbd`
+- `model.safetensors` SHA256: `abf38960d3f37c2be7c946a9b6b06d23ed04a1afb8ac192aa3b491e3dcdcf325`
 - Purpose: Japanese conversation style / response planning and structured delivery planning
 - Architecture contract: 16 layers, including 6 `full_attention` blocks and 10 convolution blocks in the pinned model configuration
 - Fine-tune: TRL SFT + PEFT LoRA
@@ -36,7 +37,7 @@ PersonaVoice intentionally calls upstream scripts instead of copying their model
 - Generation defaults: `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`; no additional `top_p` restriction is injected
 - Output contract: JSON containing text plus voice caption/emotion/events
 
-The materialized local snapshot contains `.personavoice-revision`. Setup does not accept a legacy floating-revision directory merely because `config.json` exists; it rematerializes the pinned snapshot when the marker is absent or mismatched.
+The materialized local snapshot contains `.personavoice-revision`. Setup reuses it only when all required files are non-empty, the revision marker matches the audited revision, and `model.safetensors` matches the audited SHA256. The isolated LFM worker repeats the weight checksum before loading the model, so post-setup replacement or corruption fails closed. A failed explicit download never publishes the revision marker.
 
 A finalized persona LoRA adapter must contain `adapter_config.json`, a non-empty PEFT adapter weight (`adapter_model.safetensors` or `adapter_model.bin`), and `.personavoice-base-revision` equal to the pinned JP-202606 revision. Both training orchestration and inference reject partial adapters or adapters finalized against another base revision.
 
@@ -44,19 +45,26 @@ A finalized persona LoRA adapter must contain `adapter_config.json`, a non-empty
 
 - Model: `pyannote/speaker-diarization-community-1`
 - Pinned snapshot revision: `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`
+- `config.yaml` SHA256: `5ce2bfa9a938dc132cec1172592d65173cbb8f444ea1e4133f10f9391de155be`
+- `embedding/pytorch_model.bin` SHA256: `6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929`
+- `segmentation/pytorch_model.bin` SHA256: `7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e`
+- `plda/plda.npz` SHA256: `9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255`
+- `plda/xvec_transform.npz` SHA256: `325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f`
 - Uses regular + exclusive diarization and speaker embeddings.
 - Gated download: user must accept Hugging Face conditions and provide `HF_TOKEN` when the audited snapshot must be materialized.
 - The pipeline is copied into `models/pyannote/community-1`, tagged with `.personavoice-revision`, and loaded from that local directory in offline mode.
 
-Both setup and the isolated diarization worker reject an absent/mismatched revision marker. A legacy floating-revision directory is therefore never silently reused for dataset preparation.
+Setup reuses the local pyannote snapshot only when the required files, exact revision marker, and all audited asset hashes agree. The isolated diarization worker re-hashes the config, embedding, segmentation, and PLDA assets before pipeline load; a legacy, modified, or corrupted local view is therefore never silently used for dataset preparation.
 
 ## ASR
 
 - Model: `Systran/faster-whisper-large-v3`
 - Pinned snapshot revision: `edaa852ec7e145841d8ffdb056a99866b5f0a478`
+- `model.bin` SHA256: `69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1`
 - Word timestamps enabled; built-in Silero VAD filter enabled.
 - The local snapshot carries the same `.personavoice-revision` contract as LFM.
-- The isolated ASR worker refuses the default `large-v3` local model unless that marker matches the audited revision.
+- Setup reuses the snapshot only when required files, the exact revision marker, and the audited model-weight hash agree.
+- The isolated ASR worker re-hashes `model.bin` before loading faster-whisper, so post-setup replacement or corruption is rejected before transcription.
 
 ## Acoustic emotion / events
 
@@ -81,7 +89,7 @@ SenseVoice is currently materialized through ModelScope, whose `master` label is
 
 ## Cache/training reproducibility
 
-Prepare cache validity is bound to the audited ASR revision, pyannote revision, SenseVoice asset hashes, relevant worker `uv.lock` hashes, and preprocessing implementation hashes in addition to raw/identity/config fingerprints. Updating any of those contracts invalidates derived ASR/diarization/identity/Sense artifacts before rebuilding the dataset. The materialization root is part of the prepare fingerprint because downstream manifests intentionally contain local absolute paths.
+Prepare cache validity is bound to the audited ASR revision and weight contract, pyannote revision and asset-hash contract, SenseVoice asset hashes, relevant worker `uv.lock` hashes, and preprocessing implementation hashes in addition to raw/identity/config fingerprints. Updating any of those contracts invalidates derived ASR/diarization/identity/Sense artifacts before rebuilding the dataset. The materialization root is part of the prepare fingerprint because downstream manifests intentionally contain local absolute paths.
 
 Training fingerprints include the pinned Irodori source revision, Irodori base/DACVAE hashes, ModernBERT revision, LFM base revision, Seed-VC source revision, relevant worker/managed lockfile hashes, and the training/Irodori/LFM-contract/Seed worker implementation hashes. A base/source/dependency/implementation update therefore invalidates old persona adapters/checkpoints even if exported dataset bytes are unchanged. If training artifacts exist without a recorded train-stage fingerprint, PersonaVoice treats them as untracked and rebuilds them instead of guessing their provenance.
 

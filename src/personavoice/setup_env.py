@@ -14,6 +14,7 @@ from personavoice.media import sha256_file
 from personavoice.model_assets import (
     ASR_MODEL_ID,
     ASR_MODEL_REVISION,
+    ASR_MODEL_WEIGHT_SHA256,
     IRODORI_DACVAE_FILENAME,
     IRODORI_DACVAE_ID,
     IRODORI_DACVAE_REVISION,
@@ -27,6 +28,8 @@ from personavoice.model_assets import (
     IRODORI_TEXT_ENCODER_REVISION,
     LFM_MODEL_ID,
     LFM_MODEL_REVISION,
+    LFM_MODEL_WEIGHT_SHA256,
+    PYANNOTE_MODEL_ASSET_SHA256,
     PYANNOTE_MODEL_ID,
     PYANNOTE_MODEL_REVISION,
     SEED_VC_SOURCE_REVISION,
@@ -290,11 +293,14 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
             "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
             "lfm_revision": LFM_MODEL_REVISION,
+            "lfm_model_sha256": LFM_MODEL_WEIGHT_SHA256,
             "asr_revision": ASR_MODEL_REVISION,
+            "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
             "seed_vc_asset_contract_sha256": seed_vc_contract_digest(repo_root),
         },
         "prepare_assets": {
             "pyannote_revision": PYANNOTE_MODEL_REVISION,
+            "pyannote_asset_sha256": PYANNOTE_MODEL_ASSET_SHA256,
             "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
             "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
             "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
@@ -322,6 +328,17 @@ def _verify_sha256(path: Path, expected: str, *, label: str) -> None:
 def _nonempty_file(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _snapshot_hashes_match(local_dir: Path, hashes: dict[str, str]) -> bool:
+    try:
+        return all(
+            _nonempty_file(local_dir / relative)
+            and sha256_file(local_dir / relative).lower() == expected.lower()
+            for relative, expected in hashes.items()
+        )
     except OSError:
         return False
 
@@ -369,7 +386,15 @@ def _snapshot_pinned(
     required_files: tuple[str, ...],
     cache_dir: Path,
     token: str | None = None,
+    sha256: dict[str, str] | None = None,
 ) -> bool:
+    hashes = sha256 or {}
+    unknown_hashes = sorted(set(hashes) - set(required_files))
+    if unknown_hashes:
+        raise ValueError(
+            f"Pinned model hash contract for {model_id} contains undeclared files: "
+            + ", ".join(unknown_hashes)
+        )
     revision_path = local_dir / REVISION_MARKER
     current_revision = (
         revision_path.read_text(encoding="utf-8").strip()
@@ -377,7 +402,8 @@ def _snapshot_pinned(
         else None
     )
     complete = all(_nonempty_file(local_dir / relative) for relative in required_files)
-    if complete and current_revision == revision:
+    hashes_match = _snapshot_hashes_match(local_dir, hashes)
+    if complete and hashes_match and current_revision == revision:
         return False
 
     shutil.rmtree(local_dir, ignore_errors=True)
@@ -395,9 +421,15 @@ def _snapshot_pinned(
         if not _nonempty_file(local_dir / relative)
     ]
     if missing:
+        shutil.rmtree(local_dir, ignore_errors=True)
         raise FileNotFoundError(
             f"Pinned model download for {model_id}@{revision} completed but "
             f"required files are missing or empty: {', '.join(missing)}"
+        )
+    if not _snapshot_hashes_match(local_dir, hashes):
+        shutil.rmtree(local_dir, ignore_errors=True)
+        raise RuntimeError(
+            f"Pinned model download for {model_id}@{revision} failed the audited checksum contract"
         )
     atomic_write_text(revision_path, revision + "\n")
     return True
@@ -458,6 +490,7 @@ def download_models(
         local_dir=lfm_dir,
         required_files=_LFM_REQUIRED_FILES,
         cache_dir=hub_cache,
+        sha256={"model.safetensors": LFM_MODEL_WEIGHT_SHA256},
     ):
         downloaded.append(f"{LFM_MODEL_ID}@{LFM_MODEL_REVISION}")
     else:
@@ -470,6 +503,7 @@ def download_models(
         local_dir=asr_dir,
         required_files=_ASR_REQUIRED_FILES,
         cache_dir=hub_cache,
+        sha256={"model.bin": ASR_MODEL_WEIGHT_SHA256},
     ):
         downloaded.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
     else:
@@ -479,6 +513,7 @@ def download_models(
     pyannote_revision_marker = pyannote_dir / REVISION_MARKER
     pyannote_is_pinned = (
         all(_nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES)
+        and _snapshot_hashes_match(pyannote_dir, PYANNOTE_MODEL_ASSET_SHA256)
         and pyannote_revision_marker.is_file()
         and pyannote_revision_marker.read_text(encoding="utf-8").strip()
         == PYANNOTE_MODEL_REVISION
@@ -496,6 +531,7 @@ def download_models(
         required_files=_PYANNOTE_REQUIRED_FILES,
         cache_dir=hub_cache,
         token=token,
+        sha256=PYANNOTE_MODEL_ASSET_SHA256,
     ):
         downloaded.append(f"{PYANNOTE_MODEL_ID}@{PYANNOTE_MODEL_REVISION}")
     else:

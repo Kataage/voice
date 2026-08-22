@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"
 MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
+MODEL_WEIGHT_SHA256 = "abf38960d3f37c2be7c946a9b6b06d23ed04a1afb8ac192aa3b491e3dcdcf325"
 REVISION_MARKER = ".personavoice-revision"
 ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 REQUIRED_MODEL_FILES = (
@@ -31,6 +33,25 @@ def _nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_weight(local: Path) -> None:
+    path = local / "model.safetensors"
+    actual = _sha256(path)
+    if actual != MODEL_WEIGHT_SHA256:
+        raise RuntimeError(
+            "LFM model.safetensors checksum mismatch: "
+            f"expected {MODEL_WEIGHT_SHA256}, got {actual}. "
+            "Re-run `persona setup --download-models` to restore the audited base."
+        )
 
 
 def _read_marker(path: Path) -> str | None:
@@ -83,6 +104,7 @@ def base_path() -> str:
             f"expected {MODEL_REVISION}, got {actual_revision!r}. "
             "Re-run `persona setup --download-models`."
         )
+    _verify_weight(local)
     return str(local)
 
 
@@ -171,6 +193,7 @@ def download_model(payload: dict) -> dict:
             "Pinned LFM download completed without required model files: "
             f"{', '.join(missing)}"
         )
+    _verify_weight(local)
     _atomic_write_text(local / REVISION_MARKER, MODEL_REVISION + "\n")
     return {"model": MODEL_ID, "revision": MODEL_REVISION, "path": str(local)}
 
