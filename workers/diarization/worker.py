@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,7 +21,13 @@ MODEL_ASSET_SHA256 = {
     "plda/xvec_transform.npz": "325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f",
 }
 REVISION_MARKER = ".personavoice-revision"
-REQUIRED_MODEL_FILES = tuple(MODEL_ASSET_SHA256)
+REQUIRED_MODEL_FILES = (
+    "config.yaml",
+    "embedding/pytorch_model.bin",
+    "segmentation/pytorch_model.bin",
+    "plda/plda.npz",
+    "plda/xvec_transform.npz",
+)
 
 
 def read_request(path: str) -> dict:
@@ -189,7 +194,6 @@ def download(payload: dict) -> dict:
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "pyannote" / "community-1"
     token = os.getenv("HF_TOKEN")
-    shutil.rmtree(local, ignore_errors=True)
     snapshot_download(
         MODEL_ID,
         revision=MODEL_REVISION,
