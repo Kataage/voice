@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -195,7 +194,6 @@ def download(payload: dict) -> dict:
         )
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "asr" / PINNED_MODEL_NAME
-    shutil.rmtree(local, ignore_errors=True)
     snapshot_download(
         PINNED_MODEL_ID,
         revision=PINNED_MODEL_REVISION,
