@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-ENVIRONMENT_CONTRACT_SCHEMA = 2
+ENVIRONMENT_CONTRACT_SCHEMA = 3
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -46,6 +46,9 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
             "lock_sha256": _sha256(repo_root / "uv.lock"),
         },
         "irodori": {
+            "managed_project_sha256": _sha256(
+                repo_root / "locks" / "Irodori-TTS.pyproject.toml"
+            ),
             "managed_lock_sha256": _sha256(repo_root / "locks" / "Irodori-TTS.uv.lock"),
         },
         "seed_vc": {
