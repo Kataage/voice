@@ -18,18 +18,24 @@ class GpuInfo:
 def _run_nvidia_query(fields: str) -> subprocess.CompletedProcess[str] | None:
     if not shutil.which("nvidia-smi"):
         return None
-    return subprocess.run(
-        [
-            "nvidia-smi",
-            f"--query-gpu={fields}",
-            "--format=csv,noheader,nounits",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            [
+                "nvidia-smi",
+                f"--query-gpu={fields}",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        # PATH can change between discovery and process creation (and tests may
+        # deliberately stub command discovery). Treat an unavailable NVIDIA
+        # utility as "no detectable GPU" rather than aborting setup/doctor.
+        return None
 
 
 def _parse_compute_capability(value: str | None) -> tuple[int, int] | None:
