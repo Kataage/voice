@@ -137,6 +137,9 @@ def test_asr_model_path_requires_nonempty_required_files_and_revision(tmp_path: 
         worker.model_path(worker.PINNED_MODEL_NAME)
 
     (local / worker.REVISION_MARKER).write_text(worker.PINNED_MODEL_REVISION + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.model_path(worker.PINNED_MODEL_NAME)
+    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.PINNED_MODEL_WEIGHT_SHA256)
     assert Path(worker.model_path(worker.PINNED_MODEL_NAME)) == local
 
 
@@ -150,6 +153,10 @@ def test_asr_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monk
 
     local = tmp_path / "models" / "asr" / worker.PINNED_MODEL_NAME
     _write_complete_asr_files(local, worker)
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.download({})
+    assert not (local / worker.REVISION_MARKER).exists()
+    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.PINNED_MODEL_WEIGHT_SHA256)
     result = worker.download({})
     assert result["revision"] == worker.PINNED_MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.PINNED_MODEL_REVISION
@@ -192,6 +199,13 @@ def test_pyannote_local_source_requires_complete_snapshot_and_revision(tmp_path:
         worker.local_source()
 
     marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.local_source()
+    monkeypatch.setattr(
+        worker,
+        "_sha256",
+        lambda path: worker.MODEL_ASSET_SHA256[path.relative_to(local).as_posix()],
+    )
     assert Path(worker.local_source()) == local
 
 
@@ -205,6 +219,14 @@ def test_pyannote_download_does_not_finalize_incomplete_snapshot(tmp_path: Path,
 
     local = tmp_path / "models" / "pyannote" / "community-1"
     _write_complete_pyannote_files(local, worker)
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.download({})
+    assert not (local / worker.REVISION_MARKER).exists()
+    monkeypatch.setattr(
+        worker,
+        "_sha256",
+        lambda path: worker.MODEL_ASSET_SHA256[path.relative_to(local).as_posix()],
+    )
     result = worker.download({})
     assert result["revision"] == worker.MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION
@@ -246,6 +268,9 @@ def test_lfm_base_path_requires_complete_snapshot_and_revision(tmp_path: Path, m
         worker.base_path()
 
     marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.base_path()
+    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
     assert Path(worker.base_path()) == local
 
 
@@ -259,6 +284,10 @@ def test_lfm_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monk
 
     local = tmp_path / "models" / "lfm" / "base"
     _write_complete_lfm_files(local, worker)
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        worker.download_model({})
+    assert not (local / worker.REVISION_MARKER).exists()
+    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
     result = worker.download_model({})
     assert result["revision"] == worker.MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION
