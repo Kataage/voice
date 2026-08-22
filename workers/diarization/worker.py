@@ -33,9 +33,9 @@ def _configure_windows_ffmpeg_dll_search() -> None:
 
 _configure_windows_ffmpeg_dll_search()
 
-import torch
-from huggingface_hub import snapshot_download
-from pyannote.audio import Pipeline
+import torch  # noqa: E402
+from huggingface_hub import snapshot_download  # noqa: E402
+from pyannote.audio import Pipeline  # noqa: E402
 
 MODEL_ID = "pyannote/speaker-diarization-community-1"
 MODEL_REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"

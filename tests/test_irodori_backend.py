@@ -32,6 +32,7 @@ def test_recorded_irodori_backend_is_used_without_runtime_autodetection(
 
 
 def test_backend_device_maps_rocm_to_torch_cuda_name():
+    assert irodori.backend_device("cu126") == "cuda"
     assert irodori.backend_device("cu128") == "cuda"
     assert irodori.backend_device("rocm") == "cuda"
     assert irodori.backend_device("xpu") == "xpu"

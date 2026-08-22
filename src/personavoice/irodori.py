@@ -25,7 +25,7 @@ from personavoice.model_assets import (
 from personavoice.process import run
 from personavoice.workers import local_model_env
 
-SUPPORTED_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
+SUPPORTED_BACKENDS = {"cpu", "cu126", "cu128", "rocm", "xpu"}
 _CHECKPOINT_STEP_RE = re.compile(r"^checkpoint_(\d+)(?:\.speaker\.safetensors)?$")
 _LORA_WEIGHT_NAMES = ("adapter_model.safetensors", "adapter_model.bin")
 _LORA_TRAINER_STATE = "trainer_state.pt"
@@ -72,7 +72,7 @@ def configured_backend(repo_root: Path) -> str:
 
 
 def backend_device(backend: str) -> str:
-    if backend in {"cu128", "rocm"}:
+    if backend in {"cu126", "cu128", "rocm"}:
         return "cuda"
     if backend == "xpu":
         return "xpu"
@@ -265,7 +265,10 @@ def _patched_config(
     train_cfg["warmup_steps"] = min(250, max(20, int(max_steps * 0.05)))
     train_cfg["save_every"] = max(100, min(500, max_steps // 4 or 100))
     train_cfg["valid_every"] = train_cfg["save_every"]
-    if backend == "cpu":
+    if backend == "cu126":
+        train_cfg["precision"] = "fp16"
+        train_cfg["allow_tf32"] = False
+    elif backend == "cpu":
         train_cfg["dataloader_cuda_prefetch"] = False
         train_cfg["precision"] = "fp32"
         train_cfg["allow_tf32"] = False

@@ -23,7 +23,7 @@ from personavoice.training import train_persona
 
 app = typer.Typer(no_args_is_help=True, help="PersonaVoice local-first voice persona toolkit")
 console = Console()
-SETUP_BACKENDS = {"auto", "cu128", "cpu", "rocm", "xpu"}
+SETUP_BACKENDS = {"auto", "cu126", "cu128", "cpu", "rocm", "xpu"}
 
 
 def _load(name: str):
@@ -84,7 +84,7 @@ def doctor(
 
 @app.command()
 def setup(
-    backend: str = typer.Option("auto", help="Irodori backend: auto/cu128/cpu/rocm/xpu"),
+    backend: str = typer.Option("auto", help="Irodori backend: auto/cu126/cu128/cpu/rocm/xpu"),
     download: bool = typer.Option(True, "--download-models/--skip-models"),
     skip_seed_vc_models: bool = typer.Option(False),
     verify: bool = typer.Option(True, "--verify/--no-verify"),

@@ -25,6 +25,7 @@ from personavoice.model_assets import (
     SENSE_MODEL_WEIGHT_SHA256,
 )
 from personavoice.process import run
+from personavoice.runtime_dependencies import ffmpeg_runtime
 from personavoice.seed_vc_assets import materialization_status as seed_vc_materialization_status
 from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_REVISION
 from personavoice.workers import local_model_env, worker
@@ -72,7 +73,7 @@ def _setup_state(repo_root: Path) -> dict:
 
 def _expected_worker_backend(name: str, setup: dict) -> str | None:
     if name == "asr":
-        return "cuda" if setup.get("irodori_backend") == "cu128" else "cpu"
+        return "cuda" if setup.get("irodori_backend") in {"cu126", "cu128"} else "cpu"
     backends = setup.get("worker_backends")
     value = backends.get(name) if isinstance(backends, dict) else None
     return None if value is None else str(value)
@@ -83,7 +84,7 @@ def _requires_cuda(value: str | None) -> bool:
 
 
 def _irodori_device(backend: str | None) -> str:
-    if backend in {"cu128", "rocm"}:
+    if backend in {"cu126", "cu128", "rocm"}:
         return "cuda"
     if backend == "xpu":
         return "xpu"
@@ -301,7 +302,14 @@ def report(
     deep: bool = False,
     require_seed_vc: bool = True,
 ) -> dict:
-    required = {name: shutil.which(name) for name in ("uv", "git", "ffmpeg", "ffprobe")}
+    ffmpeg_status = ffmpeg_runtime()
+    required = {
+        "uv": shutil.which("uv"),
+        "git": shutil.which("git"),
+        "ffmpeg": ffmpeg_status.ffmpeg,
+        "ffprobe": ffmpeg_status.ffprobe,
+    }
+    commands_ok = bool(required["uv"] and required["git"] and ffmpeg_status.torchcodec_compatible)
     runtime = repo_root / ".runtime"
     lfm_dir = repo_root / "models" / "lfm" / "base"
     asr_dir = repo_root / "models" / "asr" / "large-v3"
@@ -401,7 +409,7 @@ def report(
     vendors_ready = all(vendor_integrity[key].get("ok") for key in required_vendor_keys)
     reproducible = locks_ready and bool(model_assets.get("ok")) and bool(environment.get("ok"))
     base_ready = (
-        all(required.values())
+        commands_ok
         and bool(setup)
         and reproducible
         and all(models[key] for key in required_model_keys)
@@ -412,7 +420,8 @@ def report(
     return {
         "python": sys.version.split()[0],
         "commands": required,
-        "commands_ok": all(required.values()),
+        "commands_ok": commands_ok,
+        "ffmpeg_runtime": ffmpeg_status.as_dict(),
         "hardware": hardware_report(),
         "setup": setup,
         "environment_contract": environment,

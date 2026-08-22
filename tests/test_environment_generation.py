@@ -24,6 +24,7 @@ def _write(path: Path, content: bytes = b"x") -> Path:
 def _dependency_tree(root: Path) -> None:
     _write(root / "pyproject.toml", b"root")
     _write(root / "uv.lock", b"root-lock")
+    _write(root / "locks" / "Irodori-TTS.pyproject.toml", b"irodori-project")
     _write(root / "locks" / "Irodori-TTS.uv.lock", b"irodori-lock")
     (root / "config").mkdir(parents=True, exist_ok=True)
     (root / "config" / "seed_vc_assets.json").write_text(
@@ -55,6 +56,18 @@ def test_environment_contract_detects_dependency_generation_change(tmp_path: Pat
     assert environment_contract_status(tmp_path, recorded)["ok"]
 
     (tmp_path / "workers" / "lfm" / "uv.lock").write_bytes(b"new-lock")
+    status = environment_contract_status(tmp_path, recorded)
+    assert not status["ok"]
+    assert "different dependency contract" in status["error"]
+
+
+
+def test_environment_contract_detects_irodori_project_overlay_change(tmp_path: Path):
+    _dependency_tree(tmp_path)
+    recorded = environment_contract(tmp_path)
+    assert environment_contract_status(tmp_path, recorded)["ok"]
+
+    (tmp_path / "locks" / "Irodori-TTS.pyproject.toml").write_bytes(b"new-overlay")
     status = environment_contract_status(tmp_path, recorded)
     assert not status["ok"]
     assert "different dependency contract" in status["error"]
@@ -102,6 +115,7 @@ def test_failed_setup_keeps_transaction_marker_and_blocks_previous_generation(
     _dependency_tree(tmp_path)
     _record_setup(tmp_path, backend="cpu")
     monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
+    monkeypatch.setattr(setup_env, "require_ffmpeg_runtime", lambda: None)
 
     def fail_clone(*_args, **_kwargs):
         raise RuntimeError("simulated setup failure")
@@ -129,6 +143,7 @@ def test_successful_setup_commits_state_then_clears_transaction_marker(
 ):
     _dependency_tree(tmp_path)
     monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
+    monkeypatch.setattr(setup_env, "require_ffmpeg_runtime", lambda: None)
     irodori = tmp_path / "vendor" / "Irodori-TTS"
     seed = tmp_path / "vendor" / "seed-vc"
     irodori.mkdir(parents=True)
@@ -163,7 +178,7 @@ def test_successful_setup_commits_state_then_clears_transaction_marker(
 def test_irodori_install_refuses_missing_managed_lock(tmp_path: Path):
     vendor = tmp_path / "vendor" / "Irodori-TTS"
     vendor.mkdir(parents=True)
-    with pytest.raises(FileNotFoundError, match="Audited Irodori lockfile is missing"):
+    with pytest.raises(FileNotFoundError, match="Audited Irodori dependency overlay is incomplete"):
         setup_env._install_irodori(tmp_path, vendor, "cpu")
 
 
@@ -214,12 +229,16 @@ def test_interrupted_irodori_lock_swap_restores_known_managed_state(
         ),
         encoding="utf-8",
     )
-    restored: list[Path] = []
+    restored: list[tuple[Path, str]] = []
     monkeypatch.setattr(setup_env, "_git_head", lambda _path: "head")
-    monkeypatch.setattr(setup_env, "_restore_vendor_lock", lambda path: restored.append(path))
+    monkeypatch.setattr(
+        setup_env,
+        "_restore_vendor_file",
+        lambda path, relative: restored.append((path, relative)),
+    )
 
     setup_env._recover_irodori_lock_swap(tmp_path, vendor)
-    assert restored == [vendor]
+    assert restored == [(vendor, "uv.lock")]
     assert not marker.exists()
 
 

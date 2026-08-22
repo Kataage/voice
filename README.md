@@ -31,7 +31,7 @@ uv run --locked persona ui
 
 ## セットアップ
 
-必要: `uv`, Git, FFmpeg/ffprobe。NVIDIA GPU推奨。
+必要: `uv`, Git, FFmpeg/ffprobe。NVIDIA GPU推奨。WindowsではTorchCodec用にshared DLL付きFFmpeg 4〜8が必要で、bootstrapはWinGetのFFmpeg Shared 8.1.1を使用します。
 
 Windows:
 
@@ -186,7 +186,7 @@ rootと全workerの`uv.lock`はリポジトリへコミットされています�
 ./scripts/lock_all.sh
 ```
 
-Irodori backendは`persona setup --backend auto|cu128|cpu|rocm|xpu`で選択できます。NVIDIA時はmodern Torch workerをCUDA 12.8系、互換性のためTorch 2.4に固定しているSeed-VCをCUDA 12.4系へ明示的に解決します。
+Irodori backendは`persona setup --backend auto|cu126|cu128|cpu|rocm|xpu`で選択できます。`auto`はNVIDIA device 0のcompute capabilityを見てPascal 6.xをCUDA 12.6、7.0以上をCUDA 12.8へ分けます。互換性のためTorch 2.4に固定しているSeed-VCはCUDA 12.4系へ明示的に解決します。
 
 ## テスト / 実機検証
 
