@@ -5,6 +5,7 @@ import platform
 import re
 import shutil
 import subprocess
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -68,10 +69,8 @@ def _path_candidates() -> list[tuple[Path, str]]:
         value = shutil.which(name)
         if value:
             path = Path(value)
-            try:
+            with suppress(OSError):
                 path = path.resolve()
-            except OSError:
-                pass
             candidates.append((path.parent, "PATH"))
 
     if platform.system() == "Windows":
