@@ -5,7 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from personavoice.hardware import backend_supports_gpu, cuda_backend_for_gpu, selected_nvidia_gpu
+from personavoice.hardware import (
+    backend_supports_gpu,
+    cuda_backend_for_gpu,
+    seed_vc_cuda_supported,
+    selected_nvidia_gpu,
+)
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
 ENVIRONMENT_CONTRACT_SCHEMA = 3
@@ -87,35 +92,8 @@ def environment_contract_status(repo_root: Path, recorded: Any) -> dict[str, Any
     }
 
 
-def runtime_hardware_status(setup: Any) -> dict[str, Any]:
-    """Verify that a recorded CUDA environment is safe for the current visible GPU.
-
-    GPU hardware is intentionally not part of the dependency hash: a compatible
-    GPU swap should keep working without reinstalling identical environments.
-    Incompatible swaps, GPU removal, or CUDA visibility changes fail closed at
-    every direct worker entry point and instruct the user to rerun auto setup.
-    """
-
-    value = setup if isinstance(setup, dict) else {}
-    backend = value.get("irodori_backend")
-    if backend not in {"cu126", "cu128"}:
-        return {"ok": True, "backend": backend, "selected_gpu": None, "preferred_backend": None}
-
-    gpu = selected_nvidia_gpu()
-    if gpu is None:
-        return {
-            "ok": False,
-            "backend": backend,
-            "selected_gpu": None,
-            "preferred_backend": "cpu",
-            "error": (
-                f"PersonaVoice was set up for {backend}, but no NVIDIA GPU is currently exposed "
-                "as CUDA device 0. The GPU, driver, or CUDA_VISIBLE_DEVICES setting may have "
-                "changed; run `persona setup --backend auto` before model work."
-            ),
-        }
-
-    selected = {
+def _selected_gpu_dict(gpu) -> dict[str, Any]:
+    return {
         "index": gpu.index,
         "uuid": gpu.uuid,
         "name": gpu.name,
@@ -123,13 +101,72 @@ def runtime_hardware_status(setup: Any) -> dict[str, Any]:
         "total_mib": gpu.total_mib,
         "free_mib": gpu.free_mib,
     }
-    preferred = cuda_backend_for_gpu(gpu)
-    if not backend_supports_gpu(str(backend), gpu):
+
+
+def runtime_hardware_status(setup: Any) -> dict[str, Any]:
+    """Verify every recorded CUDA environment against the current visible GPU.
+
+    Hardware is deliberately not part of the dependency hash: a compatible GPU
+    swap should continue to work without rebuilding identical virtualenvs. An
+    incompatible swap, GPU removal, or CUDA visibility change fails closed at
+    every direct worker entry point before a model process can start.
+
+    Seed-VC is checked separately because its audited Torch 2.4/cu124 stack has
+    a different architecture envelope from the Torch 2.10 cu126/cu128 workers.
+    This matters for swaps such as Hopper -> Blackwell: the main cu128 workers
+    remain valid while an old Seed-VC cu124 environment must be rebuilt as CPU.
+    """
+
+    value = setup if isinstance(setup, dict) else {}
+    backend = value.get("irodori_backend")
+    worker_backends = value.get("worker_backends")
+    if not isinstance(worker_backends, dict):
+        worker_backends = {}
+    seed_vc_backend = worker_backends.get("seed_vc")
+
+    main_cuda = backend in {"cu126", "cu128"}
+    seed_cuda = seed_vc_backend == "cu124"
+    if not main_cuda and not seed_cuda:
+        return {
+            "ok": True,
+            "backend": backend,
+            "seed_vc_backend": seed_vc_backend,
+            "selected_gpu": None,
+            "preferred_backend": None,
+            "preferred_seed_vc_backend": "cpu",
+            "error": None,
+        }
+
+    gpu = selected_nvidia_gpu()
+    if gpu is None:
+        requested = [str(item) for item in (backend if main_cuda else None, seed_vc_backend if seed_cuda else None) if item]
         return {
             "ok": False,
             "backend": backend,
+            "seed_vc_backend": seed_vc_backend,
+            "selected_gpu": None,
+            "preferred_backend": "cpu",
+            "preferred_seed_vc_backend": "cpu",
+            "error": (
+                "PersonaVoice has CUDA environments recorded "
+                f"({', '.join(requested)}), but no NVIDIA GPU is currently exposed as CUDA "
+                "device 0. The GPU, driver, or CUDA_VISIBLE_DEVICES setting may have changed; "
+                "run `persona setup --backend auto` before model work."
+            ),
+        }
+
+    selected = _selected_gpu_dict(gpu)
+    preferred = cuda_backend_for_gpu(gpu)
+    preferred_seed = "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+
+    if main_cuda and not backend_supports_gpu(str(backend), gpu):
+        return {
+            "ok": False,
+            "backend": backend,
+            "seed_vc_backend": seed_vc_backend,
             "selected_gpu": selected,
             "preferred_backend": preferred,
+            "preferred_seed_vc_backend": preferred_seed,
             "error": (
                 f"PersonaVoice was set up for {backend}, but the current CUDA-visible GPU "
                 f"{gpu.name} (compute capability {gpu.compute_capability or 'unknown'}) is not "
@@ -137,11 +174,31 @@ def runtime_hardware_status(setup: Any) -> dict[str, Any]:
                 "changed; run `persona setup --backend auto` before model work."
             ),
         }
+
+    if seed_cuda and not seed_vc_cuda_supported(gpu):
+        return {
+            "ok": False,
+            "backend": backend,
+            "seed_vc_backend": seed_vc_backend,
+            "selected_gpu": selected,
+            "preferred_backend": preferred,
+            "preferred_seed_vc_backend": preferred_seed,
+            "error": (
+                f"Seed-VC was set up for {seed_vc_backend}, but the current CUDA-visible GPU "
+                f"{gpu.name} (compute capability {gpu.compute_capability or 'unknown'}) is not "
+                "supported by the audited Torch 2.4/cu124 Seed-VC stack. The GPU selection "
+                "appears to have changed; run `persona setup --backend auto` to rebuild only "
+                "the required worker environments safely."
+            ),
+        }
+
     return {
         "ok": True,
         "backend": backend,
+        "seed_vc_backend": seed_vc_backend,
         "selected_gpu": selected,
         "preferred_backend": preferred,
+        "preferred_seed_vc_backend": preferred_seed,
         "error": None,
     }
 
