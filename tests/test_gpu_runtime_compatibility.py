@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from personavoice import doctor, environment_contract as env_contract
-from personavoice import hardware, setup_env, workers
+from personavoice import doctor, hardware, setup_env, workers
+from personavoice import environment_contract as env_contract
 
 
 def _gpu(
