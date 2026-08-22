@@ -167,6 +167,8 @@ def _known_pytorch_210_architecture(capability: tuple[int, int], *, backend: str
         if backend == "cu128":
             return (major, minor) in {(8, 0), (9, 0), (10, 0), (12, 0)}
         return False
+    if host != "x86_64":
+        return False
 
     # Linux x86_64 and Windows official wheels. Ada sm_89 executes the Ampere
     # sm_86 code path and is an audited member of the 8.x family. Maxwell is
@@ -202,12 +204,13 @@ def backend_supports_gpu(backend: str, gpu: GpuInfo) -> bool:
 def seed_vc_cuda_supported(gpu: GpuInfo) -> bool:
     """Whether Seed-VC's audited PyTorch 2.4/cu124 stack can use this GPU.
 
-    That older stack covers Pascal through Hopper but predates Blackwell. Newer
-    GPUs therefore keep the rest of PersonaVoice on cu128 while Seed-VC falls
-    back to its audited CPU environment rather than risking a no-kernel-image
-    failure.
+    That older stack is audited on x86_64 for Pascal through Hopper but predates
+    Blackwell. Other host architectures and newer GPUs therefore use Seed-VC's
+    CPU environment rather than assuming an unverified CUDA wheel/runtime pair.
     """
 
+    if _host_arch() != "x86_64":
+        return False
     capability = _parse_compute_capability(gpu.compute_capability)
     if capability is None:
         return False
