@@ -37,6 +37,49 @@ def test_backend_device_maps_rocm_to_torch_cuda_name():
     assert irodori.backend_device("xpu") == "xpu"
 
 
+def test_auto_backend_uses_cu126_for_pascal(monkeypatch):
+    monkeypatch.setattr(
+        hardware,
+        "nvidia_gpus",
+        lambda: [
+            hardware.GpuInfo(
+                index=0,
+                name="NVIDIA GeForce GTX 1080 Ti",
+                total_mib=11264,
+                free_mib=10000,
+                compute_capability="6.1",
+            )
+        ],
+    )
+    assert hardware.detect_irodori_backend() == "cu126"
+
+
+def test_auto_backend_uses_cu128_for_turing_or_newer(monkeypatch):
+    monkeypatch.setattr(
+        hardware,
+        "nvidia_gpus",
+        lambda: [
+            hardware.GpuInfo(
+                index=0,
+                name="GPU",
+                total_mib=16384,
+                free_mib=15000,
+                compute_capability="8.6",
+            )
+        ],
+    )
+    assert hardware.detect_irodori_backend() == "cu128"
+
+
+def test_auto_backend_fails_closed_when_compute_capability_is_unknown(monkeypatch):
+    monkeypatch.setattr(
+        hardware,
+        "nvidia_gpus",
+        lambda: [hardware.GpuInfo(index=0, name="GPU", total_mib=16384, free_mib=15000)],
+    )
+    assert hardware.detect_irodori_backend() == "cpu"
+
+
 def test_cpu_batch_profile_does_not_use_visible_nvidia_gpu(monkeypatch):
     monkeypatch.setattr(
         hardware,
