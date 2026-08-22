@@ -8,7 +8,7 @@ from personavoice import irodori
 from personavoice.model_assets import IRODORI_TEXT_ENCODER_ID, IRODORI_TEXT_ENCODER_REVISION
 
 
-def test_cu126_training_config_uses_fp16_without_tf32(tmp_path: Path, monkeypatch):
+def test_cu126_training_config_uses_fp32_without_tf32(tmp_path: Path, monkeypatch):
     source = tmp_path / "source.yaml"
     output = tmp_path / "patched.yaml"
     source.write_text(
@@ -43,6 +43,9 @@ def test_cu126_training_config_uses_fp16_without_tf32(tmp_path: Path, monkeypatc
     irodori._patched_config(source, output, max_steps=100, backend="cu126")
     patched = yaml.safe_load(output.read_text(encoding="utf-8"))
 
-    assert patched["train"]["precision"] == "fp16"
+    # Pinned upstream train.py officially supports only fp32/bf16. Pascal and
+    # Volta lack BF16/TF32, so the audited legacy CUDA path must use FP32 rather
+    # than inventing an unsupported fp16 training mode.
+    assert patched["train"]["precision"] == "fp32"
     assert patched["train"]["allow_tf32"] is False
     assert patched["train"]["dataloader_cuda_prefetch"] is True
