@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from personavoice import workers
+from personavoice.model_assets import SEED_VC_SOURCE_REVISION
 from personavoice.worker_contracts import (
     purge_invalid_prepare_caches,
     valid_asr_result,
@@ -136,3 +138,70 @@ def test_worker_call_rejects_invalid_subprocess_result_before_return(tmp_path: P
 
     requests = tmp_path / ".runtime" / "requests"
     assert not list(requests.glob("*.json"))
+
+
+def _seed_vendor(tmp_path: Path) -> Path:
+    vendor = tmp_path / "vendor" / "seed-vc"
+    (vendor / ".git").mkdir(parents=True)
+    (vendor / "inference_v2.py").write_text("# pinned\n", encoding="utf-8")
+    return vendor
+
+
+def test_seed_vc_vendor_preflight_rejects_wrong_head_and_untracked_files(
+    tmp_path: Path,
+    monkeypatch,
+):
+    vendor = _seed_vendor(tmp_path)
+
+    def clean_run(args, **_kwargs):
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout=SEED_VC_SOURCE_REVISION + "\n")
+        if args[:3] == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(stdout="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(workers, "run", clean_run)
+    assert workers._require_seed_vc_vendor_integrity(tmp_path) == vendor
+
+    def wrong_head(args, **_kwargs):
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout="0" * 40 + "\n")
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(workers, "run", wrong_head)
+    with pytest.raises(RuntimeError, match="vendor HEAD mismatch"):
+        workers._require_seed_vc_vendor_integrity(tmp_path)
+
+    def untracked_file(args, **_kwargs):
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout=SEED_VC_SOURCE_REVISION + "\n")
+        if args[:3] == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(stdout="?? modules/injected.py\n")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(workers, "run", untracked_file)
+    with pytest.raises(RuntimeError, match="untracked files"):
+        workers._require_seed_vc_vendor_integrity(tmp_path)
+
+
+def test_seed_vc_worker_call_runs_vendor_preflight_before_subprocess(tmp_path: Path, monkeypatch):
+    project = tmp_path / "workers" / "seed_vc"
+    project.mkdir(parents=True)
+    instance = workers.Worker(name="seed_vc", project_dir=project)
+
+    monkeypatch.setattr(workers, "require_current_environment", lambda _root: None)
+    monkeypatch.setattr(
+        workers,
+        "_require_seed_vc_vendor_integrity",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("vendor preflight blocked")),
+    )
+    monkeypatch.setattr(
+        workers,
+        "run_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("subprocess must not run")),
+    )
+
+    with pytest.raises(RuntimeError, match="vendor preflight blocked"):
+        instance.call(tmp_path, "health", {})
+
+    assert not (tmp_path / ".runtime" / "requests").exists()
