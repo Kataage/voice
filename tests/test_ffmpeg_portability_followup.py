@@ -91,10 +91,12 @@ def test_windows_ffmpeg_contract_is_fixed_to_audited_winget_release():
     )
 
 
-def test_windows_bootstrap_never_installs_machine_wide_ffmpeg():
+def test_windows_bootstrap_never_installs_or_requires_ffmpeg_before_setup():
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts" / "bootstrap.ps1").read_text(encoding="utf-8")
     lowered = text.casefold()
     assert "winget install" not in lowered
     assert "gyan.ffmpeg.shared" not in lowered
+    assert "persona doctor" not in lowered
+    assert "persona --help" in lowered
     assert "persona setup --backend auto" in lowered
