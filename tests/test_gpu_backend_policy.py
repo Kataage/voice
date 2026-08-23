@@ -27,6 +27,17 @@ def gpu(
     )
 
 
+@pytest.fixture(autouse=True)
+def _valid_ffmpeg_setup(monkeypatch):
+    """GPU-policy tests assume an otherwise current setup generation."""
+
+    monkeypatch.setattr(
+        environment,
+        "ffmpeg_provenance_status",
+        lambda _root: {"ok": True, "error": None},
+    )
+
+
 @pytest.mark.parametrize(
     ("capability", "expected"),
     [
