@@ -34,7 +34,7 @@ jobs:
       - name: Commit finalized GPU portability audit
         shell: bash
         run: |
-          git rm scripts/_ci_gpu_portability_finalize.py .github/workflows/gpu-portability-finalize.yml
+          git rm scripts/_ci_gpu_portability_finalize.py .github/workflows/gpu-portability-finalize.yml README_GPU_PORTABILITY_AUDIT.tmp
           git add -A
           git diff --cached --check
           git config user.name github-actions[bot]
