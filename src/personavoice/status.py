@@ -5,6 +5,7 @@ from typing import Any
 
 from personavoice.config import PersonaConfig
 from personavoice.pipeline import _prepare_fingerprint
+from personavoice.prepare_checkpoints import prepare_batch_progress
 from personavoice.project import PersonaPaths
 from personavoice.stage_lock import stage_lock_held
 from personavoice.state import StateStore
@@ -104,6 +105,7 @@ def persona_status(
         }
 
     prepare = _stage_audit(store, state, "prepare")
+    prepare["batch_progress"] = prepare_batch_progress(paths.root)
     train = _stage_audit(store, state, "train")
     train["blocked_by_prepare"] = None
     if verify_inputs:

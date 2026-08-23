@@ -30,6 +30,115 @@ def request(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+_CHECKPOINT_ALLOWED = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+
+
+def _checkpoint_item_id(value: object) -> str:
+    item_id = str(value)
+    if (
+        not item_id
+        or len(item_id) > 128
+        or item_id == "progress"
+        or not item_id[0].isalnum()
+        or any(char not in _CHECKPOINT_ALLOWED for char in item_id)
+    ):
+        raise ValueError(f"Unsafe prepare checkpoint item id: {item_id!r}")
+    return item_id
+
+
+def _checkpoint_directory(payload: dict) -> Path | None:
+    raw = payload.get("checkpoint_dir")
+    if raw is None:
+        return None
+    target = Path(str(raw))
+    if not target.is_absolute():
+        raise ValueError("Prepare checkpoint directory must be an absolute path")
+    root = Path(os.environ["PERSONAVOICE_ROOT"]).resolve()
+    resolved = target.resolve(strict=False)
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Prepare checkpoint directory escapes PERSONAVOICE_ROOT") from exc
+    parts = relative.parts
+    if (
+        len(parts) < 5
+        or parts[0] != "personas"
+        or parts[2] != "cache"
+        or parts[-1] != ".checkpoints"
+    ):
+        raise ValueError(
+            "Prepare checkpoint directory must be personas/<name>/cache/<kind>/.checkpoints"
+        )
+    resolved.mkdir(parents=True, exist_ok=True)
+    verified = resolved.resolve()
+    try:
+        verified.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Prepare checkpoint directory resolves outside PERSONAVOICE_ROOT") from exc
+    return verified
+
+
+def _atomic_checkpoint_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ) + "\n"
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _write_item_checkpoint(directory: Path | None, item_id: str, result: dict) -> None:
+    if directory is None:
+        return
+    safe_id = _checkpoint_item_id(item_id)
+    _atomic_checkpoint_json(
+        directory / f"{safe_id}.json",
+        {"schema": 1, "id": safe_id, "result": result},
+    )
+
+
+def _write_batch_progress(
+    directory: Path | None,
+    *,
+    worker_name: str,
+    command: str,
+    phase: str,
+    completed: int,
+    total: int,
+    failed: int,
+    current_id: str | None,
+    state: str,
+) -> None:
+    if directory is None:
+        return
+    _atomic_checkpoint_json(
+        directory / "progress.json",
+        {
+            "schema": 1,
+            "worker": worker_name,
+            "command": command,
+            "phase": phase,
+            "completed": completed,
+            "total": total,
+            "failed": failed,
+            "current_id": current_id,
+            "state": state,
+        },
+    )
+
+
 def _nonempty_file(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > 0
@@ -197,17 +306,66 @@ def transcribe(payload: dict) -> dict:
 
 def batch_transcribe(payload: dict) -> dict:
     items = payload.get("items") or []
+    checkpoint = _checkpoint_directory(payload)
     name = payload.get("model", PINNED_MODEL_NAME)
     model = make_model(name, payload.get("compute_type", "auto"))
     language = payload.get("language") or "ja"
     results = []
-    for item in items:
-        item_id = str(item["id"])
+    failed = 0
+    total = len(items)
+    _write_batch_progress(
+        checkpoint,
+        worker_name="asr",
+        command="batch_transcribe",
+        phase="transcribe",
+        completed=0,
+        total=total,
+        failed=0,
+        current_id=None,
+        state="running",
+    )
+    for index, item in enumerate(items):
+        item_id = _checkpoint_item_id(item["id"])
+        _write_batch_progress(
+            checkpoint,
+            worker_name="asr",
+            command="batch_transcribe",
+            phase="transcribe",
+            completed=index,
+            total=total,
+            failed=failed,
+            current_id=item_id,
+            state="running",
+        )
         try:
             value = transcribe_with_model(model, str(item["audio"]), language=language)
+            _write_item_checkpoint(checkpoint, item_id, value)
             results.append({"id": item_id, "ok": True, "result": value})
         except Exception as exc:
+            failed += 1
             results.append({"id": item_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        _write_batch_progress(
+            checkpoint,
+            worker_name="asr",
+            command="batch_transcribe",
+            phase="transcribe",
+            completed=index + 1,
+            total=total,
+            failed=failed,
+            current_id=None,
+            state="running",
+        )
+    _write_batch_progress(
+        checkpoint,
+        worker_name="asr",
+        command="batch_transcribe",
+        phase="transcribe",
+        completed=total,
+        total=total,
+        failed=failed,
+        current_id=None,
+        state="finished",
+    )
     return {"results": results}
 
 
