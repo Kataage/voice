@@ -328,13 +328,13 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         raise RuntimeError("uv was not found in PATH")
     if not shutil.which("git"):
         raise RuntimeError("git was not found in PATH")
-    ensure_ffmpeg_runtime(repo_root)
     selected_backend = backend or detect_irodori_backend()
     if selected_backend not in SUPPORTED_IRODORI_BACKENDS:
         expected = ", ".join(sorted(SUPPORTED_IRODORI_BACKENDS))
         raise ValueError(f"Unsupported Irodori backend {selected_backend!r}; choose one of: {expected}")
 
     selected_gpu = _validate_cuda_backend(selected_backend)
+    ensure_ffmpeg_runtime(repo_root)
     selected_gpu_state = gpu_record(selected_gpu)
     worker_extras = _worker_extras(selected_backend, gpu=selected_gpu)
     runtime = repo_root / ".runtime"
