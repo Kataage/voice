@@ -7,7 +7,7 @@
 ```powershell
 .\scripts\bootstrap.ps1
 $env:HF_TOKEN="hf_..."  # pyannote Community-1初回取得時のみ
-uv run --locked persona setup
+uv run --locked persona setup --backend auto
 uv run --locked persona init alice --authorized
 # personas/alice/raw/ と personas/alice/identity/ に素材を配置
 uv run --locked persona build alice
@@ -31,14 +31,14 @@ uv run --locked persona ui
 
 ## セットアップ
 
-必要: `uv`, Git, FFmpeg/ffprobe。NVIDIA GPU推奨。
+必要: `uv`, Git, FFmpeg/ffprobe。NVIDIA GPU推奨。WindowsではTorchCodec用にshared DLL付きFFmpeg 4〜8が必要で、bootstrapはWinGetのFFmpeg Shared 8.1.1を使用します。
 
 Windows:
 
 ```powershell
 .\scripts\bootstrap.ps1
 $env:HF_TOKEN="hf_..."
-uv run --locked persona setup
+uv run --locked persona setup --backend auto
 ```
 
 Linux/macOS:
@@ -46,17 +46,21 @@ Linux/macOS:
 ```bash
 ./scripts/bootstrap.sh
 export HF_TOKEN=hf_...
-uv run --locked persona setup
+uv run --locked persona setup --backend auto
 ```
 
-`HF_TOKEN`は`pyannote/speaker-diarization-community-1`の初回取得時のみ必要です。PersonaVoiceはtokenを保存しません。`persona setup`は固定upstream revision取得、コミット済みlockを使った各独立`uv`環境のsync、モデル取得、offline model load検証まで実行します。
+`--backend auto`を推奨します。PersonaVoiceは`CUDA_DEVICE_ORDER=PCI_BUS_ID`と`CUDA_VISIBLE_DEVICES`を考慮して実際のlogical CUDA device 0を特定し、そのGPUのcompute capabilityを監査済みwheel matrixへ照合します。x86_64の現在の固定stackではPascal 6.x / Volta 7.0は`cu126`、Turing以降の監査済み世代は`cu128`、未知・未監査世代や安全に識別できないGPUはCPUへfail-closedします。環境sync後にはIrodori・diarization・Sense・LFM・必要ならSeed-VCの各独立PyTorch環境で**実CUDA tensor/kernel**を実行し、`nvidia-smi`で選択したGPUとworkerが見るdevice 0のcompute capabilityが一致することを、大容量モデル取得前に検証します。ASRはCTranslate2が実際に返すsupported compute typesからCUDA型を選び、実行不能ならauto時だけCPUへ安全にfallbackします。
+
+CUDA setupでは、setup時にlogical CUDA device 0のGPU UUID・compute capability・NVIDIA driver versionを記録します。GPU交換、`CUDA_VISIBLE_DEVICES`変更によるdevice 0の物理GPU変更、またはdriver更新を検出した場合は、互換wheelであってもdirect runtimeを開始せず`persona setup --backend auto`による**実CUDA kernel preflightの再実行**を要求します。同じlock/backendが引き続き適合する場合は既存環境と検証済みmodel assetを再利用するため、再setupは全モデルの再取得を意味しません。Seed-VCは古いPyTorch 2.4/cu124 stackを隔離しているため、Blackwellなどmain cu128 stackは使えるがSeed-VC cu124だけ非互換な場合は、次回setupでSeed-VCだけCPUへ安全にfallbackします。詳細は`docs/TROUBLESHOOTING.md`を参照してください。
+
+`HF_TOKEN`は`pyannote/speaker-diarization-community-1`の初回取得時のみ必要です。PersonaVoiceはtokenを保存しません。`persona setup`は固定upstream revision取得、コミット済みlockを使った各独立`uv`環境のsync、GPU runtime preflight、モデル取得、offline model load検証まで実行します。
 
 ```bash
 uv run --locked persona doctor
 uv run --locked persona doctor --deep
 ```
 
-`doctor --deep`はworkerのモデルロードだけでなく、Irodoriのoffline smoke synthesis、選択したGPU backend、lockfile、Irodori/Seed-VC vendorの固定revisionとclean状態も検証します。通常の推論・`doctor --deep`はローカルにmaterialize済みの固定assetだけを使用します。モデル取得を許可する経路は明示的な`persona setup`です。
+`doctor --deep`はworkerのモデルロードだけでなく、Irodoriのoffline smoke synthesis、選択したGPU backend、現在GPUとのruntime compatibility、FFmpeg shared runtime、lockfile、Irodori/Seed-VC vendorの固定revisionとclean状態も検証します。通常の推論・`doctor --deep`はローカルにmaterialize済みの固定assetだけを使用します。モデル取得を許可する経路は明示的な`persona setup`です。
 
 ## 人物作成 / 学習
 
@@ -174,26 +178,6 @@ workers/seed_vc/.venv      Seed-VC compatible Python 3.10
 vendor/Irodori-TTS/.venv   pinned official Irodori environment
 ```
 
-rootと全workerの`uv.lock`はリポジトリへコミットされています。Irodoriは固定upstream checkoutを直接変更しないため、監査済みlockを`locks/Irodori-TTS.uv.lock`として管理し、setup時だけ一時適用してvendor checkoutを元のclean状態へ戻します。
+rootと全workerの`uv.lock`はリポジトリへコミットされています。Irodoriは固定upstream checkoutを直接変更しないため、監査済みproject overlayとlockを`locks/Irodori-TTS.pyproject.toml` / `locks/Irodori-TTS.uv.lock`として管理し、setup時だけ原子的に一時適用してvendor checkoutを元のclean状態へ戻します。
 
-通常利用ではbootstrap/setupが`--locked`で同期し、依存定義とlockがずれていれば失敗させます。依存を意図的に更新した時だけ次を実行し、生成されたlock差分をレビューしてください。prepare/training cache fingerprintにも関連worker lockのSHA256を含めているため、依存更新後に古い解析結果やadapterを黙って再利用しません。
-
-```powershell
-.\scripts\lock_all.ps1
-```
-
-```bash
-./scripts/lock_all.sh
-```
-
-Irodori backendは`persona setup --backend auto|cu128|cpu|rocm|xpu`で選択できます。NVIDIA時はmodern Torch workerをCUDA 12.8系、互換性のためTorch 2.4に固定しているSeed-VCをCUDA 12.4系へ明示的に解決します。
-
-## テスト / 実機検証
-
-GitHub Actions `core-ci` はLinux/Windowsの両方でrootのlocked sync、Ruff、pytest、compileall、CLI smokeを実行し、さらにASR / diarization / SenseVoice / LFM / Seed-VCの全worker環境を各OSで`uv sync --locked`して依存解決とPython compileを検証します。数GB級weight/GPUはCIに持ち込まず、対象実機上の`persona setup` + `persona doctor --deep`でoffline model loadとIrodori smoke synthesisを検証します。
-
-## ローカルデータ / 同意
-
-素材、dataset、model、output、vendor、runtime request、personaの実行stateはgitignore対象です。`consent.authorized: true`でないpersonaではprepare/train/voice generationを拒否します。`persona.yaml`の名前は格納directory名と一致している必要があります。ローカル利用、配布、公開、商用利用の許可範囲は別々に管理してください。
-
-詳細: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) / [`docs/MODELS.md`](docs/MODELS.md) / [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
+通常利用ではbootstrap/setupが`--locked`で同期し、依存定義とlockがずれていれば失敗させます。environment contractにはlockだけでなくGPU/backend選択・FFmpeg runtime・worker起動policyの実装SHA256も含めるため、これらの安全性ロジックが更新されたcheckoutで古いsetup環境をcurrent扱いしません。依存を意図的に更新した時だけlock更新scriptを実行し、生成されたlock差分をレビューしてください。prepare/training cache fingerprintにも関連worker lockのSHA256を含めているため、依存更新後に古い解析結果やadapterを黙って再利用しません。

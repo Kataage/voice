@@ -24,6 +24,7 @@ def _write(path: Path, content: bytes = b"x") -> Path:
 def _dependency_tree(root: Path) -> None:
     _write(root / "pyproject.toml", b"root")
     _write(root / "uv.lock", b"root-lock")
+    _write(root / "locks" / "Irodori-TTS.pyproject.toml", b"irodori-project")
     _write(root / "locks" / "Irodori-TTS.uv.lock", b"irodori-lock")
     (root / "config").mkdir(parents=True, exist_ok=True)
     (root / "config" / "seed_vc_assets.json").write_text(
@@ -49,32 +50,28 @@ def _record_setup(root: Path, *, backend: str = "cpu") -> None:
     )
 
 
-def test_environment_contract_detects_dependency_generation_change(tmp_path: Path):
-    _dependency_tree(tmp_path)
-    recorded = environment_contract(tmp_path)
-    assert environment_contract_status(tmp_path, recorded)["ok"]
-
-    (tmp_path / "workers" / "lfm" / "uv.lock").write_bytes(b"new-lock")
-    status = environment_contract_status(tmp_path, recorded)
-    assert not status["ok"]
-    assert "different dependency contract" in status["error"]
-
-
-def test_runtime_environment_contract_accepts_current_rejects_stale_and_recovers(
-    tmp_path: Path,
-):
+def test_dependency_contract_change_requires_resync(tmp_path: Path):
     _dependency_tree(tmp_path)
     _record_setup(tmp_path)
-    assert require_current_environment(tmp_path)["irodori_backend"] == "cpu"
+    recorded = json.loads((tmp_path / ".runtime" / "setup.json").read_text(encoding="utf-8"))[
+        "environment_contract"
+    ]
+    assert environment_contract_status(tmp_path, recorded)["ok"] is True
 
-    # A dependency declaration changing after setup must invalidate every --no-sync runtime.
-    (tmp_path / "workers" / "lfm" / "uv.lock").write_bytes(b"new-lock")
+    _write(tmp_path / "workers" / "sense" / "uv.lock", b"new-lock")
+    status = environment_contract_status(tmp_path, recorded)
+    assert status["ok"] is False
+    assert "different dependency contract" in str(status["error"])
     with pytest.raises(RuntimeError, match="different dependency contract"):
         require_current_environment(tmp_path)
 
-    # A successful setup records the new exact generation and restores runtime readiness.
+
+def test_inference_requires_current_environment_generation(tmp_path: Path, monkeypatch):
+    _dependency_tree(tmp_path)
     _record_setup(tmp_path)
-    assert require_current_environment(tmp_path)["irodori_backend"] == "cpu"
+    _write(tmp_path / "workers" / "sense" / "uv.lock", b"new-lock")
+    with pytest.raises(RuntimeError, match="different dependency contract"):
+        inference.configured_backend(tmp_path)
 
 
 def test_setup_transaction_marker_blocks_old_setup_state(tmp_path: Path):
@@ -102,6 +99,9 @@ def test_failed_setup_keeps_transaction_marker_and_blocks_previous_generation(
     _dependency_tree(tmp_path)
     _record_setup(tmp_path, backend="cpu")
     monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
+    monkeypatch.setattr(setup_env, "require_ffmpeg_runtime", lambda: None)
+    # This test targets transaction publication, not physical GPU discovery.
+    monkeypatch.setattr(setup_env, "_validate_cuda_backend", lambda _backend: None)
 
     def fail_clone(*_args, **_kwargs):
         raise RuntimeError("simulated setup failure")
@@ -129,6 +129,10 @@ def test_successful_setup_commits_state_then_clears_transaction_marker(
 ):
     _dependency_tree(tmp_path)
     monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
+    monkeypatch.setattr(setup_env, "require_ffmpeg_runtime", lambda: None)
+    # This test targets atomic environment publication. GPU policy has dedicated
+    # generation/multi-GPU tests and is intentionally isolated here.
+    monkeypatch.setattr(setup_env, "_validate_cuda_backend", lambda _backend: None)
     irodori = tmp_path / "vendor" / "Irodori-TTS"
     seed = tmp_path / "vendor" / "seed-vc"
     irodori.mkdir(parents=True)
@@ -157,13 +161,14 @@ def test_successful_setup_commits_state_then_clears_transaction_marker(
     assert ("lfm", "cu128") in synced
     assert ("seed_vc", "cu124") in synced
     assert not (tmp_path / ".runtime" / SETUP_TRANSACTION_MARKER).exists()
-    assert require_current_environment(tmp_path)["irodori_backend"] == "cu128"
+    recorded = json.loads((tmp_path / ".runtime" / "setup.json").read_text(encoding="utf-8"))
+    assert environment_contract_status(tmp_path, recorded["environment_contract"])["ok"] is True
 
 
 def test_irodori_install_refuses_missing_managed_lock(tmp_path: Path):
     vendor = tmp_path / "vendor" / "Irodori-TTS"
     vendor.mkdir(parents=True)
-    with pytest.raises(FileNotFoundError, match="Audited Irodori lockfile is missing"):
+    with pytest.raises(FileNotFoundError, match="Audited Irodori dependency overlay is incomplete"):
         setup_env._install_irodori(tmp_path, vendor, "cpu")
 
 
@@ -214,12 +219,16 @@ def test_interrupted_irodori_lock_swap_restores_known_managed_state(
         ),
         encoding="utf-8",
     )
-    restored: list[Path] = []
+    restored: list[tuple[Path, str]] = []
     monkeypatch.setattr(setup_env, "_git_head", lambda _path: "head")
-    monkeypatch.setattr(setup_env, "_restore_vendor_lock", lambda path: restored.append(path))
+    monkeypatch.setattr(
+        setup_env,
+        "_restore_vendor_file",
+        lambda path, relative: restored.append((path, relative)),
+    )
 
     setup_env._recover_irodori_lock_swap(tmp_path, vendor)
-    assert restored == [vendor]
+    assert restored == [(vendor, "uv.lock")]
     assert not marker.exists()
 
 

@@ -8,8 +8,16 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from personavoice.atomic import atomic_write_json, atomic_write_text
+from personavoice.cuda_preflight import run_cuda_preflight
 from personavoice.environment_contract import SETUP_TRANSACTION_MARKER, environment_contract
-from personavoice.hardware import detect_irodori_backend
+from personavoice.hardware import (
+    backend_supports_gpu,
+    cuda_backend_for_gpu,
+    detect_irodori_backend,
+    gpu_record,
+    seed_vc_cuda_supported,
+    selected_nvidia_gpu,
+)
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
     ASR_MODEL_ID,
@@ -39,6 +47,7 @@ from personavoice.model_assets import (
     SENSE_MODEL_WEIGHT_SHA256,
 )
 from personavoice.process import CommandError, run
+from personavoice.runtime_dependencies import require_ffmpeg_runtime
 from personavoice.seed_vc_assets import (
     contract_digest as seed_vc_contract_digest,
 )
@@ -56,7 +65,8 @@ SEED_VC_REPO = "https://github.com/Plachtaa/seed-vc.git"
 SEED_VC_REVISION = SEED_VC_SOURCE_REVISION
 REVISION_MARKER = ".personavoice-revision"
 IRODORI_LOCK_SWAP_MARKER = "irodori-lock-swap.json"
-SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu128", "rocm", "xpu"}
+IRODORI_MANAGED_PROJECT = "Irodori-TTS.pyproject.toml"
+SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu126", "cu128", "rocm", "xpu"}
 _LFM_REQUIRED_FILES = (
     "config.json",
     "model.safetensors",
@@ -89,27 +99,41 @@ def _git_head(directory: Path) -> str:
     return run(["git", "rev-parse", "HEAD"], cwd=directory, capture=True).stdout.strip()
 
 
-def _restore_vendor_lock(irodori: Path) -> None:
-    """Restore uv.lock to the pinned checkout's clean HEAD state."""
-
-    vendor_lock = irodori / "uv.lock"
+def _restore_vendor_file(irodori: Path, relative: str) -> None:
+    path = irodori / relative
     tracked = run(
-        ["git", "ls-files", "--error-unmatch", "--", "uv.lock"],
+        ["git", "ls-files", "--error-unmatch", "--", relative],
         cwd=irodori,
         capture=True,
         check=False,
     ).returncode == 0
     if tracked:
         run(
-            ["git", "restore", "--source=HEAD", "--worktree", "--", "uv.lock"],
+            ["git", "restore", "--source=HEAD", "--worktree", "--", relative],
             cwd=irodori,
         )
     else:
-        vendor_lock.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+
+
+def _restore_vendor_setup_files(irodori: Path) -> None:
+    """Restore the pinned checkout after the managed project/lock overlay."""
+
+    _restore_vendor_file(irodori, "pyproject.toml")
+    _restore_vendor_file(irodori, "uv.lock")
+
+
+def _file_swap_state(path: Path, managed: Path) -> dict:
+    exists = path.is_file()
+    return {
+        "original_exists": exists,
+        "original_sha256": sha256_file(path) if exists else None,
+        "managed_sha256": sha256_file(managed),
+    }
 
 
 def _recover_irodori_lock_swap(repo_root: Path, irodori: Path) -> None:
-    """Recover a managed uv.lock swap interrupted by process termination."""
+    """Recover an interrupted managed Irodori project/lock overlay."""
 
     marker = _irodori_swap_marker(repo_root)
     if not marker.is_file():
@@ -118,40 +142,65 @@ def _recover_irodori_lock_swap(repo_root: Path, irodori: Path) -> None:
         value = json.loads(marker.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise RuntimeError(
-            f"Interrupted Irodori lock-swap marker is unreadable: {marker}. "
+            f"Interrupted Irodori setup-overlay marker is unreadable: {marker}. "
             "Inspect the vendor checkout before rerunning setup."
         ) from exc
-    if not isinstance(value, dict) or value.get("schema_version") != 2:
+    schema = value.get("schema_version") if isinstance(value, dict) else None
+    if schema not in {2, 3}:
         raise RuntimeError(
-            f"Interrupted Irodori lock-swap marker has an unsupported format: {marker}"
+            f"Interrupted Irodori setup-overlay marker has an unsupported format: {marker}"
         )
 
     expected_head = value.get("vendor_head")
     current_head = _git_head(irodori)
     if not isinstance(expected_head, str) or current_head != expected_head:
         raise RuntimeError(
-            "An interrupted PersonaVoice Irodori lock swap belongs to a different vendor HEAD. "
-            "Refusing automatic recovery; inspect vendor/Irodori-TTS before rerunning setup."
+            "An interrupted PersonaVoice Irodori setup overlay belongs to a different vendor "
+            "HEAD. Refusing automatic recovery; inspect vendor/Irodori-TTS before rerunning "
+            "setup."
         )
 
-    vendor_lock = irodori / "uv.lock"
-    current_exists = vendor_lock.is_file()
-    current_sha = sha256_file(vendor_lock) if current_exists else None
-    original_exists = bool(value.get("original_exists"))
-    original_sha = value.get("original_sha256")
-    managed_sha = value.get("managed_sha256")
-    original_state = current_exists == original_exists and (
-        not current_exists or current_sha == original_sha
-    )
-    managed_state = current_exists and isinstance(managed_sha, str) and current_sha == managed_sha
-    if managed_state:
-        _restore_vendor_lock(irodori)
-    elif not original_state:
-        raise RuntimeError(
-            "An interrupted PersonaVoice Irodori lock swap was found, but vendor/"
-            "Irodori-TTS/uv.lock no longer matches either the original checkout or the "
-            "audited temporary lock. Refusing to overwrite a possible local edit."
+    if schema == 2:
+        # Backward-compatible recovery for markers written before the managed
+        # pyproject overlay existed. Only uv.lock was swapped in that format.
+        states = {
+            "uv.lock": {
+                "original_exists": bool(value.get("original_exists")),
+                "original_sha256": value.get("original_sha256"),
+                "managed_sha256": value.get("managed_sha256"),
+            }
+        }
+    else:
+        raw_states = value.get("files")
+        if not isinstance(raw_states, dict):
+            raise RuntimeError(f"Interrupted Irodori setup-overlay marker is invalid: {marker}")
+        states = raw_states
+
+    for relative, state in states.items():
+        if relative not in {"pyproject.toml", "uv.lock"} or not isinstance(state, dict):
+            raise RuntimeError(f"Interrupted Irodori setup-overlay marker is invalid: {marker}")
+        path = irodori / relative
+        current_exists = path.is_file()
+        current_sha = sha256_file(path) if current_exists else None
+        original_exists = bool(state.get("original_exists"))
+        original_sha = state.get("original_sha256")
+        managed_sha = state.get("managed_sha256")
+        original_state = current_exists == original_exists and (
+            not current_exists or current_sha == original_sha
         )
+        managed_state = (
+            current_exists
+            and isinstance(managed_sha, str)
+            and current_sha == managed_sha
+        )
+        if managed_state:
+            _restore_vendor_file(irodori, relative)
+        elif not original_state:
+            raise RuntimeError(
+                "An interrupted PersonaVoice Irodori setup overlay was found, but "
+                f"vendor/Irodori-TTS/{relative} matches neither the pinned checkout nor the "
+                "audited temporary overlay. Refusing to overwrite a possible local edit."
+            )
     marker.unlink(missing_ok=True)
 
 
@@ -182,16 +231,19 @@ def _clone_pinned(repo_root: Path, name: str, url: str, revision: str) -> Path:
     return destination
 
 
-def _worker_extras(selected_backend: str) -> dict[str, str | None]:
-    """Map the Irodori backend to compatible isolated worker backends."""
+def _worker_extras(selected_backend: str, *, gpu=None) -> dict[str, str | None]:
+    """Map the selected backend to safe isolated worker environments."""
 
-    if selected_backend == "cu128":
+    if selected_backend in {"cu126", "cu128"}:
+        seed_backend = "cu124" if gpu is None or seed_vc_cuda_supported(gpu) else "cpu"
         return {
             "asr": None,
-            "diarization": "cu128",
-            "sense": "cu128",
-            "lfm": "cu128",
-            "seed_vc": "cu124",
+            "diarization": selected_backend,
+            "sense": selected_backend,
+            "lfm": selected_backend,
+            # Seed-VC stays on its audited Torch 2.4 stack. Blackwell and newer
+            # GPUs predate that wheel's cubins, so only this worker falls back.
+            "seed_vc": seed_backend,
         }
     return {
         "asr": None,
@@ -203,25 +255,29 @@ def _worker_extras(selected_backend: str) -> dict[str, str | None]:
 
 
 def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
-    """Sync Irodori from the audited lock with crash-safe checkout recovery."""
+    """Sync Irodori from the audited project overlay and lock, then restore vendor files."""
 
+    managed_project = repo_root / "locks" / IRODORI_MANAGED_PROJECT
     managed_lock = repo_root / "locks" / "Irodori-TTS.uv.lock"
-    if not managed_lock.is_file():
+    missing = [str(path) for path in (managed_project, managed_lock) if not path.is_file()]
+    if missing:
         raise FileNotFoundError(
-            f"Audited Irodori lockfile is missing: {managed_lock}. "
-            "Refusing an unlocked environment sync; restore the repository lockfile first."
+            "Audited Irodori dependency overlay is incomplete: "
+            + ", ".join(missing)
+            + ". Restore the repository lock files before setup."
         )
 
     marker = _irodori_swap_marker(repo_root)
+    vendor_project = irodori / "pyproject.toml"
     vendor_lock = irodori / "uv.lock"
-    original_exists = vendor_lock.is_file()
     swap_state = {
-        "schema_version": 2,
+        "schema_version": 3,
         "vendor": str(irodori.resolve()),
         "vendor_head": _git_head(irodori),
-        "original_exists": original_exists,
-        "original_sha256": sha256_file(vendor_lock) if original_exists else None,
-        "managed_sha256": sha256_file(managed_lock),
+        "files": {
+            "pyproject.toml": _file_swap_state(vendor_project, managed_project),
+            "uv.lock": _file_swap_state(vendor_lock, managed_lock),
+        },
     }
     atomic_write_json(marker, swap_state)
     args: list[str | Path] = [
@@ -234,11 +290,37 @@ def _install_irodori(repo_root: Path, irodori: Path, backend: str) -> None:
         "--locked",
     ]
     try:
+        atomic_write_text(vendor_project, managed_project.read_text(encoding="utf-8"))
         atomic_write_text(vendor_lock, managed_lock.read_text(encoding="utf-8"))
         run(args, cwd=repo_root)
     finally:
-        _restore_vendor_lock(irodori)
+        _restore_vendor_setup_files(irodori)
         marker.unlink(missing_ok=True)
+
+
+def _validate_cuda_backend(backend: str | None):
+    """Return the selected GPU or reject an unsafe explicit/automatic CUDA stack."""
+
+    if backend not in {"cu126", "cu128"}:
+        return None
+    gpu = selected_nvidia_gpu()
+    if gpu is None:
+        raise ValueError(
+            f"The selected backend {backend} requires an NVIDIA GPU exposed as CUDA device 0, "
+            "but no NVIDIA GPU could be selected. Check the driver and CUDA_VISIBLE_DEVICES, "
+            "or use `--backend auto`."
+        )
+    if backend_supports_gpu(backend, gpu):
+        return gpu
+
+    preferred = cuda_backend_for_gpu(gpu)
+    capability = gpu.compute_capability or "unknown"
+    fallback = f"--backend {preferred}" if preferred in {"cu126", "cu128"} else "--backend cpu"
+    raise ValueError(
+        f"The selected NVIDIA GPU {gpu.name} has compute capability {capability}; "
+        f"the audited {backend} PyTorch stack does not contain a compatible kernel image. "
+        f"Use `--backend auto` (recommended) or `{fallback}`."
+    )
 
 
 def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:
@@ -246,12 +328,15 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         raise RuntimeError("uv was not found in PATH")
     if not shutil.which("git"):
         raise RuntimeError("git was not found in PATH")
+    require_ffmpeg_runtime()
     selected_backend = backend or detect_irodori_backend()
     if selected_backend not in SUPPORTED_IRODORI_BACKENDS:
         expected = ", ".join(sorted(SUPPORTED_IRODORI_BACKENDS))
         raise ValueError(f"Unsupported Irodori backend {selected_backend!r}; choose one of: {expected}")
 
-    worker_extras = _worker_extras(selected_backend)
+    selected_gpu = _validate_cuda_backend(selected_backend)
+    selected_gpu_state = gpu_record(selected_gpu)
+    worker_extras = _worker_extras(selected_backend, gpu=selected_gpu)
     runtime = repo_root / ".runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     transaction_marker = runtime / SETUP_TRANSACTION_MARKER
@@ -259,6 +344,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         "schema_version": 1,
         "irodori_backend": selected_backend,
         "worker_backends": worker_extras,
+        "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
         "environment_contract": environment_contract(repo_root),
@@ -282,12 +368,28 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         worker(repo_root, name).sync(repo_root, extra=worker_extras[name])
         synced.append(name)
 
+    if selected_gpu is not None:
+        runtime_preflight = run_cuda_preflight(
+            repo_root,
+            irodori_project=irodori,
+            gpu=selected_gpu,
+            worker_backends=worker_extras,
+        )
+    else:
+        runtime_preflight = {
+            "ok": True,
+            "skipped": True,
+            "reason": f"backend {selected_backend} does not use the audited NVIDIA CUDA stack",
+        }
+
     setup_state = {
         "irodori_backend": selected_backend,
         "worker_backends": worker_extras,
+        "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
         "environment_contract": environment_contract(repo_root),
+        "runtime_preflight": runtime_preflight,
         "model_assets": {
             "irodori_model_sha256": IRODORI_MODEL_SHA256,
             "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,

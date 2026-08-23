@@ -9,6 +9,7 @@ from uuid import uuid4
 from personavoice.environment_contract import require_current_environment
 from personavoice.model_assets import SEED_VC_SOURCE_REVISION
 from personavoice.process import run, run_json
+from personavoice.runtime_dependencies import ffmpeg_environment
 from personavoice.worker_contracts import validate_worker_response
 
 
@@ -38,6 +39,19 @@ def _require_seed_vc_vendor_integrity(repo_root: Path) -> Path:
     return path
 
 
+def _asr_device_environment(setup: dict[str, Any]) -> dict[str, str]:
+    """Keep ASR on CPU when setup selected a non-NVIDIA backend.
+
+    CTranslate2 is intentionally runtime-adaptive for audited NVIDIA backends,
+    but an explicit CPU/ROCm/XPU setup must not start using an unrelated visible
+    NVIDIA GPU merely because the driver is installed.
+    """
+
+    if setup.get("irodori_backend") in {"cu126", "cu128"}:
+        return {}
+    return {"CUDA_VISIBLE_DEVICES": ""}
+
+
 @dataclass(frozen=True)
 class Worker:
     name: str
@@ -55,7 +69,7 @@ class Worker:
         # Every model worker executes from an isolated `.venv` with --no-sync.
         # Refuse to run it unless setup.json proves that environment was synced
         # from the exact dependency declarations and audited locks in this checkout.
-        require_current_environment(repo_root)
+        setup = require_current_environment(repo_root, worker_name=self.name)
         if self.name == "seed_vc":
             _require_seed_vc_vendor_integrity(repo_root)
 
@@ -65,6 +79,8 @@ class Worker:
         request_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         try:
             env = local_model_env(repo_root, offline=offline)
+            if self.name == "asr":
+                env.update(_asr_device_environment(setup))
             result = run_json(
                 [
                     "uv",
@@ -114,6 +130,10 @@ def local_model_env(repo_root: Path, *, offline: bool = True) -> dict[str, str]:
         "MODELSCOPE_CACHE": str((repo_root / "models" / "modelscope-cache").resolve()),
         "PERSONAVOICE_ROOT": str(repo_root.resolve()),
         "TOKENIZERS_PARALLELISM": "false",
+        # Make CUDA ordinal mapping deterministic across nvidia-smi/setup and all
+        # model subprocesses. CUDA_VISIBLE_DEVICES is preserved by process.run.
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        **ffmpeg_environment(),
     }
     if offline:
         env.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
