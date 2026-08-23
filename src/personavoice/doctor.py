@@ -338,6 +338,11 @@ def report(
     setup = _setup_state(repo_root)
     environment = environment_contract_status(repo_root, setup.get("environment_contract"))
     runtime_hardware = runtime_hardware_status(setup)
+    seed_vc_runtime_hardware = (
+        runtime_hardware_status(setup, worker_name="seed_vc")
+        if require_seed_vc
+        else {"ok": True, "skipped": True, "reason": "Seed-VC is not required"}
+    )
     model_assets = _model_asset_integrity(
         repo_root,
         setup,
@@ -422,6 +427,7 @@ def report(
         and bool(model_assets.get("ok"))
         and bool(environment.get("ok"))
         and bool(runtime_hardware.get("ok"))
+        and bool(seed_vc_runtime_hardware.get("ok"))
     )
     base_ready = (
         commands_ok
@@ -441,6 +447,7 @@ def report(
         "setup": setup,
         "environment_contract": environment,
         "runtime_hardware": runtime_hardware,
+        "seed_vc_runtime_hardware": seed_vc_runtime_hardware,
         "models": models,
         "model_asset_integrity": model_assets,
         "workers": workers,
