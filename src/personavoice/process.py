@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -228,10 +229,8 @@ def _run_json_supervised(
                 _terminate_process_tree(process)
                 # communicate() after timeout is safe to retry and preserves the
                 # already captured output according to the subprocess contract.
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired):
                     process.communicate(timeout=1)
-                except subprocess.TimeoutExpired:
-                    pass
                 raise CommandError(
                     "ASR worker made no checkpoint/progress heartbeat for "
                     f"{ASR_STALL_TIMEOUT_SECONDS // 60} minutes ({detail}). "
