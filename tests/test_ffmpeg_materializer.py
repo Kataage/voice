@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import shutil
 import zipfile
@@ -29,6 +30,7 @@ def _fake_shared_archive(
         f"{root}/bin/avfilter-11.dll": b"avfilter",
         f"{root}/bin/swresample-6.dll": b"swresample",
         f"{root}/bin/swscale-9.dll": b"swscale",
+        f"{root}/bin/helper-runtime.dll": b"helper",
     }
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as bundle:
         for name, data in files.items():
@@ -63,6 +65,15 @@ def _download_from(source: Path):
     return fake_download
 
 
+def _materialize_fake_runtime(tmp_path: Path, monkeypatch) -> Path:
+    source = tmp_path / "source.zip"
+    expected_sha = _fake_shared_archive(source)
+    _windows_test_runtime(monkeypatch, tmp_path, expected_sha)
+    monkeypatch.setattr(ffmpeg_materializer, "_download_archive", _download_from(source))
+    ffmpeg_materializer.ensure_ffmpeg_runtime(tmp_path)
+    return ffmpeg_contract.pinned_bin_dir(tmp_path)
+
+
 def test_windows_setup_materializes_verified_repo_local_shared_ffmpeg(
     tmp_path: Path,
     monkeypatch,
@@ -87,6 +98,12 @@ def test_windows_setup_materializes_verified_repo_local_shared_ffmpeg(
     assert marker["schema_version"] == ffmpeg_contract.MARKER_SCHEMA_VERSION
     assert marker["source_url"] == ffmpeg_contract.WINDOWS_FFMPEG_URL
     assert marker["archive_sha256"] == expected_sha
+    assert "helper-runtime.dll" in marker["files"]
+    assert set(marker["files"]) == {
+        path.relative_to(ffmpeg_contract.pinned_bin_dir(tmp_path)).as_posix()
+        for path in ffmpeg_contract.pinned_bin_dir(tmp_path).rglob("*")
+        if path.is_file()
+    }
 
 
 def test_windows_ffmpeg_archive_checksum_mismatch_is_rejected(tmp_path: Path, monkeypatch):
@@ -98,6 +115,21 @@ def test_windows_ffmpeg_archive_checksum_mismatch_is_rejected(tmp_path: Path, mo
     with pytest.raises(RuntimeError, match="archive checksum mismatch"):
         ffmpeg_materializer.ensure_ffmpeg_runtime(tmp_path)
     assert not ffmpeg_contract.runtime_root(tmp_path).exists()
+
+
+def test_windows_ffmpeg_download_size_limit_removes_partial_file(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(ffmpeg_materializer, "_MAX_ARCHIVE_DOWNLOAD_BYTES", 8)
+    monkeypatch.setattr(ffmpeg_materializer, "_COPY_CHUNK_BYTES", 4)
+    monkeypatch.setattr(
+        ffmpeg_materializer.urllib.request,
+        "urlopen",
+        lambda _request, timeout: io.BytesIO(b"123456789"),
+    )
+    destination = tmp_path / "oversize.zip"
+
+    with pytest.raises(RuntimeError, match="download size limit"):
+        ffmpeg_materializer._download_archive("https://example.invalid/archive.zip", destination)
+    assert not destination.exists()
 
 
 def test_windows_ffmpeg_zip_traversal_is_rejected(tmp_path: Path, monkeypatch):
@@ -132,17 +164,49 @@ def test_windows_ffmpeg_symlink_is_rejected(tmp_path: Path, monkeypatch):
 
 
 def test_pinned_runtime_detects_post_setup_critical_file_corruption(tmp_path: Path, monkeypatch):
-    source = tmp_path / "source.zip"
-    expected_sha = _fake_shared_archive(source)
-    _windows_test_runtime(monkeypatch, tmp_path, expected_sha)
-    monkeypatch.setattr(ffmpeg_materializer, "_download_archive", _download_from(source))
-    ffmpeg_materializer.ensure_ffmpeg_runtime(tmp_path)
-
-    (ffmpeg_contract.pinned_bin_dir(tmp_path) / "avcodec-62.dll").write_bytes(b"corrupted")
+    bin_dir = _materialize_fake_runtime(tmp_path, monkeypatch)
+    (bin_dir / "avcodec-62.dll").write_bytes(b"corrupted")
 
     status = ffmpeg_contract.validate_pinned_runtime(tmp_path)
     assert status["ok"] is False
     assert any("checksum mismatch" in str(error) for error in status["errors"])
+
+
+def test_pinned_runtime_detects_noncritical_dependency_corruption(tmp_path: Path, monkeypatch):
+    bin_dir = _materialize_fake_runtime(tmp_path, monkeypatch)
+    (bin_dir / "helper-runtime.dll").write_bytes(b"corrupted-helper")
+
+    status = ffmpeg_contract.validate_pinned_runtime(tmp_path)
+    assert status["ok"] is False
+    assert any(
+        "helper-runtime.dll" in str(error) and "checksum mismatch" in str(error)
+        for error in status["errors"]
+    )
+
+
+def test_pinned_runtime_rejects_post_setup_untracked_file(tmp_path: Path, monkeypatch):
+    bin_dir = _materialize_fake_runtime(tmp_path, monkeypatch)
+    (bin_dir / "injected.dll").write_bytes(b"injected")
+
+    status = ffmpeg_contract.validate_pinned_runtime(tmp_path)
+    assert status["ok"] is False
+    assert any("untracked file: injected.dll" in str(error) for error in status["errors"])
+
+
+def test_pinned_runtime_rejects_filesystem_symlink_or_junction(tmp_path: Path, monkeypatch):
+    bin_dir = _materialize_fake_runtime(tmp_path, monkeypatch)
+    injected = bin_dir / "injected-link.dll"
+    injected.write_bytes(b"placeholder")
+    original = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda self: self == injected or original(self),
+    )
+
+    status = ffmpeg_contract.validate_pinned_runtime(tmp_path)
+    assert status["ok"] is False
+    assert any("symlink/junction" in str(error) for error in status["errors"])
 
 
 def test_pinned_runtime_rejects_unsafe_marker_path_without_reading_outside_bin(
