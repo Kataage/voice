@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from personavoice import ffmpeg_materializer, runtime_dependencies
+from pathlib import Path
+
+from personavoice import ffmpeg_contract, ffmpeg_materializer, runtime_dependencies
 
 
 def test_non_x64_windows_accepts_valid_explicit_ffmpeg_override(tmp_path, monkeypatch):
@@ -42,3 +44,23 @@ def test_non_x64_windows_auto_materializer_fails_before_download(tmp_path, monke
     else:
         raise AssertionError("non-x64 automatic materialization must fail closed")
     assert called is False
+
+
+def test_windows_ffmpeg_contract_is_fixed_to_audited_winget_release():
+    assert ffmpeg_contract.WINDOWS_FFMPEG_VERSION == "8.1.1"
+    assert ffmpeg_contract.WINDOWS_FFMPEG_URL == (
+        "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/"
+        "ffmpeg-8.1.1-full_build-shared.zip"
+    )
+    assert ffmpeg_contract.WINDOWS_FFMPEG_ARCHIVE_SHA256 == (
+        "4296b396bdfd5fbc3dfc75ab4c8703354a56963232d65c4182993543df2d2f45"
+    )
+
+
+def test_windows_bootstrap_never_installs_machine_wide_ffmpeg():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts" / "bootstrap.ps1").read_text(encoding="utf-8")
+    lowered = text.casefold()
+    assert "winget install" not in lowered
+    assert "gyan.ffmpeg.shared" not in lowered
+    assert "persona setup --backend auto" in lowered
