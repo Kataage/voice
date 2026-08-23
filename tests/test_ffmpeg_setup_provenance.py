@@ -11,6 +11,17 @@ from personavoice.atomic import atomic_write_json
 
 def _runtime(root: Path, *, source: str, name: str) -> runtime_dependencies.FfmpegRuntime:
     bin_dir = root / name
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (bin_dir / "ffmpeg.exe").write_bytes(b"ffmpeg-generation-1")
+    (bin_dir / "ffprobe.exe").write_bytes(b"ffprobe-generation-1")
+    for dll in (
+        "avutil-60.dll",
+        "avcodec-62.dll",
+        "avformat-62.dll",
+        "swresample-6.dll",
+        "swscale-9.dll",
+    ):
+        (bin_dir / dll).write_bytes(f"{dll}-generation-1".encode())
     return runtime_dependencies.FfmpegRuntime(
         ffmpeg=str(bin_dir / "ffmpeg.exe"),
         ffprobe=str(bin_dir / "ffprobe.exe"),
@@ -31,6 +42,9 @@ def test_setup_records_exact_ffmpeg_runtime_provenance(tmp_path: Path, monkeypat
     assert ffmpeg_materializer.ensure_ffmpeg_runtime(tmp_path) is expected
     recorded = runtime_dependencies.recorded_ffmpeg_provenance(tmp_path)
     assert recorded == runtime_dependencies.ffmpeg_provenance(expected)
+    assert recorded is not None
+    assert recorded["critical_sha256"]["ffmpeg"]
+    assert recorded["critical_sha256"]["ffprobe"]
 
 
 def test_missing_pinned_runtime_cannot_silently_fall_back_to_path(
@@ -44,6 +58,20 @@ def test_missing_pinned_runtime_cannot_silently_fall_back_to_path(
         runtime_dependencies.ffmpeg_provenance(pinned),
     )
     monkeypatch.setattr(runtime_dependencies, "ffmpeg_runtime", lambda: fallback)
+
+    status = runtime_dependencies.ffmpeg_provenance_status(tmp_path)
+    assert status["ok"] is False
+    assert "changed after PersonaVoice setup" in str(status["error"])
+
+
+def test_in_place_ffmpeg_binary_change_is_detected(tmp_path: Path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path, source="PATH", name="system-bin")
+    atomic_write_json(
+        runtime_dependencies.ffmpeg_provenance_path(tmp_path),
+        runtime_dependencies.ffmpeg_provenance(runtime),
+    )
+    monkeypatch.setattr(runtime_dependencies, "ffmpeg_runtime", lambda: runtime)
+    Path(runtime.ffmpeg).write_bytes(b"ffmpeg-generation-2")
 
     status = runtime_dependencies.ffmpeg_provenance_status(tmp_path)
     assert status["ok"] is False
