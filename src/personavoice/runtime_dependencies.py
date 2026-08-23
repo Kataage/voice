@@ -104,6 +104,23 @@ def ffmpeg_provenance(runtime: FfmpegRuntime) -> dict[str, object]:
     }
 
 
+def ffmpeg_provenance_path(repo_root: Path) -> Path:
+    return repo_root / ".runtime" / FFMPEG_SETUP_PROVENANCE
+
+
+def recorded_ffmpeg_provenance(repo_root: Path) -> dict[str, object] | None:
+    path = ffmpeg_provenance_path(repo_root)
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    return value
+
+
 def _version_major(executable: Path) -> int | None:
     try:
         completed = subprocess.run(
@@ -229,7 +246,14 @@ def _incompatibility(runtime: FfmpegRuntime) -> FfmpegRuntime:
     )
 
 
-def ffmpeg_runtime() -> FfmpegRuntime:
+def _discover_ffmpeg_runtime() -> FfmpegRuntime:
+    """Discover a compatible runtime without consulting setup provenance.
+
+    Setup uses this raw resolver so a changed runtime can be deliberately
+    re-authorized. Normal runtime code uses :func:`ffmpeg_runtime`, which binds
+    discovery to the exact generation recorded by the last successful setup.
+    """
+
     explicit = os.getenv("PERSONAVOICE_FFMPEG_BIN")
     if explicit:
         runtime = _candidate_runtime(Path(explicit).expanduser(), "PERSONAVOICE_FFMPEG_BIN")
@@ -329,33 +353,11 @@ def ffmpeg_runtime() -> FfmpegRuntime:
     )
 
 
-def require_ffmpeg_runtime() -> FfmpegRuntime:
-    runtime = ffmpeg_runtime()
-    if runtime.ffmpeg is None or runtime.ffprobe is None or not runtime.torchcodec_compatible:
-        raise RuntimeError(runtime.error or "A compatible FFmpeg runtime is required")
-    return runtime
-
-
-def ffmpeg_provenance_path(repo_root: Path) -> Path:
-    return repo_root / ".runtime" / FFMPEG_SETUP_PROVENANCE
-
-
-def recorded_ffmpeg_provenance(repo_root: Path) -> dict[str, object] | None:
-    path = ffmpeg_provenance_path(repo_root)
-    if not path.is_file():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(value, dict):
-        return None
-    return value
-
-
-def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
+def _provenance_status_for_runtime(
+    repo_root: Path,
+    current_runtime: FfmpegRuntime,
+) -> dict[str, object]:
     recorded = recorded_ffmpeg_provenance(repo_root)
-    current_runtime = ffmpeg_runtime()
     try:
         current = ffmpeg_provenance(current_runtime)
     except RuntimeError as exc:
@@ -402,17 +404,42 @@ def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
     return {"ok": True, "recorded": recorded, "current": current, "error": None}
 
 
-def _require_recorded_ffmpeg_for_command() -> None:
+def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
+    return _provenance_status_for_runtime(repo_root, _discover_ffmpeg_runtime())
+
+
+def _blocked_runtime(runtime: FfmpegRuntime, error: str) -> FfmpegRuntime:
+    return FfmpegRuntime(
+        ffmpeg=None,
+        ffprobe=None,
+        bin_dir=runtime.bin_dir,
+        version_major=runtime.version_major,
+        shared_libraries=runtime.shared_libraries,
+        torchcodec_compatible=False,
+        source=runtime.source,
+        error=error,
+    )
+
+
+def ffmpeg_runtime() -> FfmpegRuntime:
+    runtime = _discover_ffmpeg_runtime()
     repo_root = _repo_root_if_available()
     if repo_root is None or not (repo_root / ".runtime" / "setup.json").is_file():
-        return
-    status = ffmpeg_provenance_status(repo_root)
+        return runtime
+    status = _provenance_status_for_runtime(repo_root, runtime)
     if not status["ok"]:
-        raise RuntimeError(str(status["error"]))
+        return _blocked_runtime(runtime, str(status["error"]))
+    return runtime
+
+
+def require_ffmpeg_runtime() -> FfmpegRuntime:
+    runtime = ffmpeg_runtime()
+    if runtime.ffmpeg is None or runtime.ffprobe is None or not runtime.torchcodec_compatible:
+        raise RuntimeError(runtime.error or "A compatible FFmpeg runtime is required")
+    return runtime
 
 
 def command(name: str) -> str:
-    _require_recorded_ffmpeg_for_command()
     runtime = require_ffmpeg_runtime()
     if name == "ffmpeg" and runtime.ffmpeg:
         return runtime.ffmpeg
@@ -422,14 +449,12 @@ def command(name: str) -> str:
 
 
 def ffmpeg_environment() -> dict[str, str]:
-    runtime = ffmpeg_runtime()
-    if not runtime.bin_dir:
-        return {}
+    runtime = require_ffmpeg_runtime()
     path = os.environ.get("PATH", "")
-    entries = [runtime.bin_dir]
+    entries = [runtime.bin_dir] if runtime.bin_dir else []
     if path:
         entries.append(path)
-    return {
-        "PERSONAVOICE_FFMPEG_BIN": runtime.bin_dir,
-        "PATH": os.pathsep.join(entries),
-    }
+    result = {"PATH": os.pathsep.join(entries)} if entries else {}
+    if runtime.bin_dir:
+        result["PERSONAVOICE_FFMPEG_BIN"] = runtime.bin_dir
+    return result
