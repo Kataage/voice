@@ -172,16 +172,16 @@ def test_runtime_hardware_rejects_cuda_state_when_gpu_disappears(monkeypatch):
     assert status["preferred_backend"] == "cpu"
 
 
-def test_runtime_hardware_blocks_stale_seed_vc_gpu_stack_on_blackwell(monkeypatch):
+def test_runtime_hardware_blocks_only_stale_seed_vc_stack_on_blackwell(monkeypatch):
     blackwell = _gpu(0, "12.0", name="Blackwell GPU")
     monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(env_contract, "selected_nvidia_gpu", lambda: blackwell)
-    status = env_contract.runtime_hardware_status(
-        {
-            "irodori_backend": "cu128",
-            "worker_backends": {"seed_vc": "cu124"},
-        }
-    )
+    setup = {
+        "irodori_backend": "cu128",
+        "worker_backends": {"seed_vc": "cu124"},
+    }
+    assert env_contract.runtime_hardware_status(setup)["ok"] is True
+    status = env_contract.runtime_hardware_status(setup, worker_name="seed_vc")
     assert status["ok"] is False
     assert status["preferred_backend"] == "cu128"
     assert status["preferred_seed_vc_backend"] == "cpu"

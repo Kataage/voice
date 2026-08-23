@@ -164,12 +164,13 @@ def test_direct_runtime_accepts_compatible_gpu_swap(tmp_path, monkeypatch):
     assert environment.require_current_environment(tmp_path) == setup
 
 
-def test_direct_runtime_rejects_legacy_seed_vc_after_blackwell_swap(tmp_path, monkeypatch):
+def test_direct_runtime_only_blocks_seed_vc_after_blackwell_swap(tmp_path, monkeypatch):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
-    _write_setup(tmp_path, "cu128", seed_vc_backend="cu124")
+    setup = _write_setup(tmp_path, "cu128", seed_vc_backend="cu124")
     monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("12.0"))
+    assert environment.require_current_environment(tmp_path) == setup
     with pytest.raises(RuntimeError, match="Seed-VC was set up for cu124"):
-        environment.require_current_environment(tmp_path)
+        environment.require_current_environment(tmp_path, worker_name="seed_vc")
 
 
 def test_direct_runtime_accepts_blackwell_when_seed_vc_is_cpu(tmp_path, monkeypatch):

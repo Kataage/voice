@@ -127,7 +127,7 @@ def test_worker_call_rejects_invalid_subprocess_result_before_return(tmp_path: P
     monkeypatch.setattr(
         workers,
         "require_current_environment",
-        lambda _root: {"irodori_backend": "cpu"},
+        lambda _root, **_kwargs: {"irodori_backend": "cpu"},
     )
     monkeypatch.setattr(
         workers,
@@ -196,7 +196,7 @@ def test_seed_vc_worker_call_runs_vendor_preflight_before_subprocess(tmp_path: P
     monkeypatch.setattr(
         workers,
         "require_current_environment",
-        lambda _root: {"irodori_backend": "cpu"},
+        lambda _root, **_kwargs: {"irodori_backend": "cpu"},
     )
     monkeypatch.setattr(
         workers,

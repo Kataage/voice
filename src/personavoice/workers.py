@@ -69,7 +69,7 @@ class Worker:
         # Every model worker executes from an isolated `.venv` with --no-sync.
         # Refuse to run it unless setup.json proves that environment was synced
         # from the exact dependency declarations and audited locks in this checkout.
-        setup = require_current_environment(repo_root)
+        setup = require_current_environment(repo_root, worker_name=self.name)
         if self.name == "seed_vc":
             _require_seed_vc_vendor_integrity(repo_root)
 

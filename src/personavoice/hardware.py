@@ -141,6 +141,10 @@ def selected_nvidia_gpu(gpus: list[GpuInfo] | None = None) -> GpuInfo | None:
     return candidates[logical_index]
 
 
+def gpu_record(gpu: GpuInfo | None) -> dict | None:
+    return asdict(gpu) if gpu is not None else None
+
+
 def _host_arch() -> str:
     value = platform.machine().lower()
     if value in {"amd64", "x86_64", "x64"}:

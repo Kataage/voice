@@ -14,6 +14,7 @@ from personavoice.hardware import (
     backend_supports_gpu,
     cuda_backend_for_gpu,
     detect_irodori_backend,
+    gpu_record,
     seed_vc_cuda_supported,
     selected_nvidia_gpu,
 )
@@ -334,6 +335,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         raise ValueError(f"Unsupported Irodori backend {selected_backend!r}; choose one of: {expected}")
 
     selected_gpu = _validate_cuda_backend(selected_backend)
+    selected_gpu_state = gpu_record(selected_gpu)
     worker_extras = _worker_extras(selected_backend, gpu=selected_gpu)
     runtime = repo_root / ".runtime"
     runtime.mkdir(parents=True, exist_ok=True)
@@ -342,6 +344,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         "schema_version": 1,
         "irodori_backend": selected_backend,
         "worker_backends": worker_extras,
+        "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
         "environment_contract": environment_contract(repo_root),
@@ -382,6 +385,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     setup_state = {
         "irodori_backend": selected_backend,
         "worker_backends": worker_extras,
+        "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
         "environment_contract": environment_contract(repo_root),

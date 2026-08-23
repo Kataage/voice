@@ -189,7 +189,7 @@ def test_environment_contract_changes_with_seed_vc_asset_contract(tmp_path: Path
     path.write_text(json.dumps(value), encoding="utf-8")
     second = environment_contract(tmp_path)
 
-    assert first["schema"] == 3
+    assert first["schema"] == 4
     assert first["seed_vc"]["asset_contract_sha256"] != second["seed_vc"][
         "asset_contract_sha256"
     ]

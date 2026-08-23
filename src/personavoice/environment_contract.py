@@ -13,7 +13,7 @@ from personavoice.hardware import (
 )
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-ENVIRONMENT_CONTRACT_SCHEMA = 3
+ENVIRONMENT_CONTRACT_SCHEMA = 4
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -61,6 +61,17 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
         "seed_vc": {
             "asset_contract_sha256": _sha256(repo_root / "config" / "seed_vc_assets.json"),
         },
+        "runtime_policy": {
+            "hardware_sha256": _sha256(repo_root / "src" / "personavoice" / "hardware.py"),
+            "setup_sha256": _sha256(repo_root / "src" / "personavoice" / "setup_env.py"),
+            "runtime_dependencies_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "runtime_dependencies.py"
+            ),
+            "workers_sha256": _sha256(repo_root / "src" / "personavoice" / "workers.py"),
+            "asr_runtime_policy_sha256": _sha256(
+                repo_root / "workers" / "asr" / "runtime_policy.py"
+            ),
+        },
         "workers": workers,
     }
 
@@ -103,7 +114,11 @@ def _selected_gpu_dict(gpu) -> dict[str, Any]:
     }
 
 
-def runtime_hardware_status(setup: Any) -> dict[str, Any]:
+def runtime_hardware_status(
+    setup: Any,
+    *,
+    worker_name: str | None = None,
+) -> dict[str, Any]:
     """Verify every recorded CUDA environment against the current visible GPU.
 
     Hardware is deliberately not part of the dependency hash: a compatible GPU
@@ -125,7 +140,7 @@ def runtime_hardware_status(setup: Any) -> dict[str, Any]:
     seed_vc_backend = worker_backends.get("seed_vc")
 
     main_cuda = backend in {"cu126", "cu128"}
-    seed_cuda = seed_vc_backend == "cu124"
+    seed_cuda = worker_name == "seed_vc" and seed_vc_backend == "cu124"
     if not main_cuda and not seed_cuda:
         return {
             "ok": True,
@@ -203,7 +218,11 @@ def runtime_hardware_status(setup: Any) -> dict[str, Any]:
     }
 
 
-def require_current_environment(repo_root: Path) -> dict[str, Any]:
+def require_current_environment(
+    repo_root: Path,
+    *,
+    worker_name: str | None = None,
+) -> dict[str, Any]:
     """Return setup state only when dependency and current-hardware contracts are valid."""
 
     setup_path = repo_root / ".runtime" / "setup.json"
@@ -225,7 +244,7 @@ def require_current_environment(repo_root: Path) -> dict[str, Any]:
     status = environment_contract_status(repo_root, setup.get("environment_contract"))
     if not status["ok"]:
         raise RuntimeError(str(status["error"]))
-    hardware = runtime_hardware_status(setup)
+    hardware = runtime_hardware_status(setup, worker_name=worker_name)
     if not hardware["ok"]:
         raise RuntimeError(str(hardware["error"]))
     return setup
