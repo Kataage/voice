@@ -34,6 +34,8 @@ jobs:
           python scripts/_ci_post_pr14_hardening.py
       - name: Sync root test environment
         run: uv sync --dev --locked
+      - name: Normalize deterministic import formatting
+        run: uv run --locked ruff check --fix src/personavoice/ffmpeg_materializer.py
       - name: Ruff
         run: uv run --locked ruff check src tests workers
       - name: Unit tests
