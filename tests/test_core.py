@@ -377,7 +377,7 @@ def test_synthesize_forwards_cfg_and_checks_output(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(inference, "base_checkpoint", lambda _root: base)
     monkeypatch.setattr(inference, "codec_checkpoint", lambda _root: codec)
     monkeypatch.setattr(inference, "configured_backend", lambda _root: "cpu")
-    monkeypatch.setattr(inference, "nvidia_gpus", lambda: [])
+    monkeypatch.setattr(inference, "selected_nvidia_gpu", lambda: None)
 
     def fake_run(args, **_kwargs):
         argv = [str(value) for value in args]

@@ -14,17 +14,37 @@ import torch
 if not torch.cuda.is_available():
     raise RuntimeError("torch.cuda.is_available() is false in the synced CUDA environment")
 capability = torch.cuda.get_device_capability(0)
+
+def finite(value, label):
+    if not bool(torch.isfinite(value).all().item()):
+        raise RuntimeError(f"{label} CUDA smoke kernel produced a non-finite result")
+
 values = torch.arange(1, 1025, dtype=torch.float32, device="cuda")
-result = (values.square() + 1.0).sum()
-if not torch.isfinite(result):
-    raise RuntimeError("CUDA smoke kernel produced a non-finite result")
+fp32_result = (values.square() + 1.0).sum()
+finite(fp32_result, "float32")
+
+fp16_left = torch.randn((16, 16), dtype=torch.float16, device="cuda")
+fp16_right = torch.randn((16, 16), dtype=torch.float16, device="cuda")
+fp16_result = (fp16_left @ fp16_right).float().abs().mean()
+finite(fp16_result, "float16")
+
+bf16_value = None
+if capability >= (8, 0):
+    bf16_left = torch.randn((16, 16), dtype=torch.bfloat16, device="cuda")
+    bf16_right = torch.randn((16, 16), dtype=torch.bfloat16, device="cuda")
+    bf16_result = (bf16_left @ bf16_right).float().abs().mean()
+    finite(bf16_result, "bfloat16")
+    bf16_value = float(bf16_result.item())
+
 torch.cuda.synchronize()
 print(json.dumps({
     "torch": str(torch.__version__),
     "device_name": str(torch.cuda.get_device_name(0)),
     "compute_capability": [int(capability[0]), int(capability[1])],
     "arch_list": list(torch.cuda.get_arch_list()),
-    "smoke_value": float(result.item()),
+    "fp32_smoke": float(fp32_result.item()),
+    "fp16_smoke": float(fp16_result.item()),
+    "bf16_smoke": bf16_value,
 }))
 '''
 
