@@ -408,7 +408,13 @@ def batch_transcribe(payload: dict) -> dict:
         last_heartbeat = monotonic()
         last_media_heartbeat = 0.0
 
-        def heartbeat(processed_seconds: float, segment_count: int) -> None:
+        def heartbeat(
+            processed_seconds: float,
+            segment_count: int,
+            completed_index: int = index,
+            failed_count: int = failed,
+            source_id: str = item_id,
+        ) -> None:
             nonlocal last_heartbeat, last_media_heartbeat
             now = monotonic()
             if (
@@ -421,10 +427,10 @@ def batch_transcribe(payload: dict) -> dict:
                 worker_name="asr",
                 command="batch_transcribe",
                 phase="transcribe",
-                completed=index,
+                completed=completed_index,
                 total=total,
-                failed=failed,
-                current_id=item_id,
+                failed=failed_count,
+                current_id=source_id,
                 state="running",
                 detail={
                     **runtime_detail,
