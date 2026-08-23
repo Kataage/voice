@@ -62,6 +62,9 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
             "asset_contract_sha256": _sha256(repo_root / "config" / "seed_vc_assets.json"),
         },
         "runtime_policy": {
+            "environment_contract_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "environment_contract.py"
+            ),
             "hardware_sha256": _sha256(repo_root / "src" / "personavoice" / "hardware.py"),
             "irodori_sha256": _sha256(repo_root / "src" / "personavoice" / "irodori.py"),
             "inference_sha256": _sha256(repo_root / "src" / "personavoice" / "inference.py"),
@@ -233,6 +236,30 @@ def runtime_hardware_status(
                     "The physical CUDA GPU selected as device 0 changed after setup. "
                     "Run `persona setup --backend auto` to rebuild/reuse the appropriate locked "
                     "environments and rerun the real CUDA kernel preflight before model work."
+                ),
+            }
+        recorded_capability = recorded_gpu.get("compute_capability")
+        current_capability = gpu.compute_capability
+        if (
+            not isinstance(recorded_capability, str)
+            or not recorded_capability
+            or not isinstance(current_capability, str)
+            or not current_capability
+            or recorded_capability != current_capability
+        ):
+            return {
+                "ok": False,
+                "backend": backend,
+                "seed_vc_backend": seed_vc_backend,
+                "selected_gpu": selected,
+                "preferred_backend": cuda_backend_for_gpu(gpu),
+                "preferred_seed_vc_backend": (
+                    "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "error": (
+                    "The selected NVIDIA GPU compute capability changed after the CUDA "
+                    "environments were preflighted. Run `persona setup --backend auto` to "
+                    "rerun the real CUDA kernel preflight before model work."
                 ),
             }
         recorded_driver = recorded_gpu.get("driver_version")
