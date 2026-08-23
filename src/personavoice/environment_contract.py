@@ -13,7 +13,7 @@ from personavoice.hardware import (
 )
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-ENVIRONMENT_CONTRACT_SCHEMA = 4
+ENVIRONMENT_CONTRACT_SCHEMA = 5
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -68,6 +68,12 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
             "setup_sha256": _sha256(repo_root / "src" / "personavoice" / "setup_env.py"),
             "runtime_dependencies_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "runtime_dependencies.py"
+            ),
+            "ffmpeg_contract_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "ffmpeg_contract.py"
+            ),
+            "ffmpeg_materializer_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "ffmpeg_materializer.py"
             ),
             "cuda_preflight_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "cuda_preflight.py"
