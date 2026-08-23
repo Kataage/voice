@@ -51,10 +51,14 @@ print(json.dumps({
 _ASR_PROBE = r'''
 import ctypes
 import json
+import os
 import sys
+from pathlib import Path
 
 import ctranslate2
 from runtime_policy import choose_compute_type
+
+_DLL_DIRECTORY_HANDLES = []
 
 
 def require_status(status, label):
@@ -63,7 +67,43 @@ def require_status(status, label):
         raise RuntimeError(f"{label} failed with native status {value}")
 
 
+def runtime_directories():
+    raw = os.environ.get("PERSONAVOICE_ASR_CUDA_RUNTIME_DIRS", "")
+    directories = []
+    seen = set()
+    for value in raw.split(os.pathsep):
+        if not value:
+            continue
+        path = Path(value)
+        if not path.is_absolute():
+            raise RuntimeError(
+                "PERSONAVOICE_ASR_CUDA_RUNTIME_DIRS contains a non-absolute path"
+            )
+        resolved = path.resolve(strict=False)
+        if not resolved.is_dir():
+            raise RuntimeError(f"Audited ASR CUDA runtime directory is missing: {resolved}")
+        key = os.path.normcase(str(resolved))
+        if key in seen:
+            continue
+        seen.add(key)
+        directories.append(resolved)
+    if not directories:
+        raise RuntimeError(
+            "Audited ASR CUDA runtime directories were not supplied to the preflight process"
+        )
+    return directories
+
+
+def library_path(directories, name):
+    for directory in directories:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError(f"Audited ASR CUDA runtime is missing required library: {name}")
+
+
 def native_cuda_smoke():
+    directories = runtime_directories()
     if sys.platform == "win32":
         names = [
             "cublas64_12.dll",
@@ -77,13 +117,26 @@ def native_cuda_smoke():
             "cudnn_ops64_9.dll",
             "cudnn64_9.dll",
         ]
-        libraries = {name: ctypes.WinDLL(name) for name in names}
+        # Python 3.8+ deliberately uses a secure Windows DLL search policy for
+        # ctypes. PATH alone is therefore not a valid proof that the audited
+        # runtime can be loaded. Register the exact setup-provided directories
+        # for dependency resolution and open every top-level DLL by absolute path.
+        add_directory = getattr(os, "add_dll_directory", None)
+        if add_directory is None:
+            raise RuntimeError("Python does not expose os.add_dll_directory on Windows")
+        _DLL_DIRECTORY_HANDLES.extend(add_directory(str(path)) for path in directories)
+        libraries = {
+            name: ctypes.WinDLL(str(library_path(directories, name))) for name in names
+        }
         cublas = libraries["cublas64_12.dll"]
         cudnn = libraries["cudnn64_9.dll"]
     elif sys.platform.startswith("linux"):
         names = ["libcublas.so.12", "libcudnn.so.9"]
         libraries = {
-            name: ctypes.CDLL(name, mode=getattr(ctypes, "RTLD_GLOBAL", 0))
+            name: ctypes.CDLL(
+                str(library_path(directories, name)),
+                mode=getattr(ctypes, "RTLD_GLOBAL", 0),
+            )
             for name in names
         }
         cublas = libraries["libcublas.so.12"]
