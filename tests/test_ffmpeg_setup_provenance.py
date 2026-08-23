@@ -37,7 +37,7 @@ def _runtime(root: Path, *, source: str, name: str) -> runtime_dependencies.Ffmp
 def test_setup_records_exact_ffmpeg_runtime_provenance(tmp_path: Path, monkeypatch) -> None:
     expected = _runtime(tmp_path, source="PATH", name="system-bin")
     monkeypatch.setattr(ffmpeg_materializer.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(ffmpeg_materializer, "require_ffmpeg_runtime", lambda: expected)
+    monkeypatch.setattr(ffmpeg_materializer, "_discover_ffmpeg_runtime", lambda: expected)
 
     assert ffmpeg_materializer.ensure_ffmpeg_runtime(tmp_path) is expected
     recorded = runtime_dependencies.recorded_ffmpeg_provenance(tmp_path)

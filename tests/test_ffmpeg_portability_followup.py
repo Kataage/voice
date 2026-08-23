@@ -91,6 +91,38 @@ def test_windows_ffmpeg_contract_is_fixed_to_audited_winget_release():
     )
 
 
+
+def test_non_windows_setup_can_reauthorize_changed_ffmpeg(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "ffmpeg-bin"
+    bin_dir.mkdir()
+    ffmpeg = bin_dir / "ffmpeg"
+    ffprobe = bin_dir / "ffprobe"
+    ffmpeg.write_bytes(b"new-ffmpeg-generation")
+    ffprobe.write_bytes(b"new-ffprobe-generation")
+    discovered = runtime_dependencies.FfmpegRuntime(
+        ffmpeg=str(ffmpeg),
+        ffprobe=str(ffprobe),
+        bin_dir=str(bin_dir),
+        version_major=8,
+        shared_libraries=True,
+        torchcodec_compatible=True,
+        source="PATH",
+        error=None,
+    )
+    monkeypatch.setattr(ffmpeg_materializer.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        ffmpeg_materializer,
+        "_discover_ffmpeg_runtime",
+        lambda: discovered,
+    )
+
+    result = ffmpeg_materializer.ensure_ffmpeg_runtime(tmp_path)
+    assert result is discovered
+    assert runtime_dependencies.recorded_ffmpeg_provenance(tmp_path) == (
+        runtime_dependencies.ffmpeg_provenance(discovered)
+    )
+
+
 def test_windows_bootstrap_never_installs_or_requires_ffmpeg_before_setup():
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts" / "bootstrap.ps1").read_text(encoding="utf-8")

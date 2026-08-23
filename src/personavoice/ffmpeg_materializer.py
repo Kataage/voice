@@ -28,6 +28,7 @@ from personavoice.ffmpeg_contract import (
 from personavoice.runtime_dependencies import (
     FfmpegRuntime,
     _candidate_runtime,
+    _discover_ffmpeg_runtime,
     ffmpeg_provenance,
     ffmpeg_provenance_path,
     require_ffmpeg_runtime,
@@ -289,7 +290,17 @@ def ensure_ffmpeg_runtime(repo_root: Path) -> FfmpegRuntime:
     if platform.system() == "Windows":
         runtime = materialize_windows_ffmpeg(repo_root)
     else:
-        runtime = require_ffmpeg_runtime()
+        # Setup is the authorization boundary. Use raw discovery here so a
+        # deliberate system/override FFmpeg upgrade can be validated and
+        # recorded instead of being rejected against the previous setup's
+        # provenance. Normal runtime paths still use require_ffmpeg_runtime.
+        runtime = _discover_ffmpeg_runtime()
+        if (
+            runtime.ffmpeg is None
+            or runtime.ffprobe is None
+            or not runtime.torchcodec_compatible
+        ):
+            raise RuntimeError(runtime.error or "A compatible FFmpeg runtime is required")
     provenance = ffmpeg_provenance(runtime)
     atomic_write_json(ffmpeg_provenance_path(repo_root), provenance)
     return runtime
