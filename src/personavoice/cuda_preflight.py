@@ -131,14 +131,16 @@ cuda_types = []
 cuda_error = None
 native_runtime = {"ok": None, "skipped": True}
 if cuda_count > 0:
+    native_runtime = native_cuda_smoke()
     try:
-        native_runtime = native_cuda_smoke()
         cuda_types = sorted(set(ctranslate2.get_supported_compute_types("cuda", 0)))
         selected_compute_type = choose_compute_type("cuda", set(cuda_types), "auto")
         selected_device = "cuda"
     except (RuntimeError, OSError, ValueError) as exc:
+        # Native runtime readiness is mandatory once CUDA is enumerated, but a
+        # CTranslate2 compute-policy mismatch may still use the intentional CPU
+        # fallback on a GPU generation the ASR backend cannot execute safely.
         cuda_error = f"{type(exc).__name__}: {exc}"
-        raise
 if selected_compute_type is None:
     cpu_types = sorted(set(ctranslate2.get_supported_compute_types("cpu")))
     selected_compute_type = choose_compute_type("cpu", set(cpu_types), "auto")
