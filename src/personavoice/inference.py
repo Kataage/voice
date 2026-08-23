@@ -13,7 +13,7 @@ from personavoice.captions import (
     normalize_events,
 )
 from personavoice.config import PersonaConfig
-from personavoice.hardware import nvidia_gpus
+from personavoice.hardware import selected_nvidia_gpu
 from personavoice.irodori import (
     backend_device,
     base_checkpoint,
@@ -54,6 +54,15 @@ def _nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _safe_candidate_count(requested: int, *, backend: str) -> int:
+    """Clamp batched Irodori candidates to the actual logical CUDA device 0."""
+
+    gpu = selected_nvidia_gpu() if backend in {"cu126", "cu128"} else None
+    if gpu is None or gpu.total_mib < 16000:
+        return 1
+    return min(requested, 4)
 
 
 def _caption(style: str | None, emotion: str | None, events: list[str] | None) -> str:
@@ -205,8 +214,7 @@ def synthesize(
     requested = cfg.inference.default_candidates if candidates is None else candidates
     if requested < 1:
         raise ValueError("candidates must be at least 1")
-    gpus = nvidia_gpus() if backend == "cu128" else []
-    requested = 1 if not gpus or max(gpu.total_mib for gpu in gpus) < 16000 else min(requested, 4)
+    requested = _safe_candidate_count(requested, backend=backend)
 
     args: list[str | Path] = [
         "uv",

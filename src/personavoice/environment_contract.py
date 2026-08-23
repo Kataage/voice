@@ -63,6 +63,8 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
         },
         "runtime_policy": {
             "hardware_sha256": _sha256(repo_root / "src" / "personavoice" / "hardware.py"),
+            "irodori_sha256": _sha256(repo_root / "src" / "personavoice" / "irodori.py"),
+            "inference_sha256": _sha256(repo_root / "src" / "personavoice" / "inference.py"),
             "setup_sha256": _sha256(repo_root / "src" / "personavoice" / "setup_env.py"),
             "runtime_dependencies_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "runtime_dependencies.py"
