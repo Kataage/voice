@@ -22,7 +22,9 @@ jobs:
       - name: Install uv
         run: python -m pip install --disable-pip-version-check uv==0.12.5
       - name: Apply GPU identity/driver contract
-        run: python scripts/_ci_gpu_identity_contract.py
+        run: |
+          python scripts/_ci_gpu_identity_contract.py
+          python scripts/_ci_gpu_identity_testfix.py
       - name: Validate root suite
         run: |
           uv sync --dev --locked
@@ -32,7 +34,7 @@ jobs:
       - name: Commit GPU identity/driver contract
         shell: bash
         run: |
-          git rm scripts/_ci_gpu_identity_contract.py .github/workflows/gpu-identity-contract.yml
+          git rm scripts/_ci_gpu_identity_contract.py scripts/_ci_gpu_identity_testfix.py .github/workflows/gpu-identity-contract.yml
           git add -A
           git diff --cached --check
           git config user.name github-actions[bot]
