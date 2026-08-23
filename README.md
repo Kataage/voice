@@ -51,7 +51,7 @@ uv run --locked persona setup --backend auto
 
 `--backend auto`を推奨します。PersonaVoiceは`CUDA_DEVICE_ORDER=PCI_BUS_ID`と`CUDA_VISIBLE_DEVICES`を考慮して実際のlogical CUDA device 0を特定し、そのGPUのcompute capabilityを監査済みwheel matrixへ照合します。x86_64の現在の固定stackではPascal 6.x / Volta 7.0は`cu126`、Turing以降の監査済み世代は`cu128`、未知・未監査世代や安全に識別できないGPUはCPUへfail-closedします。環境sync後にはIrodori・diarization・Sense・LFM・必要ならSeed-VCの各独立PyTorch環境で**実CUDA tensor/kernel**を実行し、`nvidia-smi`で選択したGPUとworkerが見るdevice 0のcompute capabilityが一致することを、大容量モデル取得前に検証します。ASRはCTranslate2が実際に返すsupported compute typesからCUDA型を選び、実行不能ならauto時だけCPUへ安全にfallbackします。
 
-GPU交換や`CUDA_VISIBLE_DEVICES`変更後もdirect runtime開始前に現在GPUとsetup済みbackendを再照合します。同じ監査済みwheelで安全に動く交換はそのまま継続し、非互換な交換だけ`persona setup --backend auto`による再同期を要求します。Seed-VCは古いPyTorch 2.4/cu124 stackを隔離しているため、Blackwellなどmain cu128 stackは使えるがSeed-VC cu124だけ非互換な場合は、Irodori/ASR/diarization/Sense/LFMを止めず**Seed-VCだけ**再setupを要求し、次回setupではSeed-VCをCPUへ安全にfallbackします。詳細は`docs/TROUBLESHOOTING.md`を参照してください。
+CUDA setupでは、setup時にlogical CUDA device 0のGPU UUID・compute capability・NVIDIA driver versionを記録します。GPU交換、`CUDA_VISIBLE_DEVICES`変更によるdevice 0の物理GPU変更、またはdriver更新を検出した場合は、互換wheelであってもdirect runtimeを開始せず`persona setup --backend auto`による**実CUDA kernel preflightの再実行**を要求します。同じlock/backendが引き続き適合する場合は既存環境と検証済みmodel assetを再利用するため、再setupは全モデルの再取得を意味しません。Seed-VCは古いPyTorch 2.4/cu124 stackを隔離しているため、Blackwellなどmain cu128 stackは使えるがSeed-VC cu124だけ非互換な場合は、次回setupでSeed-VCだけCPUへ安全にfallbackします。詳細は`docs/TROUBLESHOOTING.md`を参照してください。
 
 `HF_TOKEN`は`pyannote/speaker-diarization-community-1`の初回取得時のみ必要です。PersonaVoiceはtokenを保存しません。`persona setup`は固定upstream revision取得、コミット済みlockを使った各独立`uv`環境のsync、GPU runtime preflight、モデル取得、offline model load検証まで実行します。
 
