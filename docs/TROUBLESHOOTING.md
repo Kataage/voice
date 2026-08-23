@@ -69,16 +69,16 @@ uv run persona setup --backend rocm
 uv run persona setup --backend xpu
 ```
 
-GPUを交換・取り外しした場合、または`CUDA_VISIBLE_DEVICES`を変更した場合、PersonaVoiceは`.runtime/setup.json`に記録済みのbackendを現在のlogical CUDA device 0とruntime開始前に再照合します。既存wheelで安全に動く交換ならそのまま利用し、非互換ならmodel processを起動せず次を要求します。
+CUDA setupでは、logical CUDA device 0のGPU UUID・compute capability・NVIDIA driver versionと、各独立CUDA環境で実kernelが成功したpreflight結果を`.runtime/setup.json`へ記録します。GPUを交換・取り外した場合、`CUDA_VISIBLE_DEVICES`変更でdevice 0の物理GPUが変わった場合、またはNVIDIA driverを更新した場合は、互換wheelであってもmodel processを起動せず次を要求します。
 
 ```bash
 uv run persona setup --backend auto
 uv run persona doctor --deep
 ```
 
-例として、Pascalで作った`cu126`環境をAmpereへ移す場合は同じwheelが安全なので動作できますが、Ampereで作った`cu128`環境をPascalへ戻した場合は再setupが必要です。CPU setupはGPU交換に依存しません。
+これは同じwheelで動くGPU交換でも、driverや3rd-party CUDA extensionまで含めて実機kernelをもう一度検証するためです。同じbackend/lockが引き続き適合する場合、既存`.venv`と検証済みmodel assetは再利用されるので、再setupは全モデルの再ダウンロードや再学習を意味しません。`CUDA_VISIBLE_DEVICES`の文字列だけが変わってもlogical device 0が同じ物理GPUを指し続け、driverも同じならruntime契約は維持されます。CPU setupはGPU交換に依存しません。
 
-Seed-VCは別の監査済みPyTorch 2.4/cu124 stackを使うため、main workerとはGPU対応範囲が異なります。Pascal〜Hopperではcu124を使用し、BlackwellではIrodori/diarization/Sense/LFMをcu128のまま維持しつつSeed-VCだけCPUへfallbackします。GPU交換によって既存Seed-VC環境だけが非互換になった場合も、runtimeは黙って起動せず再setupを要求します。
+Seed-VCは別の監査済みPyTorch 2.4/cu124 stackを使うため、main workerとはGPU対応範囲が異なります。Pascal〜Hopperではcu124を使用し、BlackwellではIrodori/diarization/Sense/LFMをcu128のまま維持しつつSeed-VCだけCPUへfallbackします。GPU交換やdriver変更後はまず再setup/preflightを行い、その結果としてSeed-VCだけCPUへ切り替わる場合でも、他の対応済みworkerを不必要にCPU化しません。
 
 Irodoriの学習batch profileもphysical GPUの最大VRAMではなく、実際のlogical CUDA device 0のVRAMを使います。CPU/ROCm/XPU backendではNVIDIA VRAMを参照しません。
 
