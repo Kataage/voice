@@ -80,7 +80,13 @@ patch(
     "    tmp_path: Path,\n"
     "    monkeypatch,\n"
     "):\n"
-    "    monkeypatch.setattr(irodori, \"local_model_env\", lambda *_args, **_kwargs: {})\n",
+    "    cache = tmp_path / \"hf-cache\"\n"
+    "    cache.mkdir()\n"
+    "    monkeypatch.setattr(\n"
+    "        irodori,\n"
+    "        \"local_model_env\",\n"
+    "        lambda *_args, **_kwargs: {\"HUGGINGFACE_HUB_CACHE\": str(cache)},\n"
+    "    )\n",
 )
 
 # Manifest test already isolates provenance; isolate the subprocess environment
