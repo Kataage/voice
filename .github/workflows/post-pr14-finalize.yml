@@ -47,7 +47,7 @@ jobs:
       - name: Commit integrated hardening
         shell: bash
         run: |
-          git rm scripts/_ci_post_pr14_hardening.py scripts/_ci_post_pr14_followup.py scripts/_ci_post_pr14_finalfix.py .github/workflows/post-pr14-finalize.yml
+          git rm -f scripts/_ci_post_pr14_hardening.py scripts/_ci_post_pr14_followup.py scripts/_ci_post_pr14_finalfix.py .github/workflows/post-pr14-finalize.yml
           git add -A
           git diff --cached --check
           git config user.name github-actions[bot]
