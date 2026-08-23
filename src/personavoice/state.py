@@ -36,12 +36,21 @@ def _repo_root() -> Path:
 
 
 def _file_contract(path: Path) -> str:
+    """Hash audited text contracts independently of checkout line endings."""
+
     try:
         if not path.is_file():
             return "missing"
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        raw = path.read_bytes()
     except OSError:
         return "unreadable"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        normalized = raw
+    else:
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def _prepare_cache_policy() -> str:
@@ -49,7 +58,7 @@ def _prepare_cache_policy() -> str:
 
     repo = _repo_root()
     contract = {
-        "schema": 13,
+        "schema": 14,
         "prepare_result_schema": PREPARE_RESULT_SCHEMA,
         "dataset_schema": DATASET_SCHEMA_VERSION,
         "asr_revision": ASR_MODEL_REVISION,
@@ -81,12 +90,12 @@ def _prepare_cache_policy() -> str:
         "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"13-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"14-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
 PREPARE_CACHE_POLICY_COMPATIBILITY = {
-    "13-72c7cffa967913f59b99": frozenset({'12-6ef53c9f266fd6794c3e'}),
+    "14-9b93893d6b990319b60e": frozenset(('12-6ef53c9f266fd6794c3e', '12-1d31ef1abd217bcf5c4f')),
 }
 
 

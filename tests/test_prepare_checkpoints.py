@@ -20,6 +20,7 @@ from personavoice.project import init_persona
 from personavoice.state import (
     PREPARE_CACHE_POLICY_COMPATIBILITY,
     PREPARE_CACHE_POLICY_VERSION,
+    _file_contract,
     _prepare_policy_compatible,
 )
 from personavoice.status import persona_status
@@ -198,10 +199,25 @@ def test_worker_checkpoint_path_is_confined_to_persona_cache(tmp_path: Path, mon
         module._write_item_checkpoint(resolved, "../escape", {"ok": True})
 
 
+
+def test_prepare_policy_text_contract_is_line_ending_independent(tmp_path: Path):
+    source = tmp_path / "contract.py"
+    source.write_bytes(b"alpha\nbeta\n")
+    lf = _file_contract(source)
+    source.write_bytes(b"alpha\r\nbeta\r\n")
+    crlf = _file_contract(source)
+    source.write_bytes(b"alpha\rbeta\r")
+    cr = _file_contract(source)
+    assert lf == crlf == cr
+
+
 def test_prepare_policy_migration_is_scoped_to_exact_new_generation():
     assert set(PREPARE_CACHE_POLICY_COMPATIBILITY) == {PREPARE_CACHE_POLICY_VERSION}
     previous = PREPARE_CACHE_POLICY_COMPATIBILITY[PREPARE_CACHE_POLICY_VERSION]
-    assert previous
+    assert previous == frozenset({
+        "12-6ef53c9f266fd6794c3e",
+        "12-1d31ef1abd217bcf5c4f",
+    })
     assert PREPARE_CACHE_POLICY_VERSION not in previous
     assert all(_prepare_policy_compatible(value) for value in previous)
     assert not _prepare_policy_compatible("12-unrelated-old-policy")
