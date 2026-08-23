@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 import ctranslate2
@@ -24,6 +26,9 @@ REQUIRED_MODEL_FILES = (
     "tokenizer.json",
     "vocabulary.json",
 )
+ASR_HEARTBEAT_SECONDS = 5.0
+ASR_HEARTBEAT_MEDIA_SECONDS = 60.0
+ProgressCallback = Callable[[float, int], None]
 
 
 def request(path: str) -> dict:
@@ -120,23 +125,24 @@ def _write_batch_progress(
     failed: int,
     current_id: str | None,
     state: str,
+    detail: dict | None = None,
 ) -> None:
     if directory is None:
         return
-    _atomic_checkpoint_json(
-        directory / "progress.json",
-        {
-            "schema": 1,
-            "worker": worker_name,
-            "command": command,
-            "phase": phase,
-            "completed": completed,
-            "total": total,
-            "failed": failed,
-            "current_id": current_id,
-            "state": state,
-        },
-    )
+    value = {
+        "schema": 1,
+        "worker": worker_name,
+        "command": command,
+        "phase": phase,
+        "completed": completed,
+        "total": total,
+        "failed": failed,
+        "current_id": current_id,
+        "state": state,
+    }
+    if detail:
+        value.update(detail)
+    _atomic_checkpoint_json(directory / "progress.json", value)
 
 
 def _nonempty_file(path: Path) -> bool:
@@ -250,17 +256,31 @@ def runtime_config(compute_type: str = "auto") -> tuple[str, str, set[str]]:
     return "cpu", selected, cpu_types
 
 
-def make_model(name: str, compute_type: str = "auto") -> WhisperModel:
-    device, selected_compute_type, _supported = runtime_config(compute_type)
+def _make_model_with_runtime(name: str, *, device: str, compute_type: str) -> WhisperModel:
     return WhisperModel(
         model_path(name),
         device=device,
-        compute_type=selected_compute_type,
+        compute_type=compute_type,
         download_root=str(Path(os.environ["HF_HOME"]) / "faster-whisper"),
     )
 
 
-def transcribe_with_model(model: WhisperModel, audio: str, *, language: str) -> dict:
+def make_model(name: str, compute_type: str = "auto") -> WhisperModel:
+    device, selected_compute_type, _supported = runtime_config(compute_type)
+    return _make_model_with_runtime(
+        name,
+        device=device,
+        compute_type=selected_compute_type,
+    )
+
+
+def transcribe_with_model(
+    model: WhisperModel,
+    audio: str,
+    *,
+    language: str,
+    progress: ProgressCallback | None = None,
+) -> dict:
     segments, info = model.transcribe(
         audio,
         language=language,
@@ -290,6 +310,8 @@ def transcribe_with_model(model: WhisperModel, audio: str, *, language: str) -> 
                 ],
             }
         )
+        if progress is not None:
+            progress(float(seg.end), len(rows))
     return {
         "language": info.language,
         "language_probability": info.language_probability,
@@ -308,11 +330,50 @@ def batch_transcribe(payload: dict) -> dict:
     items = payload.get("items") or []
     checkpoint = _checkpoint_directory(payload)
     name = payload.get("model", PINNED_MODEL_NAME)
-    model = make_model(name, payload.get("compute_type", "auto"))
     language = payload.get("language") or "ja"
+    requested_compute_type = payload.get("compute_type", "auto")
     results = []
     failed = 0
     total = len(items)
+
+    # Publish progress before any runtime query, 3 GB model checksum, or model
+    # construction so the parent can distinguish slow initialization from a
+    # worker that stopped making forward progress.
+    _write_batch_progress(
+        checkpoint,
+        worker_name="asr",
+        command="batch_transcribe",
+        phase="runtime_config",
+        completed=0,
+        total=total,
+        failed=0,
+        current_id=None,
+        state="running",
+        detail={"requested_compute_type": str(requested_compute_type)},
+    )
+    device, selected_compute_type, supported = runtime_config(str(requested_compute_type))
+    runtime_detail = {
+        "device": device,
+        "compute_type": selected_compute_type,
+        "supported_compute_types": sorted(supported),
+    }
+    _write_batch_progress(
+        checkpoint,
+        worker_name="asr",
+        command="batch_transcribe",
+        phase="model_load",
+        completed=0,
+        total=total,
+        failed=0,
+        current_id=None,
+        state="running",
+        detail=runtime_detail,
+    )
+    model = _make_model_with_runtime(
+        name,
+        device=device,
+        compute_type=selected_compute_type,
+    )
     _write_batch_progress(
         checkpoint,
         worker_name="asr",
@@ -323,7 +384,9 @@ def batch_transcribe(payload: dict) -> dict:
         failed=0,
         current_id=None,
         state="running",
+        detail=runtime_detail,
     )
+
     for index, item in enumerate(items):
         item_id = _checkpoint_item_id(item["id"])
         _write_batch_progress(
@@ -336,9 +399,55 @@ def batch_transcribe(payload: dict) -> dict:
             failed=failed,
             current_id=item_id,
             state="running",
+            detail={
+                **runtime_detail,
+                "current_processed_seconds": 0.0,
+                "current_segments": 0,
+            },
         )
+        last_heartbeat = monotonic()
+        last_media_heartbeat = 0.0
+
+        def heartbeat(
+            processed_seconds: float,
+            segment_count: int,
+            completed_index: int = index,
+            failed_count: int = failed,
+            source_id: str = item_id,
+        ) -> None:
+            nonlocal last_heartbeat, last_media_heartbeat
+            now = monotonic()
+            if (
+                now - last_heartbeat < ASR_HEARTBEAT_SECONDS
+                and processed_seconds - last_media_heartbeat < ASR_HEARTBEAT_MEDIA_SECONDS
+            ):
+                return
+            _write_batch_progress(
+                checkpoint,
+                worker_name="asr",
+                command="batch_transcribe",
+                phase="transcribe",
+                completed=completed_index,
+                total=total,
+                failed=failed_count,
+                current_id=source_id,
+                state="running",
+                detail={
+                    **runtime_detail,
+                    "current_processed_seconds": round(processed_seconds, 3),
+                    "current_segments": segment_count,
+                },
+            )
+            last_heartbeat = now
+            last_media_heartbeat = processed_seconds
+
         try:
-            value = transcribe_with_model(model, str(item["audio"]), language=language)
+            value = transcribe_with_model(
+                model,
+                str(item["audio"]),
+                language=language,
+                progress=heartbeat,
+            )
             _write_item_checkpoint(checkpoint, item_id, value)
             results.append({"id": item_id, "ok": True, "result": value})
         except Exception as exc:
@@ -354,6 +463,7 @@ def batch_transcribe(payload: dict) -> dict:
             failed=failed,
             current_id=None,
             state="running",
+            detail=runtime_detail,
         )
     _write_batch_progress(
         checkpoint,
@@ -365,6 +475,7 @@ def batch_transcribe(payload: dict) -> dict:
         failed=failed,
         current_id=None,
         state="finished",
+        detail=runtime_detail,
     )
     return {"results": results}
 

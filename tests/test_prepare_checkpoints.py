@@ -199,7 +199,6 @@ def test_worker_checkpoint_path_is_confined_to_persona_cache(tmp_path: Path, mon
         module._write_item_checkpoint(resolved, "../escape", {"ok": True})
 
 
-
 def test_prepare_policy_text_contract_is_line_ending_independent(tmp_path: Path):
     source = tmp_path / "contract.py"
     source.write_bytes(b"alpha\nbeta\n")
@@ -212,12 +211,16 @@ def test_prepare_policy_text_contract_is_line_ending_independent(tmp_path: Path)
 
 
 def test_prepare_policy_migration_is_scoped_to_exact_new_generation():
+    assert PREPARE_CACHE_POLICY_VERSION == "14-b19d85f2c6e8eac470cf"
     assert set(PREPARE_CACHE_POLICY_COMPATIBILITY) == {PREPARE_CACHE_POLICY_VERSION}
     previous = PREPARE_CACHE_POLICY_COMPATIBILITY[PREPARE_CACHE_POLICY_VERSION]
-    assert previous == frozenset({
-        "12-6ef53c9f266fd6794c3e",
-        "12-1d31ef1abd217bcf5c4f",
-    })
+    assert previous == frozenset(
+        {
+            "14-9b93893d6b990319b60e",
+            "12-6ef53c9f266fd6794c3e",
+            "12-1d31ef1abd217bcf5c4f",
+        }
+    )
     assert PREPARE_CACHE_POLICY_VERSION not in previous
     assert all(_prepare_policy_compatible(value) for value in previous)
     assert not _prepare_policy_compatible("12-unrelated-old-policy")
