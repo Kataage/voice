@@ -27,12 +27,29 @@ def test_cuda_auto_prefers_float16_when_supported():
     )
 
 
-def test_cuda_auto_uses_int8_float32_when_pascal_has_no_float16():
+def test_cuda_auto_prefers_float32_when_float16_is_unavailable():
     policy = _policy_module()
     assert (
         policy.choose_compute_type(
             "cuda",
             {"float32", "int8_float32"},
+        )
+        == "float32"
+    )
+
+
+def test_cuda_auto_can_still_use_int8_float32_when_it_is_the_only_cuda_option():
+    policy = _policy_module()
+    assert policy.choose_compute_type("cuda", {"int8_float32"}) == "int8_float32"
+
+
+def test_explicit_int8_float32_remains_available_when_supported():
+    policy = _policy_module()
+    assert (
+        policy.choose_compute_type(
+            "cuda",
+            {"float32", "int8_float32"},
+            "int8_float32",
         )
         == "int8_float32"
     )
