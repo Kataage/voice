@@ -123,17 +123,20 @@ def runtime_hardware_status(
     *,
     worker_name: str | None = None,
 ) -> dict[str, Any]:
-    """Verify every recorded CUDA environment against the current visible GPU.
+    """Verify recorded CUDA environments against the current preflighted GPU.
 
-    Hardware is deliberately not part of the dependency hash: a compatible GPU
-    swap should continue to work without rebuilding identical virtualenvs. An
-    incompatible swap, GPU removal, or CUDA visibility change fails closed at
-    every direct worker entry point before a model process can start.
+    Hardware identity is deliberately not part of the dependency hash because a
+    compatible replacement GPU can reuse the same locked virtualenvs. CUDA
+    runtime authorization is stricter: setup records the physical device UUID
+    and NVIDIA driver version only after real kernel preflight succeeds. If the
+    selected physical GPU or driver changes, direct model work fails closed until
+    `persona setup --backend auto` reuses/rebuilds the appropriate environments
+    and repeats that preflight.
 
     Seed-VC is checked separately because its audited Torch 2.4/cu124 stack has
     a different architecture envelope from the Torch 2.10 cu126/cu128 workers.
-    This matters for swaps such as Hopper -> Blackwell: the main cu128 workers
-    remain valid while an old Seed-VC cu124 environment must be rebuilt as CPU.
+    This matters on hardware such as Blackwell: the main cu128 workers can remain
+    valid while Seed-VC is intentionally synchronized as CPU.
     """
 
     value = setup if isinstance(setup, dict) else {}
@@ -158,7 +161,14 @@ def runtime_hardware_status(
 
     gpu = selected_nvidia_gpu()
     if gpu is None:
-        requested = [str(item) for item in (backend if main_cuda else None, seed_vc_backend if seed_cuda else None) if item]
+        requested = [
+            str(item)
+            for item in (
+                backend if main_cuda else None,
+                seed_vc_backend if seed_cuda else None,
+            )
+            if item
+        ]
         return {
             "ok": False,
             "backend": backend,
