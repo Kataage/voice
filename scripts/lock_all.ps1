@@ -1,5 +1,6 @@
 $ErrorActionPreference = "Stop"
 
+$AuditedUvVersion = "0.12.5"
 $IrodoriRevision = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 $IrodoriDir = "vendor/Irodori-TTS"
 $ManagedIrodoriProject = "locks/Irodori-TTS.pyproject.toml"
@@ -11,14 +12,45 @@ function Assert-NativeSuccess([string]$Label) {
     }
 }
 
+function Assert-AuditedUv {
+    $VersionLine = (& uv --version).Trim()
+    Assert-NativeSuccess "uv --version"
+    if ($VersionLine -notmatch ("^uv " + [regex]::Escape($AuditedUvVersion) + "(?:\s|$)")) {
+        throw "Lock refresh requires audited uv $AuditedUvVersion, got: $VersionLine"
+    }
+}
+
+function Test-WorkerExtra([string]$Worker, [string]$Extra) {
+    uv sync --project "workers/$Worker" --locked --dry-run --extra $Extra
+    Assert-NativeSuccess "locked $Worker/$Extra dry-run"
+}
+
+Assert-AuditedUv
+
 uv lock
 Assert-NativeSuccess "uv lock (root)"
+uv sync --locked --dry-run
+Assert-NativeSuccess "root locked dry-run"
 
 Get-ChildItem workers -Directory | ForEach-Object {
     if (Test-Path (Join-Path $_.FullName "pyproject.toml")) {
         uv lock --project $_.FullName
         Assert-NativeSuccess "uv lock ($($_.Name))"
     }
+}
+
+# Validate every backend family that setup/CI is allowed to select. This makes
+# the maintenance script fail immediately instead of committing a lock that only
+# breaks later on a different GPU generation.
+uv sync --project workers/asr --locked --dry-run
+Assert-NativeSuccess "locked asr dry-run"
+foreach ($Worker in @("diarization", "sense", "lfm")) {
+    foreach ($Extra in @("cpu", "cu126", "cu128")) {
+        Test-WorkerExtra $Worker $Extra
+    }
+}
+foreach ($Extra in @("cpu", "cu124")) {
+    Test-WorkerExtra "seed_vc" $Extra
 }
 
 if (Test-Path (Join-Path $IrodoriDir "pyproject.toml")) {
@@ -49,6 +81,10 @@ if (Test-Path (Join-Path $IrodoriDir "pyproject.toml")) {
         Copy-Item -Force $ManagedIrodoriProject $VendorProject
         uv lock --project $IrodoriDir
         Assert-NativeSuccess "uv lock (Irodori managed overlay)"
+        foreach ($Extra in @("cpu", "cu126", "cu128")) {
+            uv sync --project $IrodoriDir --locked --dry-run --extra $Extra
+            Assert-NativeSuccess "locked Irodori/$Extra dry-run"
+        }
         Copy-Item -Force $VendorLock $ManagedIrodoriLock
     }
     finally {
@@ -65,4 +101,4 @@ else {
     Write-Host "Irodori vendor checkout is absent; managed Irodori lock was left unchanged."
 }
 
-Write-Host "All audited uv lockfiles refreshed."
+Write-Host "All audited uv lockfiles refreshed and backend matrices validated with uv $AuditedUvVersion."
