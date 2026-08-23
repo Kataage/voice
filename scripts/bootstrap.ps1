@@ -13,9 +13,10 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 uv sync --locked
 Assert-NativeSuccess "uv sync --locked"
 
-# Do not install or mutate machine-wide FFmpeg here. On Windows, `persona setup`
-# materializes the audited shared FFmpeg runtime inside gitignored `.runtime/tools`.
-# Linux/macOS keep their explicit system/override FFmpeg contract.
-uv run --locked persona doctor
-Assert-NativeSuccess "persona doctor"
+# Bootstrap only verifies the locked root environment and CLI entrypoint. Do not
+# require or mutate FFmpeg here: on Windows, `persona setup` materializes the
+# audited shared runtime inside gitignored `.runtime/tools`; Linux/macOS validate
+# their explicit system/override runtime during setup.
+uv run --locked persona --help *> $null
+Assert-NativeSuccess "persona CLI smoke test"
 Write-Host "Root environment is ready. Next: uv run --locked persona setup --backend auto"
