@@ -49,22 +49,96 @@ print(json.dumps({
 '''
 
 _ASR_PROBE = r'''
+import ctypes
 import json
+import sys
+
 import ctranslate2
 from runtime_policy import choose_compute_type
+
+
+def require_status(status, label):
+    value = int(status)
+    if value != 0:
+        raise RuntimeError(f"{label} failed with native status {value}")
+
+
+def native_cuda_smoke():
+    if sys.platform == "win32":
+        names = [
+            "cublas64_12.dll",
+            "cublasLt64_12.dll",
+            "cudnn_adv64_9.dll",
+            "cudnn_cnn64_9.dll",
+            "cudnn_engines_precompiled64_9.dll",
+            "cudnn_engines_runtime_compiled64_9.dll",
+            "cudnn_graph64_9.dll",
+            "cudnn_heuristic64_9.dll",
+            "cudnn_ops64_9.dll",
+            "cudnn64_9.dll",
+        ]
+        libraries = {name: ctypes.WinDLL(name) for name in names}
+        cublas = libraries["cublas64_12.dll"]
+        cudnn = libraries["cudnn64_9.dll"]
+    elif sys.platform.startswith("linux"):
+        names = ["libcublas.so.12", "libcudnn.so.9"]
+        libraries = {
+            name: ctypes.CDLL(name, mode=getattr(ctypes, "RTLD_GLOBAL", 0))
+            for name in names
+        }
+        cublas = libraries["libcublas.so.12"]
+        cudnn = libraries["libcudnn.so.9"]
+    else:
+        raise RuntimeError(f"CTranslate2 CUDA preflight is unsupported on {sys.platform!r}")
+
+    cublas_handle = ctypes.c_void_p()
+    cublas_create = cublas.cublasCreate_v2
+    cublas_create.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    cublas_create.restype = ctypes.c_int
+    cublas_destroy = cublas.cublasDestroy_v2
+    cublas_destroy.argtypes = [ctypes.c_void_p]
+    cublas_destroy.restype = ctypes.c_int
+    require_status(cublas_create(ctypes.byref(cublas_handle)), "cublasCreate_v2")
+    try:
+        if not cublas_handle.value:
+            raise RuntimeError("cublasCreate_v2 returned a null handle")
+    finally:
+        if cublas_handle.value:
+            require_status(cublas_destroy(cublas_handle), "cublasDestroy_v2")
+
+    cudnn_handle = ctypes.c_void_p()
+    cudnn_create = cudnn.cudnnCreate
+    cudnn_create.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    cudnn_create.restype = ctypes.c_int
+    cudnn_destroy = cudnn.cudnnDestroy
+    cudnn_destroy.argtypes = [ctypes.c_void_p]
+    cudnn_destroy.restype = ctypes.c_int
+    require_status(cudnn_create(ctypes.byref(cudnn_handle)), "cudnnCreate")
+    try:
+        if not cudnn_handle.value:
+            raise RuntimeError("cudnnCreate returned a null handle")
+    finally:
+        if cudnn_handle.value:
+            require_status(cudnn_destroy(cudnn_handle), "cudnnDestroy")
+
+    return {"ok": True, "libraries": names}
+
 
 cuda_count = int(ctranslate2.get_cuda_device_count())
 selected_device = "cpu"
 selected_compute_type = None
 cuda_types = []
 cuda_error = None
+native_runtime = {"ok": None, "skipped": True}
 if cuda_count > 0:
     try:
+        native_runtime = native_cuda_smoke()
         cuda_types = sorted(set(ctranslate2.get_supported_compute_types("cuda", 0)))
         selected_compute_type = choose_compute_type("cuda", set(cuda_types), "auto")
         selected_device = "cuda"
     except (RuntimeError, OSError, ValueError) as exc:
         cuda_error = f"{type(exc).__name__}: {exc}"
+        raise
 if selected_compute_type is None:
     cpu_types = sorted(set(ctranslate2.get_supported_compute_types("cpu")))
     selected_compute_type = choose_compute_type("cpu", set(cpu_types), "auto")
@@ -74,6 +148,7 @@ print(json.dumps({
     "cuda_device_count": cuda_count,
     "cuda_supported_compute_types": cuda_types,
     "cuda_error": cuda_error,
+    "native_cuda_runtime": native_runtime,
     "selected_device": selected_device,
     "selected_compute_type": selected_compute_type,
     "cpu_supported_compute_types": cpu_types,
@@ -159,12 +234,17 @@ def _asr_preflight(repo_root: Path) -> dict[str, Any]:
     except (CommandError, OSError) as exc:
         raise RuntimeError(
             "ASR runtime preflight failed before model download. The locked CTranslate2 "
-            "environment could not determine a safe CUDA/CPU compute type."
+            "environment could not load and initialize its audited CUDA 12 cuBLAS/cuDNN "
+            "runtime or determine a safe CUDA/CPU compute type."
         ) from exc
     if not isinstance(result, dict) or result.get("selected_device") not in {"cuda", "cpu"}:
         raise RuntimeError("ASR runtime preflight returned an invalid device policy")
     if not isinstance(result.get("selected_compute_type"), str):
         raise RuntimeError("ASR runtime preflight returned an invalid compute type policy")
+    if result.get("selected_device") == "cuda":
+        native = result.get("native_cuda_runtime")
+        if not isinstance(native, dict) or native.get("ok") is not True:
+            raise RuntimeError("ASR CUDA preflight did not prove the native cuBLAS/cuDNN runtime")
     return result
 
 
@@ -175,17 +255,18 @@ def run_cuda_preflight(
     gpu: GpuInfo,
     worker_backends: dict[str, str | None],
 ) -> dict[str, Any]:
-    """Execute real CUDA kernels in every synced CUDA PyTorch environment.
+    """Execute real native CUDA work in every synced CUDA environment.
 
     This runs after dependency sync but before setup.json is finalized or large
     model assets are downloaded. Static compute-capability policy prevents known
     incompatible wheels; this dynamic gate catches stale drivers, missing CUDA
-    DLLs, device-order mismatches, or a wheel that still cannot launch a kernel
-    on the actual machine.
+    DLLs/shared objects, device-order mismatches, or a runtime that still cannot
+    initialize on the actual machine.
 
-    ASR is intentionally different: CTranslate2 may safely fall back to CPU on a
-    GPU that cannot execute its preferred CUDA compute type, so its probe records
-    the resolved runtime policy instead of requiring CUDA.
+    PyTorch workers execute tensor/matmul kernels. ASR uses CTranslate2 directly,
+    so it separately opens and initializes the audited CUDA 12 cuBLAS/cuDNN
+    runtime before accepting a CUDA compute type. A GPU that CTranslate2 cannot
+    use at all may still select its intentional CPU fallback.
     """
 
     expected = _capability_tuple(gpu.compute_capability)
