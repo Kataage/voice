@@ -8,6 +8,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from personavoice.atomic import atomic_write_json, atomic_write_text
+from personavoice.cuda_preflight import run_cuda_preflight
 from personavoice.environment_contract import SETUP_TRANSACTION_MARKER, environment_contract
 from personavoice.hardware import (
     backend_supports_gpu,
@@ -364,12 +365,27 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         worker(repo_root, name).sync(repo_root, extra=worker_extras[name])
         synced.append(name)
 
+    if selected_gpu is not None:
+        runtime_preflight = run_cuda_preflight(
+            repo_root,
+            irodori_project=irodori,
+            gpu=selected_gpu,
+            worker_backends=worker_extras,
+        )
+    else:
+        runtime_preflight = {
+            "ok": True,
+            "skipped": True,
+            "reason": f"backend {selected_backend} does not use the audited NVIDIA CUDA stack",
+        }
+
     setup_state = {
         "irodori_backend": selected_backend,
         "worker_backends": worker_extras,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
         "environment_contract": environment_contract(repo_root),
+        "runtime_preflight": runtime_preflight,
         "model_assets": {
             "irodori_model_sha256": IRODORI_MODEL_SHA256,
             "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
