@@ -44,6 +44,11 @@ patch(
     "            raise RuntimeError(runtime.error or \"A compatible FFmpeg runtime is required\")\n"
     "    provenance = ffmpeg_provenance(runtime)\n",
 )
+patch(
+    "tests/test_ffmpeg_setup_provenance.py",
+    'monkeypatch.setattr(ffmpeg_materializer, "require_ffmpeg_runtime", lambda: expected)',
+    'monkeypatch.setattr(ffmpeg_materializer, "_discover_ffmpeg_runtime", lambda: expected)',
+)
 
 path = ROOT / "tests/test_ffmpeg_portability_followup.py"
 text = path.read_text(encoding="utf-8")
