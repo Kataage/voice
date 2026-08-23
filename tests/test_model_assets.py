@@ -129,6 +129,7 @@ def test_prepare_manifest_passes_local_codec_and_recorded_cpu_backend(
     tmp_path: Path,
     monkeypatch,
 ):
+    monkeypatch.setattr(irodori, "local_model_env", lambda *_args, **_kwargs: {})
     vendor = tmp_path / "vendor" / "Irodori-TTS"
     vendor.mkdir(parents=True)
     (vendor / "prepare_manifest.py").write_text("", encoding="utf-8")

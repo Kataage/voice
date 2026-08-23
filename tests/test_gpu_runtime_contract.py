@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from personavoice import environment_contract as env_contract
-from personavoice import hardware, setup_env
+from personavoice import hardware, setup_env, workers
 from personavoice.workers import local_model_env
 
 
@@ -115,7 +115,8 @@ def test_blackwell_setup_keeps_main_cuda_and_falls_seed_vc_back_to_cpu(monkeypat
     assert extras["seed_vc"] == "cpu"
 
 
-def test_local_model_env_forces_deterministic_cuda_order(tmp_path: Path):
+def test_local_model_env_forces_deterministic_cuda_order(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(workers, "ffmpeg_environment", lambda: {})
     env = local_model_env(tmp_path)
     assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
 

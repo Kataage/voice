@@ -57,7 +57,7 @@ def test_missing_pinned_runtime_cannot_silently_fall_back_to_path(
         runtime_dependencies.ffmpeg_provenance_path(tmp_path),
         runtime_dependencies.ffmpeg_provenance(pinned),
     )
-    monkeypatch.setattr(runtime_dependencies, "ffmpeg_runtime", lambda: fallback)
+    monkeypatch.setattr(runtime_dependencies, "_discover_ffmpeg_runtime", lambda: fallback)
 
     status = runtime_dependencies.ffmpeg_provenance_status(tmp_path)
     assert status["ok"] is False
@@ -70,7 +70,7 @@ def test_in_place_ffmpeg_binary_change_is_detected(tmp_path: Path, monkeypatch) 
         runtime_dependencies.ffmpeg_provenance_path(tmp_path),
         runtime_dependencies.ffmpeg_provenance(runtime),
     )
-    monkeypatch.setattr(runtime_dependencies, "ffmpeg_runtime", lambda: runtime)
+    monkeypatch.setattr(runtime_dependencies, "_discover_ffmpeg_runtime", lambda: runtime)
     Path(runtime.ffmpeg).write_bytes(b"ffmpeg-generation-2")
 
     status = runtime_dependencies.ffmpeg_provenance_status(tmp_path)
@@ -89,7 +89,7 @@ def test_ffmpeg_command_refuses_runtime_switch_after_setup(tmp_path: Path, monke
         runtime_dependencies.ffmpeg_provenance(pinned),
     )
     monkeypatch.setattr(runtime_dependencies, "_repo_root_if_available", lambda: tmp_path)
-    monkeypatch.setattr(runtime_dependencies, "ffmpeg_runtime", lambda: fallback)
+    monkeypatch.setattr(runtime_dependencies, "_discover_ffmpeg_runtime", lambda: fallback)
 
     with pytest.raises(RuntimeError, match="changed after PersonaVoice setup"):
         runtime_dependencies.command("ffmpeg")
@@ -101,7 +101,7 @@ def test_ffmpeg_command_requires_provenance_after_setup(tmp_path: Path, monkeypa
     runtime_dir.mkdir(parents=True)
     (runtime_dir / "setup.json").write_text(json.dumps({}), encoding="utf-8")
     monkeypatch.setattr(runtime_dependencies, "_repo_root_if_available", lambda: tmp_path)
-    monkeypatch.setattr(runtime_dependencies, "ffmpeg_runtime", lambda: current)
+    monkeypatch.setattr(runtime_dependencies, "_discover_ffmpeg_runtime", lambda: current)
 
     with pytest.raises(RuntimeError, match="provenance is missing"):
         runtime_dependencies.command("ffprobe")
