@@ -327,7 +327,11 @@ def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
                 "Run `persona setup --backend auto` before media/model work."
             ),
         }
-    if not current_runtime.torchcodec_compatible or current_runtime.ffmpeg is None or current_runtime.ffprobe is None:
+    if (
+        not current_runtime.torchcodec_compatible
+        or current_runtime.ffmpeg is None
+        or current_runtime.ffprobe is None
+    ):
         return {
             "ok": False,
             "recorded": recorded,
@@ -349,7 +353,17 @@ def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
     return {"ok": True, "recorded": recorded, "current": current, "error": None}
 
 
+def _require_recorded_ffmpeg_for_command() -> None:
+    repo_root = _repo_root_if_available()
+    if repo_root is None or not (repo_root / ".runtime" / "setup.json").is_file():
+        return
+    status = ffmpeg_provenance_status(repo_root)
+    if not status["ok"]:
+        raise RuntimeError(str(status["error"]))
+
+
 def command(name: str) -> str:
+    _require_recorded_ffmpeg_for_command()
     runtime = require_ffmpeg_runtime()
     if name == "ffmpeg" and runtime.ffmpeg:
         return runtime.ffmpeg
