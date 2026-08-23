@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import types
 from pathlib import Path
 
@@ -220,3 +221,41 @@ def test_explicit_cu128_rejects_volta_but_cu126_accepts_it(monkeypatch):
     with pytest.raises(ValueError, match="--backend auto"):
         setup_env._validate_cuda_backend("cu128")
     assert setup_env._validate_cuda_backend("cu126") == volta
+
+
+def test_runtime_hardware_rejects_capability_change_for_same_gpu_uuid(monkeypatch):
+    current = hardware.GpuInfo(
+        index=0,
+        name="Stable UUID GPU",
+        total_mib=16384,
+        free_mib=12000,
+        compute_capability="8.9",
+        uuid="GPU-stable",
+        driver_version="600.01",
+    )
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(env_contract, "selected_nvidia_gpu", lambda: current)
+    status = env_contract.runtime_hardware_status(
+        {
+            "irodori_backend": "cu128",
+            "worker_backends": {"seed_vc": "cpu"},
+            "environment_contract": {"schema": env_contract.ENVIRONMENT_CONTRACT_SCHEMA},
+            "selected_gpu": {
+                "uuid": "GPU-stable",
+                "compute_capability": "8.6",
+                "driver_version": "600.01",
+            },
+        }
+    )
+    assert status["ok"] is False
+    assert "compute capability changed" in status["error"]
+    assert "persona setup --backend auto" in status["error"]
+
+
+def test_environment_contract_hashes_its_own_runtime_guard():
+    root = Path(__file__).resolve().parents[1]
+    contract = env_contract.environment_contract(root)
+    expected = hashlib.sha256(
+        (root / "src" / "personavoice" / "environment_contract.py").read_bytes()
+    ).hexdigest()
+    assert contract["runtime_policy"]["environment_contract_sha256"] == expected
