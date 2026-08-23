@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from personavoice import ffmpeg_contract, ffmpeg_materializer, runtime_dependencies
+import pytest
+
+from personavoice import (
+    ffmpeg_contract,
+    ffmpeg_materializer,
+    hardware,
+    runtime_dependencies,
+    setup_env,
+)
 
 
 def test_non_x64_windows_accepts_valid_explicit_ffmpeg_override(tmp_path, monkeypatch):
@@ -37,13 +45,39 @@ def test_non_x64_windows_auto_materializer_fails_before_download(tmp_path, monke
 
     monkeypatch.setattr(ffmpeg_materializer, "_download_archive", should_not_download)
 
-    try:
+    with pytest.raises(RuntimeError, match="x86_64-only"):
         ffmpeg_materializer.materialize_windows_ffmpeg(tmp_path)
-    except RuntimeError as exc:
-        assert "x86_64-only" in str(exc)
-    else:
-        raise AssertionError("non-x64 automatic materialization must fail closed")
     assert called is False
+
+
+def test_unsafe_explicit_cuda_backend_fails_before_ffmpeg_materialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
+    monkeypatch.setattr(
+        setup_env,
+        "selected_nvidia_gpu",
+        lambda: hardware.GpuInfo(
+            index=0,
+            name="Pascal GPU",
+            total_mib=11264,
+            free_mib=10000,
+            compute_capability="6.1",
+            uuid="GPU-pascal",
+            pci_bus_id="00000000:01:00.0",
+            driver_version="999.1",
+        ),
+    )
+    materialized = False
+
+    def should_not_materialize(_repo_root):
+        nonlocal materialized
+        materialized = True
+        raise AssertionError("FFmpeg materialization must happen after CUDA backend validation")
+
+    monkeypatch.setattr(setup_env, "ensure_ffmpeg_runtime", should_not_materialize)
+
+    with pytest.raises(ValueError, match="--backend cu126"):
+        setup_env.install_environments(tmp_path, backend="cu128")
+    assert materialized is False
 
 
 def test_windows_ffmpeg_contract_is_fixed_to_audited_winget_release():
