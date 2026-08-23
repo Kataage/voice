@@ -24,7 +24,11 @@ from personavoice.ffmpeg_contract import (
     validate_pinned_runtime,
     validate_runtime_root,
 )
-from personavoice.runtime_dependencies import FfmpegRuntime, _candidate_runtime, require_ffmpeg_runtime
+from personavoice.runtime_dependencies import (
+    FfmpegRuntime,
+    _candidate_runtime,
+    require_ffmpeg_runtime,
+)
 
 _MAX_ARCHIVE_FILES = 20_000
 _MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
@@ -56,6 +60,7 @@ def _verified_archive(repo_root: Path) -> Path:
             pass
         archive.unlink(missing_ok=True)
 
+    archive.parent.mkdir(parents=True, exist_ok=True)
     temp = archive.with_name(f".{archive.name}.{uuid4().hex}.tmp")
     try:
         _download_archive(WINDOWS_FFMPEG_URL, temp)

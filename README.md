@@ -31,7 +31,7 @@ uv run --locked persona ui
 
 ## セットアップ
 
-必要: `uv`, Git, FFmpeg/ffprobe。NVIDIA GPU推奨。WindowsではTorchCodec用にshared DLL付きFFmpeg 4〜8が必要で、bootstrapはWinGetのFFmpeg Shared 8.1.1を使用します。
+必要: `uv`, Git。NVIDIA GPU推奨。WindowsではTorchCodec用の監査済みshared FFmpeg 8.1.1を`persona setup`が`.runtime/tools`へ自動materializeするため、システム全体へのFFmpeg/WinGetインストールは不要です。Linux/macOSではFFmpeg 4〜8の実行ファイルとshared librariesを用意してください。
 
 Windows:
 

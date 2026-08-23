@@ -234,6 +234,30 @@ def cuda_backend_for_gpu(gpu: GpuInfo) -> str:
     return "cpu"
 
 
+def irodori_training_precision(
+    backend: str,
+    *,
+    gpu: GpuInfo | None = None,
+) -> dict[str, str | bool]:
+    """Return audited Irodori precision flags for the actual CUDA-visible GPU."""
+
+    if backend not in {"cu126", "cu128"}:
+        return {"precision": "fp32", "allow_tf32": False}
+    selected = selected_nvidia_gpu() if gpu is None else gpu
+    capability = _parse_compute_capability(
+        selected.compute_capability if selected is not None else None
+    )
+    if (
+        backend == "cu128"
+        and selected is not None
+        and capability is not None
+        and capability >= (8, 0)
+        and backend_supports_gpu("cu128", selected)
+    ):
+        return {"precision": "bf16", "allow_tf32": True}
+    return {"precision": "fp32", "allow_tf32": False}
+
+
 def detect_irodori_backend() -> str:
     gpu = selected_nvidia_gpu()
     if gpu is not None:

@@ -10,6 +10,7 @@ from huggingface_hub import hf_hub_download, snapshot_download
 from personavoice.atomic import atomic_write_json, atomic_write_text
 from personavoice.cuda_preflight import run_cuda_preflight
 from personavoice.environment_contract import SETUP_TRANSACTION_MARKER, environment_contract
+from personavoice.ffmpeg_materializer import ensure_ffmpeg_runtime
 from personavoice.hardware import (
     backend_supports_gpu,
     cuda_backend_for_gpu,
@@ -47,7 +48,6 @@ from personavoice.model_assets import (
     SENSE_MODEL_WEIGHT_SHA256,
 )
 from personavoice.process import CommandError, run
-from personavoice.runtime_dependencies import require_ffmpeg_runtime
 from personavoice.seed_vc_assets import (
     contract_digest as seed_vc_contract_digest,
 )
@@ -328,7 +328,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         raise RuntimeError("uv was not found in PATH")
     if not shutil.which("git"):
         raise RuntimeError("git was not found in PATH")
-    require_ffmpeg_runtime()
+    ensure_ffmpeg_runtime(repo_root)
     selected_backend = backend or detect_irodori_backend()
     if selected_backend not in SUPPORTED_IRODORI_BACKENDS:
         expected = ", ".join(sorted(SUPPORTED_IRODORI_BACKENDS))

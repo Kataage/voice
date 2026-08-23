@@ -9,7 +9,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from personavoice.ffmpeg_contract import pinned_bin_dir, validate_pinned_runtime
+from personavoice.ffmpeg_contract import pinned_bin_dir, runtime_root, validate_pinned_runtime
 from personavoice.project import find_repo_root
 
 SUPPORTED_TORCHCODEC_FFMPEG_MAJORS = frozenset(range(4, 9))
@@ -17,8 +17,6 @@ _WINDOWS_SHARED_DLL_PATTERNS = (
     "avutil-*.dll",
     "avcodec-*.dll",
     "avformat-*.dll",
-    "avdevice-*.dll",
-    "avfilter-*.dll",
     "swresample-*.dll",
     "swscale-*.dll",
 )
@@ -67,9 +65,7 @@ def _windows_shared_libraries(directory: Path) -> bool:
 def _repo_root_if_available() -> Path | None:
     explicit = os.getenv("PERSONAVOICE_ROOT")
     if explicit:
-        candidate = Path(explicit).expanduser()
-        if (candidate / "pyproject.toml").is_file() and (candidate / "src" / "personavoice").is_dir():
-            return candidate
+        return Path(explicit).expanduser().resolve()
     try:
         return find_repo_root()
     except RuntimeError:
@@ -78,10 +74,6 @@ def _repo_root_if_available() -> Path | None:
 
 def _path_candidates() -> list[tuple[Path, str]]:
     candidates: list[tuple[Path, str]] = []
-    repo_root = _repo_root_if_available()
-    if repo_root is not None and bool(validate_pinned_runtime(repo_root).get("ok")):
-        candidates.append((pinned_bin_dir(repo_root), "PersonaVoice:pinned"))
-
     for name in ("ffmpeg", "ffprobe"):
         value = shutil.which(name)
         if value:
@@ -155,8 +147,7 @@ def _incompatibility(runtime: FfmpegRuntime) -> FfmpegRuntime:
     elif platform.system() == "Windows" and not runtime.shared_libraries:
         detail = (
             "FFmpeg executables were found, but the shared avutil/avcodec/avformat/"
-            "avdevice/avfilter/swresample/swscale DLLs required by TorchCodec were not "
-            "found beside them"
+            "swresample/swscale DLLs required by TorchCodec were not found beside them"
         )
     else:
         detail = "FFmpeg was found but is not compatible with the audited TorchCodec runtime"
@@ -191,6 +182,41 @@ def ffmpeg_runtime() -> FfmpegRuntime:
                 ),
             )
         return runtime if runtime.torchcodec_compatible else _incompatibility(runtime)
+
+    repo_root = _repo_root_if_available()
+    if repo_root is not None:
+        pinned_root = runtime_root(repo_root)
+        if pinned_root.exists():
+            status = validate_pinned_runtime(repo_root)
+            if not status["ok"]:
+                return FfmpegRuntime(
+                    ffmpeg=None,
+                    ffprobe=None,
+                    bin_dir=str(pinned_bin_dir(repo_root)),
+                    version_major=None,
+                    shared_libraries=False,
+                    torchcodec_compatible=False,
+                    source="PersonaVoice:pinned",
+                    error=(
+                        "PersonaVoice's pinned FFmpeg runtime is present but failed integrity "
+                        "validation. Rerun `persona setup --backend auto` to repair it; refusing "
+                        "to silently fall back to a different system FFmpeg runtime. "
+                        + "; ".join(str(value) for value in status["errors"])
+                    ),
+                )
+            pinned = _candidate_runtime(pinned_bin_dir(repo_root), "PersonaVoice:pinned")
+            if pinned is None:
+                return FfmpegRuntime(
+                    ffmpeg=None,
+                    ffprobe=None,
+                    bin_dir=str(pinned_bin_dir(repo_root)),
+                    version_major=None,
+                    shared_libraries=False,
+                    torchcodec_compatible=False,
+                    source="PersonaVoice:pinned",
+                    error="Pinned FFmpeg runtime is incomplete; rerun `persona setup --backend auto`.",
+                )
+            return pinned if pinned.torchcodec_compatible else _incompatibility(pinned)
 
     valid: list[FfmpegRuntime] = []
     partial: list[FfmpegRuntime] = []

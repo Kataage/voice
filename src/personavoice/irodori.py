@@ -9,7 +9,7 @@ from huggingface_hub import hf_hub_download
 
 from personavoice.atomic import atomic_write_text
 from personavoice.environment_contract import require_current_environment
-from personavoice.hardware import safe_batch_profile
+from personavoice.hardware import irodori_training_precision, safe_batch_profile
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
     IRODORI_DACVAE_FILENAME,
@@ -265,9 +265,10 @@ def _patched_config(
     train_cfg["warmup_steps"] = min(250, max(20, int(max_steps * 0.05)))
     train_cfg["save_every"] = max(100, min(500, max_steps // 4 or 100))
     train_cfg["valid_every"] = train_cfg["save_every"]
-    if backend == "cu126":
-        train_cfg["precision"] = "fp32"
-        train_cfg["allow_tf32"] = False
+    if backend in {"cu126", "cu128"}:
+        precision = irodori_training_precision(backend)
+        train_cfg["precision"] = str(precision["precision"])
+        train_cfg["allow_tf32"] = bool(precision["allow_tf32"])
     elif backend == "cpu":
         train_cfg["dataloader_cuda_prefetch"] = False
         train_cfg["precision"] = "fp32"
