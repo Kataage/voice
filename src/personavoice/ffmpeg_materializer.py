@@ -218,12 +218,6 @@ def _extract_archive(archive: Path, destination: Path) -> None:
 def materialize_windows_ffmpeg(repo_root: Path) -> FfmpegRuntime:
     if platform.system() != "Windows":
         return require_ffmpeg_runtime()
-    if not _x64_windows():
-        raise RuntimeError(
-            "PersonaVoice's audited local Windows FFmpeg runtime is currently x86_64-only. "
-            "Provide a compatible shared FFmpeg runtime with PERSONAVOICE_FFMPEG_BIN or use "
-            "a supported x86_64 Windows host."
-        )
 
     explicit = os.getenv("PERSONAVOICE_FFMPEG_BIN")
     if explicit:
@@ -234,6 +228,13 @@ def materialize_windows_ffmpeg(repo_root: Path) -> FfmpegRuntime:
                 "FFmpeg 4-8 runtime. Fix or unset the explicit override before setup."
             )
         return candidate
+
+    if not _x64_windows():
+        raise RuntimeError(
+            "PersonaVoice's automatic pinned Windows FFmpeg materializer is x86_64-only. "
+            "Provide a compatible shared FFmpeg runtime with PERSONAVOICE_FFMPEG_BIN or use "
+            "a supported x86_64 Windows host."
+        )
 
     status = validate_pinned_runtime(repo_root)
     if not status["ok"]:
