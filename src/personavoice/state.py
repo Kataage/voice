@@ -95,7 +95,13 @@ def _prepare_cache_policy() -> str:
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
 PREPARE_CACHE_POLICY_COMPATIBILITY = {
-    "14-9b93893d6b990319b60e": frozenset(('12-6ef53c9f266fd6794c3e', '12-1d31ef1abd217bcf5c4f')),
+    "14-b19d85f2c6e8eac470cf": frozenset(
+        {
+            "14-9b93893d6b990319b60e",
+            "12-6ef53c9f266fd6794c3e",
+            "12-1d31ef1abd217bcf5c4f",
+        }
+    ),
 }
 
 
@@ -247,7 +253,6 @@ def _canonical_prepare_json_complete(
         if source_id in source_ids:
             return False
         source_ids.add(source_id)
-
     utterance_ids: set[str] = set()
     target_count = 0
     usable_count = 0
