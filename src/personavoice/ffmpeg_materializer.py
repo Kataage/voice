@@ -28,6 +28,8 @@ from personavoice.ffmpeg_contract import (
 from personavoice.runtime_dependencies import (
     FfmpegRuntime,
     _candidate_runtime,
+    ffmpeg_provenance,
+    ffmpeg_provenance_path,
     require_ffmpeg_runtime,
 )
 
@@ -282,8 +284,12 @@ def materialize_windows_ffmpeg(repo_root: Path) -> FfmpegRuntime:
 
 
 def ensure_ffmpeg_runtime(repo_root: Path) -> FfmpegRuntime:
-    """Ensure setup has FFmpeg while keeping normal runtime network-free."""
+    """Ensure setup has FFmpeg and atomically authorize that exact runtime generation."""
 
     if platform.system() == "Windows":
-        return materialize_windows_ffmpeg(repo_root)
-    return require_ffmpeg_runtime()
+        runtime = materialize_windows_ffmpeg(repo_root)
+    else:
+        runtime = require_ffmpeg_runtime()
+    provenance = ffmpeg_provenance(runtime)
+    atomic_write_json(ffmpeg_provenance_path(repo_root), provenance)
+    return runtime
