@@ -18,7 +18,7 @@ WINDOWS_FFMPEG_ARCHIVE_SHA256 = (
     "4296b396bdfd5fbc3dfc75ab4c8703354a56963232d65c4182993543df2d2f45"
 )
 PINNED_RUNTIME_MARKER = ".personavoice-ffmpeg.json"
-MARKER_SCHEMA_VERSION = 2
+MARKER_SCHEMA_VERSION = 3
 REQUIRED_EXECUTABLES = ("ffmpeg.exe", "ffprobe.exe")
 REQUIRED_DLL_PATTERNS = (
     "avutil-*.dll",
@@ -91,8 +91,83 @@ def _safe_relative_file(value: str) -> PurePosixPath | None:
     return path
 
 
+def _is_junction(path: Path) -> bool:
+    checker = getattr(path, "is_junction", None)
+    if checker is None:
+        return False
+    try:
+        return bool(checker())
+    except OSError:
+        return True
+
+
+def _disk_inventory(bin_dir: Path) -> tuple[dict[str, Path], list[str]]:
+    """Return every regular runtime file while rejecting filesystem indirection."""
+
+    errors: list[str] = []
+    files: dict[str, Path] = {}
+    seen_casefold: dict[str, str] = {}
+    try:
+        root = bin_dir.resolve(strict=True)
+    except OSError as exc:
+        return {}, [f"pinned FFmpeg bin directory is missing/unreadable: {exc}"]
+    if not root.is_dir():
+        return {}, ["pinned FFmpeg bin path is not a directory"]
+
+    stack = [bin_dir]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = list(directory.iterdir())
+        except OSError as exc:
+            errors.append(f"pinned FFmpeg runtime directory could not be read: {directory}: {exc}")
+            continue
+        for path in entries:
+            relative = path.relative_to(bin_dir).as_posix()
+            try:
+                if path.is_symlink() or _is_junction(path):
+                    errors.append(
+                        f"pinned FFmpeg runtime contains a symlink/junction: {relative}"
+                    )
+                    continue
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(root):
+                    errors.append(
+                        f"pinned FFmpeg runtime path escapes its bin directory: {relative}"
+                    )
+                    continue
+                if path.is_dir():
+                    stack.append(path)
+                    continue
+                if not path.is_file():
+                    errors.append(
+                        f"pinned FFmpeg runtime contains a non-regular file: {relative}"
+                    )
+                    continue
+                if path.stat().st_size <= 0:
+                    errors.append(f"pinned FFmpeg runtime file is empty: {relative}")
+                    continue
+            except OSError as exc:
+                errors.append(
+                    f"pinned FFmpeg runtime file could not be inspected: {relative}: {exc}"
+                )
+                continue
+
+            key = relative.casefold()
+            previous = seen_casefold.get(key)
+            if previous is not None:
+                errors.append(
+                    "pinned FFmpeg runtime contains case-insensitive duplicate paths: "
+                    f"{previous!r}, {relative!r}"
+                )
+                continue
+            seen_casefold[key] = relative
+            files[relative] = path
+    return files, errors
+
+
 def validate_runtime_root(root: Path) -> dict[str, object]:
-    """Validate a materialized pinned runtime without trusting its marker paths."""
+    """Validate the exact materialized runtime without trusting marker paths."""
 
     errors: list[str] = []
     value = _marker(root)
@@ -109,6 +184,7 @@ def validate_runtime_root(root: Path) -> dict[str, object]:
     raw_files = value.get("files")
     files = raw_files if isinstance(raw_files, dict) else {}
     safe_files: dict[str, str] = {}
+    marker_casefold: dict[str, str] = {}
     if not files:
         errors.append("pinned FFmpeg marker has no extracted-file hashes")
 
@@ -124,9 +200,15 @@ def validate_runtime_root(root: Path) -> dict[str, object]:
             errors.append(f"pinned FFmpeg marker contains an invalid SHA256 for {relative!r}")
             continue
         normalized = safe.as_posix()
-        if normalized in safe_files:
-            errors.append(f"pinned FFmpeg marker contains a duplicate path: {normalized}")
+        key = normalized.casefold()
+        previous = marker_casefold.get(key)
+        if previous is not None:
+            errors.append(
+                "pinned FFmpeg marker contains a case-insensitive duplicate path: "
+                f"{previous!r}, {normalized!r}"
+            )
             continue
+        marker_casefold[key] = normalized
         safe_files[normalized] = expected.lower()
 
     for name in REQUIRED_EXECUTABLES:
@@ -141,20 +223,33 @@ def validate_runtime_root(root: Path) -> dict[str, object]:
         if not matches:
             errors.append(f"pinned FFmpeg marker is missing DLL family {pattern}")
 
-    for relative, expected in safe_files.items():
-        safe = PurePosixPath(relative)
-        path = bin_dir.joinpath(*safe.parts)
+    disk_files, disk_errors = _disk_inventory(bin_dir)
+    errors.extend(disk_errors)
+    disk_by_casefold = {relative.casefold(): relative for relative in disk_files}
+    marker_keys = set(marker_casefold)
+    disk_keys = set(disk_by_casefold)
+    for key in sorted(marker_keys - disk_keys):
+        errors.append(f"pinned FFmpeg runtime file is missing: {marker_casefold[key]}")
+    for key in sorted(disk_keys - marker_keys):
+        errors.append(
+            f"pinned FFmpeg runtime contains an untracked file: {disk_by_casefold[key]}"
+        )
+
+    for key in sorted(marker_keys & disk_keys):
+        marker_relative = marker_casefold[key]
+        disk_relative = disk_by_casefold[key]
+        expected = safe_files[marker_relative]
+        path = disk_files[disk_relative]
         try:
-            if not path.is_file() or path.stat().st_size <= 0:
-                errors.append(f"pinned FFmpeg runtime file is missing/empty: {relative}")
-                continue
             actual = sha256_file(path)
         except OSError as exc:
-            errors.append(f"pinned FFmpeg runtime file could not be read: {relative}: {exc}")
+            errors.append(
+                f"pinned FFmpeg runtime file could not be read: {disk_relative}: {exc}"
+            )
             continue
         if actual.lower() != expected:
             errors.append(
-                f"pinned FFmpeg runtime checksum mismatch for {relative}: "
+                f"pinned FFmpeg runtime checksum mismatch for {disk_relative}: "
                 f"expected {expected}, got {actual}"
             )
 
