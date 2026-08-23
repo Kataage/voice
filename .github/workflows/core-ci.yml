@@ -33,6 +33,14 @@ jobs:
         run: uv run --locked python -m compileall -q src tests workers
       - name: CLI smoke test
         run: uv run --locked persona --help
+      - name: Validate POSIX lock maintenance script syntax
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: sh -n scripts/lock_all.sh
+      - name: Validate PowerShell lock maintenance script syntax
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: '[scriptblock]::Create((Get-Content -Raw scripts/lock_all.ps1)) | Out-Null'
 
   worker-envs:
     timeout-minutes: 30
