@@ -63,6 +63,18 @@ def test_subprocess_environment_forces_utf8_output_contract():
     assert env["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_python_worker_json_round_trips_japanese_even_from_legacy_codepage_env():
+    result = process.run_json(
+        [
+            sys.executable,
+            "-c",
+            "import json; print(json.dumps({'text': '日本語'}, ensure_ascii=False))",
+        ],
+        env={"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp932"},
+    )
+    assert result == {"text": "日本語"}
+
+
 def test_asr_cuda_runtime_is_injected_without_leaking_to_other_workers(tmp_path: Path):
     project, provider = _asr_project(tmp_path)
     expected = _materialize_fake_cuda_runtime(provider)
