@@ -100,3 +100,26 @@ def test_parallel_same_stage_is_rejected_before_state_mutation(tmp_path: Path):
         current = first.load()["stages"]["prepare"]
         assert current["fingerprint"] == "first"
         assert current["runner"]["run_id"] == before
+
+
+def test_prepare_and_train_are_serialized_for_one_persona(tmp_path: Path):
+    paths, _cfg, first = _persona(tmp_path)
+    second = StateStore(paths.state)
+    with first.running("prepare", "prepare-fingerprint"):
+        with pytest.raises(StageLockError, match="already running"), second.running(
+            "train", "train-fingerprint"
+        ):
+            pass
+        state = first.load()
+        assert "train" not in state["stages"]
+        assert state["stages"]["prepare"]["fingerprint"] == "prepare-fingerprint"
+
+
+def test_different_personas_do_not_share_mutation_lock(tmp_path: Path):
+    alice = init_persona(tmp_path, "alice", authorized=True)
+    bob = init_persona(tmp_path, "bob", authorized=True)
+    alice_store = StateStore(alice.state)
+    bob_store = StateStore(bob.state)
+    with alice_store.running("prepare", "alice"), bob_store.running("prepare", "bob"):
+        assert alice_store.stage("prepare")["status"] == "running"
+        assert bob_store.stage("prepare")["status"] == "running"
