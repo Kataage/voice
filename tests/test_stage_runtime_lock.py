@@ -8,7 +8,7 @@ from personavoice.config import PersonaConfig
 from personavoice.process_lock import exclusive_process_lock, process_lock_held
 from personavoice.project import init_persona
 from personavoice.setup_lock import SetupLockError, setup_lock
-from personavoice.stage_lock import StageLockError
+from personavoice.stage_lock import StageLockError, stage_lock_path
 from personavoice.state import StateStore
 from personavoice.status import persona_status
 
@@ -28,6 +28,12 @@ def test_setup_lock_still_rejects_parallel_setup(tmp_path: Path):
         setup_lock(tmp_path),
     ):
         pass
+
+
+@pytest.mark.parametrize("name", ["../prepare", "prepare/other", "", ".prepare", "prepare lock"])
+def test_stage_lock_path_rejects_unsafe_names(tmp_path: Path, name: str):
+    with pytest.raises(ValueError, match="Unsafe stage name"):
+        stage_lock_path(tmp_path, name)
 
 
 def _persona(tmp_path: Path):
