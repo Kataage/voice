@@ -14,7 +14,7 @@ from personavoice.hardware import (
 from personavoice.runtime_dependencies import ffmpeg_provenance_status
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-ENVIRONMENT_CONTRACT_SCHEMA = 5
+ENVIRONMENT_CONTRACT_SCHEMA = 6
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -70,6 +70,7 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
             "irodori_sha256": _sha256(repo_root / "src" / "personavoice" / "irodori.py"),
             "inference_sha256": _sha256(repo_root / "src" / "personavoice" / "inference.py"),
             "setup_sha256": _sha256(repo_root / "src" / "personavoice" / "setup_env.py"),
+            "process_sha256": _sha256(repo_root / "src" / "personavoice" / "process.py"),
             "runtime_dependencies_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "runtime_dependencies.py"
             ),
