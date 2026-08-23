@@ -36,12 +36,21 @@ def _repo_root() -> Path:
 
 
 def _file_contract(path: Path) -> str:
+    """Hash audited text contracts independently of checkout line endings."""
+
     try:
         if not path.is_file():
             return "missing"
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        raw = path.read_bytes()
     except OSError:
         return "unreadable"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        normalized = raw
+    else:
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def _prepare_cache_policy() -> str:
@@ -49,7 +58,7 @@ def _prepare_cache_policy() -> str:
 
     repo = _repo_root()
     contract = {
-        "schema": 12,
+        "schema": 14,
         "prepare_result_schema": PREPARE_RESULT_SCHEMA,
         "dataset_schema": DATASET_SCHEMA_VERSION,
         "asr_revision": ASR_MODEL_REVISION,
@@ -63,6 +72,9 @@ def _prepare_cache_policy() -> str:
         ),
         "sense_lock_sha256": _file_contract(repo / "workers" / "sense" / "uv.lock"),
         "pipeline_code_sha256": _file_contract(repo / "src" / "personavoice" / "pipeline.py"),
+        "prepare_checkpoints_code_sha256": _file_contract(
+            repo / "src" / "personavoice" / "prepare_checkpoints.py"
+        ),
         "media_code_sha256": _file_contract(repo / "src" / "personavoice" / "media.py"),
         "speaker_code_sha256": _file_contract(repo / "src" / "personavoice" / "speaker.py"),
         "captions_code_sha256": _file_contract(repo / "src" / "personavoice" / "captions.py"),
@@ -78,10 +90,20 @@ def _prepare_cache_policy() -> str:
         "sense_worker_code_sha256": _file_contract(repo / "workers" / "sense" / "worker.py"),
     }
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"12-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    return f"14-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
+PREPARE_CACHE_POLICY_COMPATIBILITY = {
+    "14-9b93893d6b990319b60e": frozenset(('12-6ef53c9f266fd6794c3e', '12-1d31ef1abd217bcf5c4f')),
+}
+
+
+def _prepare_policy_compatible(recorded: Any) -> bool:
+    if recorded == PREPARE_CACHE_POLICY_VERSION:
+        return True
+    compatible = PREPARE_CACHE_POLICY_COMPATIBILITY.get(PREPARE_CACHE_POLICY_VERSION)
+    return bool(compatible and recorded in compatible)
 
 
 def _now() -> str:
@@ -426,7 +448,9 @@ class StateStore:
 
     def is_complete(self, name: str, fingerprint: str) -> bool:
         stage = self.stage(name)
-        if name == "prepare" and stage.get("cache_policy_version") != PREPARE_CACHE_POLICY_VERSION:
+        if name == "prepare" and not _prepare_policy_compatible(
+            stage.get("cache_policy_version")
+        ):
             return False
         if stage.get("status") != "complete" or stage.get("fingerprint") != fingerprint:
             return False
@@ -483,7 +507,7 @@ class StateStore:
                 old_policy = stage.get("cache_policy_version")
                 must_invalidate = (
                     force
-                    or old_policy != PREPARE_CACHE_POLICY_VERSION
+                    or not _prepare_policy_compatible(old_policy)
                     or (old_fingerprint is not None and old_fingerprint != fingerprint)
                 )
                 if must_invalidate:

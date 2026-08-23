@@ -102,7 +102,9 @@ raw media
 
 同じ音源を別名で`raw/`へ複数置いてもfull SHA256で1素材として扱い、重複パスはprovenanceとして記録します。`identity/`参照がある状態で、ある動画のbest speaker similarityが`prepare.min_identity_similarity`を下回った場合、その動画は「本人不在の可能性が高い正常な入力」としてTTS/VC学習対象から外し、`dataset/skipped_sources.json`へ記録して他の動画処理を継続します。diarizationがspeaker embedding自体を返せない等の処理異常はskipせずエラーにします。全素材から利用可能な本人発話が1件も得られなければprepare自体を失敗させます。
 
-ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけロードします。同じfingerprintで失敗/中断した通常の再実行は安全なcache/checkpointから再開します。`raw/`, `identity/`, prepare設定、固定model revision、前処理worker lock、training dataset/設定、training worker lockが変わった場合は依存artifactを自動で無効化します。リポジトリ/人物フォルダを移動した場合も、absolute-path exportを古い場所のまま再利用しません。`--force`を指定した場合は、同じfingerprintの失敗後であってもprepare由来cacheを破棄して完全に作り直します。
+ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけロードします。各batchは1項目の成功ごとにatomic checkpointを残し、worker crash・PC再起動・強制終了後も、同じfingerprintで`--force`を付けずに再実行すれば中央semantic validatorを通過した完了項目を正式cacheへ昇格して再利用します。不正・truncated・wrong-id checkpointは捨てて再計算します。長時間処理中は別ターミナルから`uv run --locked persona status alice`を実行すると、`audit.prepare.batch_progress`でworker/phase、`completed / total`、現在のitem ID、失敗数、checkpoint済み成功数を確認できます。stage OS lockが実行中判定のsource-of-truthで、progressファイル自体をliveness判定には使いません。
+
+同じfingerprintで失敗/中断した通常の再実行は安全なcache/checkpointから再開します。`raw/`, `identity/`, prepare設定、固定model revision、前処理worker lock、training dataset/設定、training worker lockが変わった場合は依存artifactを自動で無効化します。リポジトリ/人物フォルダを移動した場合も、absolute-path exportを古い場所のまま再利用しません。`--force`を指定した場合は、同じfingerprintの失敗後であってもprepare由来cache/checkpointを破棄して完全に作り直します。
 
 ```bash
 uv run --locked persona prepare alice

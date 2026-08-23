@@ -19,6 +19,12 @@ from personavoice.media import (
     media_files,
     sha256_file,
 )
+from personavoice.prepare_checkpoints import (
+    checkpoint_dir,
+    cleanup_checkpoint_dir,
+    discard_checkpoint,
+    recover_checkpoint,
+)
 from personavoice.project import PersonaPaths
 from personavoice.speaker import (
     TARGET_NOT_FOUND,
@@ -293,6 +299,7 @@ def _identity_embeddings(repo_root: Path, paths: PersonaPaths) -> list[list[floa
     values_by_key: dict[str, list[float]] = {}
     pending = []
     cache_paths: dict[str, Path] = {}
+    checkpoints = checkpoint_dir(paths.cache / "identity")
     for source in identity:
         key = sha256_file(source)[:20]
         cache = paths.cache / "identity" / f"{key}.json"
@@ -300,23 +307,40 @@ def _identity_embeddings(repo_root: Path, paths: PersonaPaths) -> list[list[floa
         cached = _read_cache_json(cache) if cache.is_file() else None
         embedding = cached.get("embedding") if cached is not None else None
         if isinstance(embedding, list) and embedding:
+            discard_checkpoint(checkpoints, key)
             values_by_key[key] = [float(value) for value in embedding]
-        else:
-            if cache.exists():
-                cache.unlink(missing_ok=True)
-            pending.append({"id": key, "audio": str(source.resolve())})
+            continue
+        if cache.exists():
+            cache.unlink(missing_ok=True)
+        recovered = recover_checkpoint(checkpoints, key, "identity")
+        if recovered is not None:
+            _dump(cache, recovered)
+            discard_checkpoint(checkpoints, key)
+            embedding = recovered.get("embedding")
+            if isinstance(embedding, list) and embedding:
+                values_by_key[key] = [float(value) for value in embedding]
+                continue
+        pending.append({"id": key, "audio": str(source.resolve())})
     if pending:
         response = diarization.call(
             repo_root,
             "batch",
-            {"embeddings": pending, "diarizations": []},
+            {
+                "embeddings": pending,
+                "diarizations": [],
+                "checkpoint_dir": str(checkpoints.resolve()),
+            },
         )
         results = _batch_results(response.get("embeddings") or [], operation="identity embedding")
         for key, result in results.items():
             _dump(cache_paths[key], result)
+            discard_checkpoint(checkpoints, key)
             embedding = result.get("embedding")
             if embedding:
                 values_by_key[key] = [float(value) for value in embedding]
+        cleanup_checkpoint_dir(checkpoints)
+    elif checkpoints.exists():
+        cleanup_checkpoint_dir(checkpoints)
     return [values_by_key[key] for key in sorted(values_by_key)]
 
 
@@ -329,15 +353,23 @@ def _batch_asr(
     values: dict[str, dict[str, Any]] = {}
     pending = []
     cache_paths: dict[str, Path] = {}
+    checkpoints = checkpoint_dir(paths.cache / "asr")
     for source in sources:
         source_id = str(source["source_id"])
         cache = paths.cache / "asr" / f"{source_id}.json"
         cache_paths[source_id] = cache
         cached = _read_cache_json(cache) if cache.is_file() else None
         if cached is not None:
+            discard_checkpoint(checkpoints, source_id)
             values[source_id] = cached
-        else:
-            pending.append({"id": source_id, "audio": str(source["audio"].resolve())})
+            continue
+        recovered = recover_checkpoint(checkpoints, source_id, "asr")
+        if recovered is not None:
+            _dump(cache, recovered)
+            discard_checkpoint(checkpoints, source_id)
+            values[source_id] = recovered
+            continue
+        pending.append({"id": source_id, "audio": str(source["audio"].resolve())})
     if pending:
         response = worker(repo_root, "asr").call(
             repo_root,
@@ -347,12 +379,17 @@ def _batch_asr(
                 "model": cfg.prepare.asr_model,
                 "compute_type": cfg.prepare.asr_compute_type,
                 "language": cfg.prepare.language,
+                "checkpoint_dir": str(checkpoints.resolve()),
             },
         )
         results = _batch_results(response.get("results") or [], operation="ASR")
         for source_id, result in results.items():
             _dump(cache_paths[source_id], result)
+            discard_checkpoint(checkpoints, source_id)
             values[source_id] = result
+        cleanup_checkpoint_dir(checkpoints)
+    elif checkpoints.exists():
+        cleanup_checkpoint_dir(checkpoints)
     return values
 
 
@@ -364,20 +401,32 @@ def _batch_diarization(
     values: dict[str, dict[str, Any]] = {}
     pending = []
     cache_paths: dict[str, Path] = {}
+    checkpoints = checkpoint_dir(paths.cache / "diarization")
     for source in sources:
         source_id = str(source["source_id"])
         cache = paths.cache / "diarization" / f"{source_id}.json"
         cache_paths[source_id] = cache
         cached = _read_cache_json(cache) if cache.is_file() else None
         if cached is not None:
+            discard_checkpoint(checkpoints, source_id)
             values[source_id] = cached
-        else:
-            pending.append({"id": source_id, "audio": str(source["audio"].resolve())})
+            continue
+        recovered = recover_checkpoint(checkpoints, source_id, "diarization")
+        if recovered is not None:
+            _dump(cache, recovered)
+            discard_checkpoint(checkpoints, source_id)
+            values[source_id] = recovered
+            continue
+        pending.append({"id": source_id, "audio": str(source["audio"].resolve())})
     if pending:
         response = worker(repo_root, "diarization").call(
             repo_root,
             "batch",
-            {"embeddings": [], "diarizations": pending},
+            {
+                "embeddings": [],
+                "diarizations": pending,
+                "checkpoint_dir": str(checkpoints.resolve()),
+            },
         )
         results = _batch_results(
             response.get("diarizations") or [],
@@ -385,7 +434,11 @@ def _batch_diarization(
         )
         for source_id, result in results.items():
             _dump(cache_paths[source_id], result)
+            discard_checkpoint(checkpoints, source_id)
             values[source_id] = result
+        cleanup_checkpoint_dir(checkpoints)
+    elif checkpoints.exists():
+        cleanup_checkpoint_dir(checkpoints)
     return values
 
 
@@ -401,6 +454,7 @@ def _batch_sense(
     pending = []
     pending_keys: set[str] = set()
     cache_paths: dict[str, Path] = {}
+    checkpoints = checkpoint_dir(paths.cache / "sense")
     for row in rows:
         audio_path = row.get("audio_path")
         if not audio_path:
@@ -412,20 +466,36 @@ def _batch_sense(
         cache_paths[key] = cache
         cached = _read_cache_json(cache) if cache.is_file() else None
         if cached is not None:
+            discard_checkpoint(checkpoints, key)
             values[key] = cached
-        elif key not in pending_keys:
+            continue
+        recovered = recover_checkpoint(checkpoints, key, "sense")
+        if recovered is not None:
+            _dump(cache, recovered)
+            discard_checkpoint(checkpoints, key)
+            values[key] = recovered
+            continue
+        if key not in pending_keys:
             pending.append({"id": key, "audio": str(audio.resolve())})
             pending_keys.add(key)
     if pending:
         response = worker(repo_root, "sense").call(
             repo_root,
             "batch_analyze",
-            {"items": pending, "language": cfg.prepare.language},
+            {
+                "items": pending,
+                "language": cfg.prepare.language,
+                "checkpoint_dir": str(checkpoints.resolve()),
+            },
         )
         results = _batch_results(response.get("results") or [], operation="SenseVoice analysis")
         for key, result in results.items():
             _dump(cache_paths[key], result)
+            discard_checkpoint(checkpoints, key)
             values[key] = result
+        cleanup_checkpoint_dir(checkpoints)
+    elif checkpoints.exists():
+        cleanup_checkpoint_dir(checkpoints)
     return values
 
 
