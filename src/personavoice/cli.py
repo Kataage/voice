@@ -76,7 +76,16 @@ def _download_models_or_explain(root: Path, *, include_seed_vc: bool) -> dict:
 def doctor(
     deep: bool = typer.Option(False, help="Load local models and verify offline readiness."),
 ) -> None:
-    result = doctor_report(find_repo_root(), deep=deep)
+    root = find_repo_root()
+    if deep:
+        with console.status(
+            "[bold cyan]Deep offline verification is running...[/bold cyan] "
+            "[dim](model loading can take several minutes)[/dim]",
+            spinner="dots",
+        ):
+            result = doctor_report(root, deep=True)
+    else:
+        result = doctor_report(root, deep=False)
     _print(result)
     if not result["commands_ok"] or (deep and not result["ready_offline"]):
         raise typer.Exit(1)
@@ -97,18 +106,43 @@ def setup(
             f"{', '.join(sorted(SETUP_BACKENDS))}."
         )
     root = find_repo_root()
+    console.print("[bold]PersonaVoice setup[/bold]")
+    console.print(
+        "[dim]During environment sync, downloads, and SHA256 verification the GPU may be "
+        "mostly idle. This is normal; the animated status below means PersonaVoice is still "
+        "waiting for the current phase to finish.[/dim]"
+    )
+    console.print("[bold cyan]1/3[/bold cyan] Synchronizing audited environments...")
     result = install_environments(root, backend=None if backend == "auto" else backend)
+    selected_backend = result.get("irodori_backend", backend)
+    console.print(
+        f"[green]✓[/green] Environment synchronization complete "
+        f"(Irodori backend: [bold]{selected_backend}[/bold])."
+    )
     if download:
-        result["models"] = _download_models_or_explain(
-            root,
-            include_seed_vc=not skip_seed_vc_models,
-        )
+        with console.status(
+            "[bold cyan]2/3 Downloading/verifying pinned model assets...[/bold cyan] "
+            "[dim](network/disk/CPU work; low GPU usage is normal)[/dim]",
+            spinner="dots",
+        ):
+            result["models"] = _download_models_or_explain(
+                root,
+                include_seed_vc=not skip_seed_vc_models,
+            )
+        console.print("[green]✓[/green] Pinned model assets are materialized and verified.")
+    else:
+        console.print("[yellow]2/3[/yellow] Model download skipped by request.")
     if verify:
-        verification = doctor_report(
-            root,
-            deep=True,
-            require_seed_vc=not skip_seed_vc_models,
-        )
+        with console.status(
+            "[bold cyan]3/3 Loading models for deep offline verification...[/bold cyan] "
+            "[dim](GPU usage rises only for workers that actually execute CUDA kernels)[/dim]",
+            spinner="dots",
+        ):
+            verification = doctor_report(
+                root,
+                deep=True,
+                require_seed_vc=not skip_seed_vc_models,
+            )
         if download and not verification["ready_offline"]:
             repaired = repair_failed_model_materializations(
                 root,
@@ -116,22 +150,33 @@ def setup(
                 include_seed_vc=not skip_seed_vc_models,
             )
             if repaired:
-                result["model_recovery"] = {
-                    "discarded_materializations": repaired,
-                    "download": _download_models_or_explain(
-                        root,
-                        include_seed_vc=not skip_seed_vc_models,
-                    ),
-                }
-                verification = doctor_report(
-                    root,
-                    deep=True,
-                    require_seed_vc=not skip_seed_vc_models,
+                console.print(
+                    "[yellow]Deep verification found repairable model materializations. "
+                    "Rebuilding only the affected assets...[/yellow]"
                 )
+                with console.status(
+                    "[bold cyan]Repairing and re-verifying affected model assets...[/bold cyan]",
+                    spinner="dots",
+                ):
+                    result["model_recovery"] = {
+                        "discarded_materializations": repaired,
+                        "download": _download_models_or_explain(
+                            root,
+                            include_seed_vc=not skip_seed_vc_models,
+                        ),
+                    }
+                    verification = doctor_report(
+                        root,
+                        deep=True,
+                        require_seed_vc=not skip_seed_vc_models,
+                    )
         result["verification"] = verification
         if not verification["ready_offline"]:
             _print(result)
             raise typer.Exit(1)
+        console.print("[green]✓[/green] Deep offline verification complete.")
+    else:
+        console.print("[yellow]3/3[/yellow] Deep verification skipped by request.")
     _print(result)
 
 
