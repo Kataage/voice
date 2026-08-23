@@ -35,7 +35,10 @@ def test_nvidia_query_parses_uuid_pci_bus_and_compute_capability(monkeypatch):
         calls.append(fields)
         return types.SimpleNamespace(
             returncode=0,
-            stdout="7, GPU-abcdef, 00000000:65:00.0, NVIDIA RTX, 24576, 23000, 8.6\n",
+            stdout=(
+                "7, GPU-abcdef, 00000000:65:00.0, NVIDIA RTX, 24576, 23000, "
+                "600.01, 8.6\n"
+            ),
         )
 
     monkeypatch.setattr(hardware, "_run_nvidia_query", fake_query)
@@ -48,9 +51,12 @@ def test_nvidia_query_parses_uuid_pci_bus_and_compute_capability(monkeypatch):
             total_mib=24576,
             free_mib=23000,
             compute_capability="8.6",
+            driver_version="600.01",
         )
     ]
-    assert calls == ["index,uuid,pci.bus_id,name,memory.total,memory.free,compute_cap"]
+    assert calls == [
+        "index,uuid,pci.bus_id,name,memory.total,memory.free,driver_version,compute_cap"
+    ]
 
 
 def test_selected_gpu_honors_cuda_visible_devices_numeric_pci_order(monkeypatch):

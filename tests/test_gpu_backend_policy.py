@@ -8,7 +8,14 @@ from personavoice import environment_contract as environment
 from personavoice import hardware, setup_env
 
 
-def gpu(capability: str, *, index: int = 0, mib: int = 16384, uuid: str | None = None):
+def gpu(
+    capability: str,
+    *,
+    index: int = 0,
+    mib: int = 16384,
+    uuid: str | None = None,
+    driver: str = "600.01",
+):
     return hardware.GpuInfo(
         index=index,
         uuid=uuid or f"GPU-{index:04d}",
@@ -16,6 +23,7 @@ def gpu(capability: str, *, index: int = 0, mib: int = 16384, uuid: str | None =
         total_mib=mib,
         free_mib=max(1, mib - 1024),
         compute_capability=capability,
+        driver_version=driver,
     )
 
 
@@ -136,12 +144,21 @@ def test_seed_vc_falls_back_to_cpu_only_when_legacy_stack_cannot_run(monkeypatch
     assert blackwell["lfm"] == "cu128"
 
 
-def _write_setup(tmp_path, backend: str, *, seed_vc_backend: str | None = None) -> dict:
+def _write_setup(
+    tmp_path,
+    backend: str,
+    *,
+    seed_vc_backend: str | None = None,
+    selected_gpu=None,
+) -> dict:
     runtime = tmp_path / ".runtime"
     runtime.mkdir(parents=True)
+    if selected_gpu is None and backend in {"cu126", "cu128"}:
+        selected_gpu = gpu("6.1" if backend == "cu126" else "8.6", uuid="GPU-setup")
     setup = {
         "irodori_backend": backend,
         "environment_contract": environment.environment_contract(tmp_path),
+        "selected_gpu": hardware.gpu_record(selected_gpu),
     }
     if seed_vc_backend is not None:
         setup["worker_backends"] = {"seed_vc": seed_vc_backend}
@@ -149,34 +166,57 @@ def _write_setup(tmp_path, backend: str, *, seed_vc_backend: str | None = None) 
     return setup
 
 
-def test_direct_runtime_rejects_incompatible_gpu_swap(tmp_path, monkeypatch):
+def test_direct_runtime_rejects_physical_gpu_swap_before_model_start(tmp_path, monkeypatch):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
     _write_setup(tmp_path, "cu128")
-    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("7.0"))
-    with pytest.raises(RuntimeError, match="GPU selection appears to have changed"):
+    monkeypatch.setattr(
+        environment,
+        "selected_nvidia_gpu",
+        lambda: gpu("7.0", uuid="GPU-replacement"),
+    )
+    with pytest.raises(RuntimeError, match="physical CUDA GPU"):
         environment.require_current_environment(tmp_path)
 
 
-def test_direct_runtime_accepts_compatible_gpu_swap(tmp_path, monkeypatch):
+def test_direct_runtime_rejects_even_compatible_gpu_swap_until_repreflight(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
-    setup = _write_setup(tmp_path, "cu126")
-    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("8.6"))
-    assert environment.require_current_environment(tmp_path) == setup
+    _write_setup(tmp_path, "cu126")
+    monkeypatch.setattr(
+        environment,
+        "selected_nvidia_gpu",
+        lambda: gpu("8.6", uuid="GPU-compatible-replacement"),
+    )
+    with pytest.raises(RuntimeError, match="physical CUDA GPU"):
+        environment.require_current_environment(tmp_path)
 
 
-def test_direct_runtime_only_blocks_seed_vc_after_blackwell_swap(tmp_path, monkeypatch):
+def test_direct_runtime_only_blocks_legacy_seed_vc_on_same_blackwell(tmp_path, monkeypatch):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
-    setup = _write_setup(tmp_path, "cu128", seed_vc_backend="cu124")
-    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("12.0"))
+    blackwell = gpu("12.0", uuid="GPU-blackwell")
+    setup = _write_setup(
+        tmp_path,
+        "cu128",
+        seed_vc_backend="cu124",
+        selected_gpu=blackwell,
+    )
+    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: blackwell)
     assert environment.require_current_environment(tmp_path) == setup
     with pytest.raises(RuntimeError, match="Seed-VC was set up for cu124"):
         environment.require_current_environment(tmp_path, worker_name="seed_vc")
 
 
-def test_direct_runtime_accepts_blackwell_when_seed_vc_is_cpu(tmp_path, monkeypatch):
+def test_direct_runtime_accepts_same_blackwell_when_seed_vc_is_cpu(tmp_path, monkeypatch):
     monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
-    setup = _write_setup(tmp_path, "cu128", seed_vc_backend="cpu")
-    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: gpu("12.0"))
+    blackwell = gpu("12.0", uuid="GPU-blackwell")
+    setup = _write_setup(
+        tmp_path,
+        "cu128",
+        seed_vc_backend="cpu",
+        selected_gpu=blackwell,
+    )
+    monkeypatch.setattr(environment, "selected_nvidia_gpu", lambda: blackwell)
     assert environment.require_current_environment(tmp_path) == setup
 
 

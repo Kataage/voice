@@ -114,6 +114,7 @@ def _selected_gpu_dict(gpu) -> dict[str, Any]:
         "compute_capability": gpu.compute_capability,
         "total_mib": gpu.total_mib,
         "free_mib": gpu.free_mib,
+        "driver_version": gpu.driver_version,
     }
 
 
@@ -174,6 +175,79 @@ def runtime_hardware_status(
         }
 
     selected = _selected_gpu_dict(gpu)
+
+    recorded_contract = value.get("environment_contract")
+    strict_gpu_provenance = (
+        isinstance(recorded_contract, dict)
+        and isinstance(recorded_contract.get("schema"), int)
+        and recorded_contract["schema"] >= ENVIRONMENT_CONTRACT_SCHEMA
+    )
+    if strict_gpu_provenance:
+        recorded_gpu = value.get("selected_gpu")
+        if not isinstance(recorded_gpu, dict):
+            return {
+                "ok": False,
+                "backend": backend,
+                "seed_vc_backend": seed_vc_backend,
+                "selected_gpu": selected,
+                "preferred_backend": cuda_backend_for_gpu(gpu),
+                "preferred_seed_vc_backend": (
+                    "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "error": (
+                    "The current CUDA setup state has no audited GPU provenance. "
+                    "Run `persona setup --backend auto` before model work."
+                ),
+            }
+        recorded_uuid = recorded_gpu.get("uuid")
+        current_uuid = gpu.uuid
+        if (
+            not isinstance(recorded_uuid, str)
+            or not recorded_uuid
+            or not isinstance(current_uuid, str)
+            or not current_uuid
+            or recorded_uuid != current_uuid
+        ):
+            return {
+                "ok": False,
+                "backend": backend,
+                "seed_vc_backend": seed_vc_backend,
+                "selected_gpu": selected,
+                "preferred_backend": cuda_backend_for_gpu(gpu),
+                "preferred_seed_vc_backend": (
+                    "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "error": (
+                    "The physical CUDA GPU selected as device 0 changed after setup. "
+                    "Run `persona setup --backend auto` to rebuild/reuse the appropriate locked "
+                    "environments and rerun the real CUDA kernel preflight before model work."
+                ),
+            }
+        recorded_driver = recorded_gpu.get("driver_version")
+        current_driver = gpu.driver_version
+        if (
+            not isinstance(recorded_driver, str)
+            or not recorded_driver
+            or not isinstance(current_driver, str)
+            or not current_driver
+            or recorded_driver != current_driver
+        ):
+            return {
+                "ok": False,
+                "backend": backend,
+                "seed_vc_backend": seed_vc_backend,
+                "selected_gpu": selected,
+                "preferred_backend": cuda_backend_for_gpu(gpu),
+                "preferred_seed_vc_backend": (
+                    "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "error": (
+                    "The NVIDIA driver version changed after the CUDA environments were "
+                    "preflighted. Run `persona setup --backend auto` to rerun the real CUDA "
+                    "kernel preflight before model work."
+                ),
+            }
+
     preferred = cuda_backend_for_gpu(gpu)
     preferred_seed = "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
 

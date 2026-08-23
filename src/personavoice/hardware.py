@@ -16,6 +16,7 @@ class GpuInfo:
     compute_capability: str | None = None
     uuid: str | None = None
     pci_bus_id: str | None = None
+    driver_version: str | None = None
 
 
 def _run_nvidia_query(fields: str) -> subprocess.CompletedProcess[str] | None:
@@ -52,7 +53,7 @@ def _parse_compute_capability(value: str | None) -> tuple[int, int] | None:
 
 
 def nvidia_gpus() -> list[GpuInfo]:
-    fields = "index,uuid,pci.bus_id,name,memory.total,memory.free"
+    fields = "index,uuid,pci.bus_id,name,memory.total,memory.free,driver_version"
     completed = _run_nvidia_query(fields + ",compute_cap")
     include_compute_cap = completed is not None and completed.returncode == 0
     if not include_compute_cap:
@@ -61,7 +62,7 @@ def nvidia_gpus() -> list[GpuInfo]:
         return []
 
     out = []
-    expected_parts = 7 if include_compute_cap else 6
+    expected_parts = 8 if include_compute_cap else 7
     for line in completed.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
         if len(parts) != expected_parts:
@@ -75,7 +76,8 @@ def nvidia_gpus() -> list[GpuInfo]:
                     name=parts[3],
                     total_mib=int(float(parts[4])),
                     free_mib=int(float(parts[5])),
-                    compute_capability=parts[6] if include_compute_cap else None,
+                    driver_version=parts[6] or None,
+                    compute_capability=parts[7] if include_compute_cap else None,
                 )
             )
         except ValueError:
