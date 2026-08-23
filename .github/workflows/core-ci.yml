@@ -29,6 +29,8 @@ jobs:
         run: uv run --locked ruff check src tests workers
       - name: Unit tests
         run: uv run --locked pytest
+      - name: Report prepare cache policy
+        run: uv run --locked python -c "from personavoice.state import PREPARE_CACHE_POLICY_VERSION; print('PREPARE_CACHE_POLICY_VERSION=' + PREPARE_CACHE_POLICY_VERSION)"
       - name: Compile
         run: uv run --locked python -m compileall -q src tests workers
       - name: CLI smoke test
