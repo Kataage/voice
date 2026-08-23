@@ -101,12 +101,23 @@ def _is_junction(path: Path) -> bool:
         return True
 
 
+def _filesystem_indirection(path: Path) -> bool:
+    """Treat symlink/junction inspection failures as unsafe for pinned runtime roots."""
+
+    try:
+        return path.is_symlink() or _is_junction(path)
+    except OSError:
+        return True
+
+
 def _disk_inventory(bin_dir: Path) -> tuple[dict[str, Path], list[str]]:
     """Return every regular runtime file while rejecting filesystem indirection."""
 
     errors: list[str] = []
     files: dict[str, Path] = {}
     seen_casefold: dict[str, str] = {}
+    if _filesystem_indirection(bin_dir):
+        return {}, ["pinned FFmpeg bin directory is a symlink/junction"]
     try:
         root = bin_dir.resolve(strict=True)
     except OSError as exc:
@@ -125,7 +136,7 @@ def _disk_inventory(bin_dir: Path) -> tuple[dict[str, Path], list[str]]:
         for path in entries:
             relative = path.relative_to(bin_dir).as_posix()
             try:
-                if path.is_symlink() or _is_junction(path):
+                if _filesystem_indirection(path):
                     errors.append(
                         f"pinned FFmpeg runtime contains a symlink/junction: {relative}"
                     )
@@ -184,6 +195,8 @@ def validate_runtime_root(root: Path) -> dict[str, object]:
     """Validate the exact materialized runtime without trusting marker paths."""
 
     errors: list[str] = []
+    if _filesystem_indirection(root):
+        errors.append("pinned FFmpeg runtime root is a symlink/junction")
     value = _marker(root)
     bin_dir = root / "bin"
     if value.get("schema_version") != MARKER_SCHEMA_VERSION:
