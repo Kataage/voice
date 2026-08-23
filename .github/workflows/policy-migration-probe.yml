@@ -1,0 +1,30 @@
+name: policy-migration-probe
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  previous-policy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          path: old-main
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.12.5
+      - name: Sync previous main root
+        run: uv sync --project old-main --dev --locked
+      - name: Print previous prepare policy
+        run: uv run --project old-main --locked python -c "from personavoice.state import PREPARE_CACHE_POLICY_VERSION; print('PREVIOUS_POLICY=' + PREPARE_CACHE_POLICY_VERSION)"
