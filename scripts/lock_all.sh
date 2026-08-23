@@ -1,14 +1,37 @@
 #!/usr/bin/env sh
 set -eu
 
+AUDITED_UV_VERSION="0.12.5"
 IRODORI_REVISION="8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 IRODORI_DIR="vendor/Irodori-TTS"
 MANAGED_IRODORI_PROJECT="locks/Irodori-TTS.pyproject.toml"
 MANAGED_IRODORI_LOCK="locks/Irodori-TTS.uv.lock"
 
+uv_version="$(uv --version)"
+case "$uv_version" in
+  "uv $AUDITED_UV_VERSION"|"uv $AUDITED_UV_VERSION "*) ;;
+  *)
+    echo "Lock refresh requires audited uv $AUDITED_UV_VERSION, got: $uv_version" >&2
+    exit 1
+    ;;
+esac
+
 uv lock
+uv sync --locked --dry-run
 for d in workers/*; do
   [ -f "$d/pyproject.toml" ] && uv lock --project "$d"
+done
+
+# Validate every backend family setup/CI is allowed to select. A dependency
+# update must not silently create a lock that works only on one GPU generation.
+uv sync --project workers/asr --locked --dry-run
+for worker in diarization sense lfm; do
+  for extra in cpu cu126 cu128; do
+    uv sync --project "workers/$worker" --locked --dry-run --extra "$extra"
+  done
+done
+for extra in cpu cu124; do
+  uv sync --project workers/seed_vc --locked --dry-run --extra "$extra"
 done
 
 if [ -f "$IRODORI_DIR/pyproject.toml" ]; then
@@ -52,6 +75,9 @@ if [ -f "$IRODORI_DIR/pyproject.toml" ]; then
 
   cp "$MANAGED_IRODORI_PROJECT" "$vendor_project"
   uv lock --project "$IRODORI_DIR"
+  for extra in cpu cu126 cu128; do
+    uv sync --project "$IRODORI_DIR" --locked --dry-run --extra "$extra"
+  done
   cp "$vendor_lock" "$MANAGED_IRODORI_LOCK"
   restore_vendor_setup_files
   trap - EXIT HUP INT TERM
@@ -59,4 +85,4 @@ else
   echo "Irodori vendor checkout is absent; managed Irodori lock was left unchanged."
 fi
 
-echo "All audited uv lockfiles refreshed."
+echo "All audited uv lockfiles refreshed and backend matrices validated with uv $AUDITED_UV_VERSION."
