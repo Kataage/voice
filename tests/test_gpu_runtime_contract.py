@@ -125,6 +125,7 @@ def test_environment_contract_includes_runtime_policy_sources(tmp_path: Path):
         "src/personavoice/hardware.py",
         "src/personavoice/setup_env.py",
         "src/personavoice/runtime_dependencies.py",
+        "src/personavoice/cuda_preflight.py",
         "src/personavoice/workers.py",
         "workers/asr/runtime_policy.py",
     ):
@@ -137,6 +138,12 @@ def test_environment_contract_includes_runtime_policy_sources(tmp_path: Path):
     status = env_contract.environment_contract_status(tmp_path, recorded)
     assert status["ok"] is False
     assert "different dependency contract" in str(status["error"])
+
+    refreshed = env_contract.environment_contract(tmp_path)
+    (tmp_path / "src/personavoice/cuda_preflight.py").write_text("v2", encoding="utf-8")
+    preflight_status = env_contract.environment_contract_status(tmp_path, refreshed)
+    assert preflight_status["ok"] is False
+    assert "different dependency contract" in str(preflight_status["error"])
 
 
 def test_setup_state_records_gpu_provenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

@@ -67,6 +67,9 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
             "runtime_dependencies_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "runtime_dependencies.py"
             ),
+            "cuda_preflight_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "cuda_preflight.py"
+            ),
             "workers_sha256": _sha256(repo_root / "src" / "personavoice" / "workers.py"),
             "asr_runtime_policy_sha256": _sha256(
                 repo_root / "workers" / "asr" / "runtime_policy.py"
