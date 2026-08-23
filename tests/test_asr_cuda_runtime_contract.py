@@ -121,6 +121,16 @@ def test_cpu_asr_does_not_require_cuda_native_runtime(tmp_path: Path):
     assert "PERSONAVOICE_ASR_CUDA_RUNTIME_DIRS" not in env
 
 
+def test_asr_preflight_probe_uses_audited_absolute_runtime_paths():
+    probe = cuda_preflight._ASR_PROBE
+    assert 'PERSONAVOICE_ASR_CUDA_RUNTIME_DIRS' in probe
+    assert 'path.is_absolute()' in probe
+    assert 'os.add_dll_directory' in probe
+    assert 'str(library_path(directories, name))' in probe
+    assert 'ctypes.WinDLL(name)' not in probe
+    assert 'ctypes.CDLL(name' not in probe
+
+
 def test_asr_preflight_requires_native_runtime_proof_for_cuda(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
