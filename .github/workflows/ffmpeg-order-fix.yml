@@ -1,0 +1,58 @@
+name: ffmpeg-order-fix
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]' && github.event.pull_request.head.ref == 'fix/post-pr15-runtime-hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: fix/post-pr15-runtime-hardening
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Apply exact setup ordering patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/personavoice/setup_env.py")
+          text = path.read_text(encoding="utf-8")
+          old = "    ensure_ffmpeg_runtime(repo_root)\n    selected_backend = backend or detect_irodori_backend()\n"
+          new = "    selected_backend = backend or detect_irodori_backend()\n"
+          if text.count(old) != 1:
+              raise SystemExit(f"unexpected FFmpeg/backend ordering anchor count: {text.count(old)}")
+          text = text.replace(old, new, 1)
+          anchor = "    selected_gpu = _validate_cuda_backend(selected_backend)\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f"unexpected CUDA validation anchor count: {text.count(anchor)}")
+          text = text.replace(anchor, anchor + "    ensure_ffmpeg_runtime(repo_root)\n", 1)
+          path.write_text(text, encoding="utf-8", newline="\n")
+          PY
+      - name: Validate patch
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.12.5
+          uv sync --dev --locked
+          uv run --locked ruff check src tests workers
+          uv run --locked pytest tests/test_ffmpeg_portability_followup.py tests/test_pascal_backend_validation.py tests/test_gpu_runtime_contract.py
+          uv run --locked python -m compileall -q src tests workers
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          git rm .github/workflows/ffmpeg-order-fix.yml
+          git add src/personavoice/setup_env.py
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "fix: validate GPU backend before runtime materialization"
+          git push origin HEAD:fix/post-pr15-runtime-hardening
