@@ -109,6 +109,8 @@ def _verified_archive(repo_root: Path) -> Path:
 
 def _safe_bin_member(info: zipfile.ZipInfo) -> PurePosixPath | None:
     raw = info.filename.replace("\\", "/")
+    if "\x00" in raw:
+        raise RuntimeError(f"NUL bytes are not allowed in FFmpeg archive paths: {info.filename!r}")
     path = PurePosixPath(raw)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise RuntimeError(f"Unsafe path in FFmpeg archive: {info.filename!r}")
@@ -126,7 +128,9 @@ def _safe_bin_member(info: zipfile.ZipInfo) -> PurePosixPath | None:
 
     file_type = (info.external_attr >> 16) & 0o170000
     if file_type == 0o120000:
-        raise RuntimeError(f"Symlinks are not allowed in the pinned FFmpeg archive: {info.filename!r}")
+        raise RuntimeError(
+            f"Symlinks are not allowed in the pinned FFmpeg archive: {info.filename!r}"
+        )
     return relative
 
 
@@ -175,6 +179,7 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                 raise RuntimeError("Pinned FFmpeg archive exceeds the audited extraction size limit")
 
             extracted = 0
+            extracted_bytes = 0
             seen: set[str] = set()
             for info in infos:
                 relative = _safe_bin_member(info)
@@ -186,8 +191,28 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                 seen.add(key)
                 target = bin_dir.joinpath(*relative.parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
+                member_written = 0
                 with bundle.open(info) as source, target.open("xb") as output:
-                    shutil.copyfileobj(source, output, length=_COPY_CHUNK_BYTES)
+                    while chunk := source.read(_COPY_CHUNK_BYTES):
+                        member_written += len(chunk)
+                        extracted_bytes += len(chunk)
+                        if member_written > int(info.file_size):
+                            raise RuntimeError(
+                                "Pinned FFmpeg archive member expanded beyond its declared size: "
+                                f"{info.filename!r}"
+                            )
+                        if extracted_bytes > _MAX_UNCOMPRESSED_BYTES:
+                            raise RuntimeError(
+                                "Pinned FFmpeg archive exceeds the audited extraction size limit"
+                            )
+                        output.write(chunk)
+                    if member_written != int(info.file_size):
+                        raise RuntimeError(
+                            "Pinned FFmpeg archive member size does not match its declaration: "
+                            f"{info.filename!r}"
+                        )
+                    output.flush()
+                    os.fsync(output.fileno())
                 extracted += 1
         if extracted == 0:
             raise RuntimeError("Pinned FFmpeg archive contained no bin/ runtime files")
