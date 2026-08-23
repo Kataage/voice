@@ -36,8 +36,6 @@ patch(
 append = ROOT / "tests/test_gpu_runtime_compatibility.py"
 text = append.read_text(encoding="utf-8")
 extra = r'''
-
-
 def test_runtime_hardware_rejects_capability_change_for_same_gpu_uuid(monkeypatch):
     current = hardware.GpuInfo(
         index=0,
@@ -77,6 +75,10 @@ def test_environment_contract_hashes_its_own_runtime_guard():
 '''
 if "test_runtime_hardware_rejects_capability_change_for_same_gpu_uuid" in text:
     raise RuntimeError("GPU provenance tests already present")
-append.write_text(text.rstrip() + extra + "\n", encoding="utf-8", newline="\n")
+append.write_text(
+    text.rstrip() + "\n\n\n" + extra.strip() + "\n",
+    encoding="utf-8",
+    newline="\n",
+)
 
 print("GPU provenance guard hardening applied")
