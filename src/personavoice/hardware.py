@@ -134,7 +134,6 @@ def selected_nvidia_gpu(gpus: list[GpuInfo] | None = None) -> GpuInfo | None:
             and (
                 gpu.uuid.casefold() == token
                 or gpu.uuid.casefold().startswith(token)
-                or token.startswith(gpu.uuid.casefold())
             )
         ]
         return matches[0] if len(matches) == 1 else None
@@ -232,6 +231,36 @@ def cuda_backend_for_gpu(gpu: GpuInfo) -> str:
     if backend_supports_gpu("cu126", gpu):
         return "cu126"
     return "cpu"
+
+
+def irodori_training_precision(
+    backend: str,
+    *,
+    gpu: GpuInfo | None = None,
+) -> dict[str, str | bool]:
+    """Return an audited Irodori training precision policy for the active GPU.
+
+    cu126 is deliberately fp32 for the pre-Turing compatibility path. Turing is
+    also kept on fp32 even when using cu128 because it has neither BF16 tensor
+    cores nor TF32. Ampere and newer audited cu128 GPUs may use Irodori's native
+    BF16 + TF32 path. Unknown capabilities fail closed to fp32/no-TF32.
+    """
+
+    if backend not in {"cu126", "cu128"}:
+        return {"precision": "fp32", "allow_tf32": False}
+    selected = selected_nvidia_gpu() if gpu is None else gpu
+    capability = _parse_compute_capability(
+        selected.compute_capability if selected is not None else None
+    )
+    if (
+        backend == "cu128"
+        and selected is not None
+        and capability is not None
+        and capability >= (8, 0)
+        and backend_supports_gpu("cu128", selected)
+    ):
+        return {"precision": "bf16", "allow_tf32": True}
+    return {"precision": "fp32", "allow_tf32": False}
 
 
 def detect_irodori_backend() -> str:
