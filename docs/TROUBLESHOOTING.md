@@ -6,19 +6,13 @@ Run `uv run persona doctor --deep` after setup. It verifies the local source rev
 
 PersonaVoice itself requires `ffmpeg`/`ffprobe`, and pyannote 4.x brings TorchCodec. On Windows, TorchCodec 0.10 needs FFmpeg 4 through 8 with the shared `avutil`, `avcodec`, `avformat`, `swresample`, and `swscale` DLLs beside the executables. A standalone/static `ffmpeg.exe` is not sufficient.
 
-The recommended Windows bootstrap installs and verifies the audited shared build automatically:
+On Windows, `persona setup` obtains the exact Gyan shared FFmpeg 8.1.1 ZIP from its versioned official GitHub release, verifies the SHA256 independently published in Microsoft WinGet, extracts only its runtime `bin` tree into gitignored `.runtime/tools`, validates the required executable/DLL hashes, and atomically publishes the verified runtime. Normal build/inference/doctor paths never download FFmpeg.
 
 ```powershell
-.\scripts\bootstrap.ps1
+uv run --locked persona setup --backend auto
 ```
 
-If you need to install it manually:
-
-```powershell
-winget install --id Gyan.FFmpeg.Shared --exact --version 8.1.1
-```
-
-The WinGet shared package may not update the current PowerShell PATH immediately. PersonaVoice also scans the WinGet package directory directly, so rerunning bootstrap/setup in the same shell is supported. You can explicitly point to a compatible `bin` directory with `PERSONAVOICE_FFMPEG_BIN` if necessary.
+A compatible explicit override remains supported through `PERSONAVOICE_FFMPEG_BIN`; an invalid explicit override fails closed rather than being silently ignored. Existing compatible PATH/WinGet installations remain discoverable at runtime, but the default Windows setup is repository-local and reproducible.
 
 ## HF_TOKEN / pyannote
 

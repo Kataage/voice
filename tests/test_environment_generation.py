@@ -99,7 +99,7 @@ def test_failed_setup_keeps_transaction_marker_and_blocks_previous_generation(
     _dependency_tree(tmp_path)
     _record_setup(tmp_path, backend="cpu")
     monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
-    monkeypatch.setattr(setup_env, "require_ffmpeg_runtime", lambda: None)
+    monkeypatch.setattr(setup_env, "ensure_ffmpeg_runtime", lambda _root: None)
     # This test targets transaction publication, not physical GPU discovery.
     monkeypatch.setattr(setup_env, "_validate_cuda_backend", lambda _backend: None)
 
@@ -129,7 +129,7 @@ def test_successful_setup_commits_state_then_clears_transaction_marker(
 ):
     _dependency_tree(tmp_path)
     monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
-    monkeypatch.setattr(setup_env, "require_ffmpeg_runtime", lambda: None)
+    monkeypatch.setattr(setup_env, "ensure_ffmpeg_runtime", lambda _root: None)
     # This test targets atomic environment publication. GPU policy has dedicated
     # generation/multi-GPU tests and is intentionally isolated here.
     monkeypatch.setattr(setup_env, "_validate_cuda_backend", lambda _backend: None)

@@ -9,6 +9,9 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from personavoice.ffmpeg_contract import pinned_bin_dir, runtime_root, validate_pinned_runtime
+from personavoice.project import find_repo_root
+
 SUPPORTED_TORCHCODEC_FFMPEG_MAJORS = frozenset(range(4, 9))
 _WINDOWS_SHARED_DLL_PATTERNS = (
     "avutil-*.dll",
@@ -59,12 +62,18 @@ def _windows_shared_libraries(directory: Path) -> bool:
     return all(any(directory.glob(pattern)) for pattern in _WINDOWS_SHARED_DLL_PATTERNS)
 
 
+def _repo_root_if_available() -> Path | None:
+    explicit = os.getenv("PERSONAVOICE_ROOT")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    try:
+        return find_repo_root()
+    except RuntimeError:
+        return None
+
+
 def _path_candidates() -> list[tuple[Path, str]]:
     candidates: list[tuple[Path, str]] = []
-    explicit = os.getenv("PERSONAVOICE_FFMPEG_BIN")
-    if explicit:
-        candidates.append((Path(explicit).expanduser(), "PERSONAVOICE_FFMPEG_BIN"))
-
     for name in ("ffmpeg", "ffprobe"):
         value = shutil.which(name)
         if value:
@@ -129,7 +138,86 @@ def _candidate_runtime(directory: Path, source: str) -> FfmpegRuntime | None:
     )
 
 
+def _incompatibility(runtime: FfmpegRuntime) -> FfmpegRuntime:
+    if runtime.version_major not in SUPPORTED_TORCHCODEC_FFMPEG_MAJORS:
+        detail = (
+            f"FFmpeg major {runtime.version_major!r} is not supported by the audited "
+            "TorchCodec runtime; use FFmpeg 4 through 8"
+        )
+    elif platform.system() == "Windows" and not runtime.shared_libraries:
+        detail = (
+            "FFmpeg executables were found, but the shared avutil/avcodec/avformat/"
+            "swresample/swscale DLLs required by TorchCodec were not found beside them"
+        )
+    else:
+        detail = "FFmpeg was found but is not compatible with the audited TorchCodec runtime"
+    return FfmpegRuntime(
+        ffmpeg=runtime.ffmpeg,
+        ffprobe=runtime.ffprobe,
+        bin_dir=runtime.bin_dir,
+        version_major=runtime.version_major,
+        shared_libraries=runtime.shared_libraries,
+        torchcodec_compatible=False,
+        source=runtime.source,
+        error=detail,
+    )
+
+
 def ffmpeg_runtime() -> FfmpegRuntime:
+    explicit = os.getenv("PERSONAVOICE_FFMPEG_BIN")
+    if explicit:
+        runtime = _candidate_runtime(Path(explicit).expanduser(), "PERSONAVOICE_FFMPEG_BIN")
+        if runtime is None:
+            return FfmpegRuntime(
+                ffmpeg=None,
+                ffprobe=None,
+                bin_dir=str(Path(explicit).expanduser()),
+                version_major=None,
+                shared_libraries=False,
+                torchcodec_compatible=False,
+                source="PERSONAVOICE_FFMPEG_BIN",
+                error=(
+                    "PERSONAVOICE_FFMPEG_BIN is set but ffmpeg/ffprobe were not both found "
+                    "in that directory"
+                ),
+            )
+        return runtime if runtime.torchcodec_compatible else _incompatibility(runtime)
+
+    repo_root = _repo_root_if_available()
+    if repo_root is not None:
+        pinned_root = runtime_root(repo_root)
+        if pinned_root.exists():
+            status = validate_pinned_runtime(repo_root)
+            if not status["ok"]:
+                return FfmpegRuntime(
+                    ffmpeg=None,
+                    ffprobe=None,
+                    bin_dir=str(pinned_bin_dir(repo_root)),
+                    version_major=None,
+                    shared_libraries=False,
+                    torchcodec_compatible=False,
+                    source="PersonaVoice:pinned",
+                    error=(
+                        "PersonaVoice's pinned FFmpeg runtime is present but failed integrity "
+                        "validation. Rerun `persona setup --backend auto` to repair it; refusing "
+                        "to silently fall back to a different system FFmpeg runtime. "
+                        + "; ".join(str(value) for value in status["errors"])
+                    ),
+                )
+            pinned = _candidate_runtime(pinned_bin_dir(repo_root), "PersonaVoice:pinned")
+            if pinned is None:
+                return FfmpegRuntime(
+                    ffmpeg=None,
+                    ffprobe=None,
+                    bin_dir=str(pinned_bin_dir(repo_root)),
+                    version_major=None,
+                    shared_libraries=False,
+                    torchcodec_compatible=False,
+                    source="PersonaVoice:pinned",
+                    error="Pinned FFmpeg runtime is incomplete; rerun `persona setup --backend auto`.",
+                )
+            return pinned if pinned.torchcodec_compatible else _incompatibility(pinned)
+
     valid: list[FfmpegRuntime] = []
     partial: list[FfmpegRuntime] = []
     for directory, source in _path_candidates():
@@ -141,41 +229,22 @@ def ffmpeg_runtime() -> FfmpegRuntime:
             valid.append(runtime)
 
     if valid:
-        # Prefer the newest TorchCodec-supported major, then an explicitly
-        # configured runtime over auto-discovered locations.
+        source_priority = {
+            "PersonaVoice:pinned": 3,
+            "WinGet:Gyan.FFmpeg.Shared": 2,
+            "PATH": 1,
+        }
         valid.sort(
             key=lambda value: (
+                source_priority.get(value.source or "", 0),
                 value.version_major or -1,
-                value.source == "PERSONAVOICE_FFMPEG_BIN",
             ),
             reverse=True,
         )
         return valid[0]
 
     if partial:
-        best = partial[0]
-        if best.version_major not in SUPPORTED_TORCHCODEC_FFMPEG_MAJORS:
-            detail = (
-                f"FFmpeg major {best.version_major!r} is not supported by the audited "
-                "TorchCodec runtime; use FFmpeg 4 through 8"
-            )
-        elif platform.system() == "Windows" and not best.shared_libraries:
-            detail = (
-                "FFmpeg executables were found, but the shared avutil/avcodec/avformat/"
-                "swresample/swscale DLLs required by TorchCodec were not found beside them"
-            )
-        else:
-            detail = "FFmpeg was found but is not compatible with the audited TorchCodec runtime"
-        return FfmpegRuntime(
-            ffmpeg=best.ffmpeg,
-            ffprobe=best.ffprobe,
-            bin_dir=best.bin_dir,
-            version_major=best.version_major,
-            shared_libraries=best.shared_libraries,
-            torchcodec_compatible=False,
-            source=best.source,
-            error=detail,
-        )
+        return _incompatibility(partial[0])
 
     return FfmpegRuntime(
         ffmpeg=None,
@@ -186,8 +255,10 @@ def ffmpeg_runtime() -> FfmpegRuntime:
         torchcodec_compatible=False,
         source=None,
         error=(
-            "FFmpeg/ffprobe were not found. On Windows install the audited shared FFmpeg 8 "
-            "runtime with `winget install --id Gyan.FFmpeg.Shared --exact --version 8.1.1`."
+            "FFmpeg/ffprobe were not found. On Windows run `persona setup --backend auto`; "
+            "PersonaVoice materializes its audited shared FFmpeg runtime inside .runtime/tools. "
+            "On Linux/macOS install compatible FFmpeg 4-8 shared libraries or set "
+            "PERSONAVOICE_FFMPEG_BIN explicitly."
         ),
     )
 
