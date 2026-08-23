@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-CUDA_AUTO_PREFERENCE = ("float16", "int8_float32", "float32")
+# Modern CUDA devices that genuinely support float16 keep the fast path. When
+# float16 is unavailable (for example Pascal / sm_61), prefer native float32
+# over quantized int8_float32. The GTX 1080 Ti acceptance run showed that
+# CTranslate2 4.8.1 could advertise int8_float32 as supported yet make no
+# forward progress during large-v3 transcription. Explicit int8_float32 remains
+# available for users who intentionally request it, but auto mode must favor the
+# execution path that has the strongest architecture-level correctness margin.
+CUDA_AUTO_PREFERENCE = ("float16", "float32", "int8_float32")
 CPU_AUTO_PREFERENCE = ("int8", "int8_float32", "float32")
 
 
@@ -11,11 +18,12 @@ def choose_compute_type(
 ) -> str:
     """Choose a compute type that the detected CTranslate2 backend actually supports.
 
-    In particular, Pascal GPUs such as the GTX 1080 Ti can expose a CUDA device
-    while not supporting efficient float16 computation. Blindly selecting
-    float16 from CUDA visibility alone makes faster-whisper fail during model
-    construction. Auto mode therefore consults CTranslate2's runtime capability
-    set and picks the fastest audited preference that is genuinely available.
+    CUDA visibility alone is insufficient: older architectures can expose a
+    device while lacking a reliable float16 execution path. Auto mode therefore
+    intersects the audited preference order with CTranslate2's runtime-reported
+    capabilities. On CUDA devices without float16, float32 is intentionally
+    preferred over int8_float32 because the Pascal acceptance path demonstrated
+    a zero-progress native stall with the latter despite capability reporting.
     """
 
     normalized = {str(value) for value in supported}
