@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -13,6 +14,7 @@ from personavoice.ffmpeg_contract import pinned_bin_dir, runtime_root, validate_
 from personavoice.project import find_repo_root
 
 SUPPORTED_TORCHCODEC_FFMPEG_MAJORS = frozenset(range(4, 9))
+FFMPEG_SETUP_PROVENANCE = "ffmpeg-runtime.json"
 _WINDOWS_SHARED_DLL_PATTERNS = (
     "avutil-*.dll",
     "avcodec-*.dll",
@@ -36,6 +38,30 @@ class FfmpegRuntime:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def _resolved_path(value: str | None) -> str | None:
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    try:
+        return str(path.resolve())
+    except OSError:
+        return os.path.abspath(str(path))
+
+
+def ffmpeg_provenance(runtime: FfmpegRuntime) -> dict[str, object]:
+    """Return the stable runtime identity that setup authorizes for later execution."""
+
+    return {
+        "source": runtime.source,
+        "bin_dir": _resolved_path(runtime.bin_dir),
+        "ffmpeg": _resolved_path(runtime.ffmpeg),
+        "ffprobe": _resolved_path(runtime.ffprobe),
+        "version_major": runtime.version_major,
+        "shared_libraries": bool(runtime.shared_libraries),
+        "torchcodec_compatible": bool(runtime.torchcodec_compatible),
+    }
 
 
 def _version_major(executable: Path) -> int | None:
@@ -268,6 +294,59 @@ def require_ffmpeg_runtime() -> FfmpegRuntime:
     if runtime.ffmpeg is None or runtime.ffprobe is None or not runtime.torchcodec_compatible:
         raise RuntimeError(runtime.error or "A compatible FFmpeg runtime is required")
     return runtime
+
+
+def ffmpeg_provenance_path(repo_root: Path) -> Path:
+    return repo_root / ".runtime" / FFMPEG_SETUP_PROVENANCE
+
+
+def recorded_ffmpeg_provenance(repo_root: Path) -> dict[str, object] | None:
+    path = ffmpeg_provenance_path(repo_root)
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    return value
+
+
+def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
+    recorded = recorded_ffmpeg_provenance(repo_root)
+    current_runtime = ffmpeg_runtime()
+    current = ffmpeg_provenance(current_runtime)
+    if recorded is None:
+        return {
+            "ok": False,
+            "recorded": None,
+            "current": current,
+            "error": (
+                "FFmpeg setup provenance is missing or unreadable. "
+                "Run `persona setup --backend auto` before media/model work."
+            ),
+        }
+    if not current_runtime.torchcodec_compatible or current_runtime.ffmpeg is None or current_runtime.ffprobe is None:
+        return {
+            "ok": False,
+            "recorded": recorded,
+            "current": current,
+            "error": current_runtime.error or "The configured FFmpeg runtime is no longer usable.",
+        }
+    if recorded != current:
+        return {
+            "ok": False,
+            "recorded": recorded,
+            "current": current,
+            "error": (
+                "The FFmpeg runtime changed after PersonaVoice setup. This includes removal of "
+                "the pinned repo-local runtime, a changed explicit override, or a different "
+                "system FFmpeg path/version. Run `persona setup --backend auto` to validate and "
+                "record the current runtime before media/model work."
+            ),
+        }
+    return {"ok": True, "recorded": recorded, "current": current, "error": None}
 
 
 def command(name: str) -> str:
