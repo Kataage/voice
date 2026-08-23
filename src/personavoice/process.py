@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -22,11 +23,121 @@ class CommandError(RuntimeError):
 ASR_STALL_TIMEOUT_SECONDS = 20 * 60
 ASR_PROGRESS_POLL_SECONDS = 2.0
 
+_WINDOWS_ASR_CUDA_DLLS = (
+    "cublas64_12.dll",
+    "cublasLt64_12.dll",
+    "cudnn64_9.dll",
+    "cudnn_adv64_9.dll",
+    "cudnn_cnn64_9.dll",
+    "cudnn_engines_precompiled64_9.dll",
+    "cudnn_engines_runtime_compiled64_9.dll",
+    "cudnn_graph64_9.dll",
+    "cudnn_heuristic64_9.dll",
+    "cudnn_ops64_9.dll",
+)
+
 
 def _merged_environment(env: dict[str, str] | None) -> dict[str, str]:
     merged = os.environ.copy()
     if env:
         merged.update({key: str(value) for key, value in env.items()})
+    # Every captured subprocess is decoded as UTF-8 below. Force Python children
+    # to emit UTF-8 as well so Windows locale/code-page settings cannot corrupt
+    # JSON model responses containing Japanese text.
+    merged["PYTHONUTF8"] = "1"
+    merged["PYTHONIOENCODING"] = "utf-8"
+    return merged
+
+
+def _uv_python_project(argv: list[str], cwd: Path | None) -> Path | None:
+    """Return a uv project only for `uv run ... python ...` subprocesses."""
+
+    try:
+        run_index = argv.index("run")
+        project_index = argv.index("--project")
+        raw_project = argv[project_index + 1]
+    except (ValueError, IndexError):
+        return None
+    if project_index < run_index or "python" not in argv[project_index + 2 :]:
+        return None
+    project = Path(raw_project)
+    if not project.is_absolute():
+        project = (cwd or Path.cwd()) / project
+    return project.resolve(strict=False)
+
+
+def _asr_cuda_runtime_directories(project: Path) -> list[Path]:
+    """Resolve the audited CUDA runtime shared by the current setup transaction.
+
+    CTranslate2 wheels intentionally do not ship the complete CUDA 12 cuBLAS/
+    cuDNN runtime on Windows. PersonaVoice already synchronizes the diarization
+    PyTorch environment from the same locked cu126/cu128 backend, so that
+    environment is the deterministic native-runtime provider for ASR. We never
+    search arbitrary system CUDA installations here: setup/preflight owns the
+    exact runtime generation used by model subprocesses.
+    """
+
+    if project.name != "asr" or project.parent.name != "workers":
+        return []
+    provider = project.parent / "diarization" / ".venv"
+
+    if os.name == "nt":
+        directory = provider / "Lib" / "site-packages" / "torch" / "lib"
+        if all((directory / name).is_file() for name in _WINDOWS_ASR_CUDA_DLLS):
+            return [directory]
+        return []
+
+    if sys.platform.startswith("linux"):
+        for site_packages in sorted(provider.glob("lib/python*/site-packages")):
+            cublas = site_packages / "nvidia" / "cublas" / "lib"
+            cudnn = site_packages / "nvidia" / "cudnn" / "lib"
+            if not (cublas / "libcublas.so.12").is_file():
+                continue
+            if not (cudnn / "libcudnn.so.9").is_file():
+                continue
+            directories = [
+                path
+                for path in sorted(site_packages.glob("nvidia/*/lib"))
+                if path.is_dir()
+            ]
+            torch_lib = site_packages / "torch" / "lib"
+            if torch_lib.is_dir():
+                directories.append(torch_lib)
+            return directories
+    return []
+
+
+def _command_environment(
+    argv: list[str],
+    *,
+    cwd: Path | None,
+    env: dict[str, str] | None,
+) -> dict[str, str]:
+    merged = _merged_environment(env)
+    project = _uv_python_project(argv, cwd)
+    if project is None or project.name != "asr" or project.parent.name != "workers":
+        return merged
+
+    # CPU/ROCm/XPU setup explicitly hides NVIDIA devices from ASR. Only require
+    # the audited CUDA provider when CUDA has not been disabled by setup.
+    if merged.get("CUDA_VISIBLE_DEVICES") == "":
+        return merged
+
+    directories = _asr_cuda_runtime_directories(project)
+    if not directories and (os.name == "nt" or sys.platform.startswith("linux")):
+        raise CommandError(
+            "ASR CUDA runtime is incomplete: the audited cuBLAS/cuDNN libraries from the "
+            "synced diarization CUDA environment are missing. Run `persona setup --backend auto` "
+            "to rebuild and preflight the locked local environments before ASR model work."
+        )
+    if not directories:
+        return merged
+
+    key = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+    existing = merged.get(key, "")
+    prefix = os.pathsep.join(str(path) for path in directories)
+    merged[key] = prefix + (os.pathsep + existing if existing else "")
+    merged["PERSONAVOICE_ASR_CUDA_RUNTIME_DIRS"] = prefix
     return merged
 
 
@@ -49,7 +160,7 @@ def run(
     completed = subprocess.run(
         argv,
         cwd=cwd,
-        env=_merged_environment(env),
+        env=_command_environment(argv, cwd=cwd, env=env),
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -201,7 +312,7 @@ def _run_json_supervised(
     process = subprocess.Popen(
         argv,
         cwd=cwd,
-        env=_merged_environment(env),
+        env=_command_environment(argv, cwd=cwd, env=env),
         text=True,
         encoding="utf-8",
         errors="replace",
