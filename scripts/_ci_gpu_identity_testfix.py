@@ -45,11 +45,11 @@ patch(
 )
 patch(
     "tests/test_gpu_runtime_compatibility.py",
-    '                compute_capability="8.6",\n'
-    '            )\n',
-    '                compute_capability="8.6",\n'
-    '                driver_version="600.01",\n'
-    '            )\n',
+    '            compute_capability="8.6",\n'
+    '        )\n',
+    '            compute_capability="8.6",\n'
+    '            driver_version="600.01",\n'
+    '        )\n',
 )
 
 print("GPU identity fixtures synchronized")
