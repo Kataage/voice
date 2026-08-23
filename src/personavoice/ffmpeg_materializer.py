@@ -19,6 +19,7 @@ from personavoice.ffmpeg_contract import (
     WINDOWS_FFMPEG_VERSION,
     archive_path,
     pinned_bin_dir,
+    runtime_file_hashes,
     runtime_root,
     sha256_file,
     validate_pinned_runtime,
@@ -30,8 +31,10 @@ from personavoice.runtime_dependencies import (
     require_ffmpeg_runtime,
 )
 
+_MAX_ARCHIVE_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 _MAX_ARCHIVE_FILES = 20_000
-_MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def _x64_windows() -> bool:
@@ -44,10 +47,36 @@ def _download_archive(url: str, destination: Path) -> None:
         headers={"User-Agent": "PersonaVoice/FFmpeg-materializer"},
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle, length=1024 * 1024)
-        handle.flush()
-        os.fsync(handle.fileno())
+    destination.unlink(missing_ok=True)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response, destination.open(
+            "xb"
+        ) as handle:
+            headers = getattr(response, "headers", None)
+            content_length = headers.get("Content-Length") if headers is not None else None
+            if content_length is not None:
+                try:
+                    declared = int(content_length)
+                except (TypeError, ValueError):
+                    declared = None
+                if declared is not None and declared > _MAX_ARCHIVE_DOWNLOAD_BYTES:
+                    raise RuntimeError(
+                        "Pinned Windows FFmpeg archive exceeds the audited download size limit"
+                    )
+
+            written = 0
+            while chunk := response.read(_COPY_CHUNK_BYTES):
+                written += len(chunk)
+                if written > _MAX_ARCHIVE_DOWNLOAD_BYTES:
+                    raise RuntimeError(
+                        "Pinned Windows FFmpeg archive exceeds the audited download size limit"
+                    )
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _verified_archive(repo_root: Path) -> Path:
@@ -101,22 +130,16 @@ def _safe_bin_member(info: zipfile.ZipInfo) -> PurePosixPath | None:
     return relative
 
 
-def _critical_file_hashes(bin_dir: Path) -> dict[str, str]:
-    selected: set[Path] = set()
+def _validate_required_runtime_files(files: dict[str, str]) -> None:
     for name in REQUIRED_EXECUTABLES:
-        path = bin_dir / name
-        if not path.is_file() or path.stat().st_size <= 0:
+        if name not in files:
             raise RuntimeError(f"Pinned FFmpeg archive is missing required executable {name}")
-        selected.add(path)
     for pattern in REQUIRED_DLL_PATTERNS:
-        matches = sorted(path for path in bin_dir.glob(pattern) if path.is_file())
-        if not matches:
+        if not any(
+            "/" not in relative and PurePosixPath(relative).match(pattern)
+            for relative in files
+        ):
             raise RuntimeError(f"Pinned FFmpeg archive is missing required DLL family {pattern}")
-        selected.update(matches)
-    return {
-        path.relative_to(bin_dir).as_posix(): sha256_file(path)
-        for path in sorted(selected, key=lambda value: value.as_posix().casefold())
-    }
 
 
 def _publish_directory(temp_root: Path, destination: Path) -> None:
@@ -164,12 +187,13 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                 target = bin_dir.joinpath(*relative.parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(info) as source, target.open("xb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                    shutil.copyfileobj(source, output, length=_COPY_CHUNK_BYTES)
                 extracted += 1
         if extracted == 0:
             raise RuntimeError("Pinned FFmpeg archive contained no bin/ runtime files")
 
-        files = _critical_file_hashes(bin_dir)
+        files = runtime_file_hashes(bin_dir)
+        _validate_required_runtime_files(files)
         atomic_write_json(
             temp_root / ".personavoice-ffmpeg.json",
             {
