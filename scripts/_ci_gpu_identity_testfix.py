@@ -51,5 +51,12 @@ patch(
     '            driver_version="600.01",\n'
     '        )\n',
 )
+patch(
+    "tests/test_gpu_runtime_compatibility.py",
+    '    assert calls == ["index,uuid,pci.bus_id,name,memory.total,memory.free,compute_cap"]\n',
+    '    assert calls == [\n'
+    '        "index,uuid,pci.bus_id,name,memory.total,memory.free,driver_version,compute_cap"\n'
+    '    ]\n',
+)
 
 print("GPU identity fixtures synchronized")
