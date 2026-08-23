@@ -6,6 +6,7 @@ from typing import Any
 from personavoice.config import PersonaConfig
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.project import PersonaPaths
+from personavoice.stage_lock import stage_lock_held
 from personavoice.state import StateStore
 from personavoice.training import _fingerprint as _training_fingerprint
 
@@ -19,6 +20,7 @@ def _stage_audit(
     stages = stages if isinstance(stages, dict) else {}
     stage = stages.get(name)
     stage = stage if isinstance(stage, dict) else {}
+    recorded_status = stage.get("status")
     recorded_fingerprint = stage.get("fingerprint")
     artifact_complete = False
     if isinstance(recorded_fingerprint, str) and recorded_fingerprint:
@@ -26,10 +28,38 @@ def _stage_audit(
             artifact_complete = store.is_complete(name, recorded_fingerprint)
         except (OSError, ValueError, TypeError):
             artifact_complete = False
+
+    runner = stage.get("runner") if isinstance(stage.get("runner"), dict) else None
+    protocol_known = bool(runner and runner.get("lock_protocol") == 1)
+    lock_held: bool | None = None
+    activity_error: str | None = None
+    if recorded_status == "running" and protocol_known:
+        try:
+            lock_held = stage_lock_held(store.path.parent, name)
+        except (OSError, RuntimeError, ValueError) as exc:
+            activity_error = f"{type(exc).__name__}: {exc}"
+
+    activity_known = recorded_status == "running" and protocol_known and activity_error is None
+    running_active = lock_held is True if activity_known else None
+    stale_running = lock_held is False if activity_known else None
+    recovery_hint = None
+    if stale_running is True:
+        recovery_hint = (
+            f"The previous {name} process no longer owns its OS lock. Rerun the same command "
+            "without --force to resume from valid caches/artifacts."
+        )
+
     return {
-        "recorded_status": stage.get("status"),
+        "recorded_status": recorded_status,
         "recorded_fingerprint": recorded_fingerprint,
         "artifact_complete": artifact_complete,
+        "runner": runner,
+        "activity_known": activity_known,
+        "run_lock_held": lock_held,
+        "running_active": running_active,
+        "stale_running": stale_running,
+        "activity_error": activity_error,
+        "recovery_hint": recovery_hint,
         "current_fingerprint": None,
         "fingerprint_current": None,
         "current_complete": None,
