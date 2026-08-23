@@ -10,7 +10,12 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from personavoice.ffmpeg_contract import pinned_bin_dir, runtime_root, validate_pinned_runtime
+from personavoice.ffmpeg_contract import (
+    pinned_bin_dir,
+    runtime_root,
+    sha256_file,
+    validate_pinned_runtime,
+)
 from personavoice.project import find_repo_root
 
 SUPPORTED_TORCHCODEC_FFMPEG_MAJORS = frozenset(range(4, 9))
@@ -50,8 +55,42 @@ def _resolved_path(value: str | None) -> str | None:
         return os.path.abspath(str(path))
 
 
+def _critical_runtime_hashes(runtime: FfmpegRuntime) -> dict[str, str]:
+    """Hash the executable generation and Windows shared libraries used by TorchCodec."""
+
+    if not runtime.ffmpeg or not runtime.ffprobe:
+        raise RuntimeError("FFmpeg runtime is missing ffmpeg or ffprobe for provenance hashing")
+    paths = {
+        "ffmpeg": Path(runtime.ffmpeg).expanduser(),
+        "ffprobe": Path(runtime.ffprobe).expanduser(),
+    }
+    if platform.system() == "Windows":
+        if not runtime.bin_dir:
+            raise RuntimeError("Windows FFmpeg runtime has no bin directory for provenance hashing")
+        directory = Path(runtime.bin_dir).expanduser()
+        dlls: dict[str, Path] = {}
+        for pattern in _WINDOWS_SHARED_DLL_PATTERNS:
+            for path in directory.glob(pattern):
+                if path.is_file():
+                    dlls[path.name.casefold()] = path
+        for name, path in sorted(dlls.items()):
+            paths[f"dll:{name}"] = path
+
+    result: dict[str, str] = {}
+    for label, path in paths.items():
+        try:
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            result[label] = sha256_file(path)
+        except OSError as exc:
+            raise RuntimeError(
+                f"FFmpeg runtime file could not be hashed for setup provenance: {path}"
+            ) from exc
+    return result
+
+
 def ffmpeg_provenance(runtime: FfmpegRuntime) -> dict[str, object]:
-    """Return the stable runtime identity that setup authorizes for later execution."""
+    """Return the exact runtime generation that setup authorizes for later execution."""
 
     return {
         "source": runtime.source,
@@ -61,6 +100,7 @@ def ffmpeg_provenance(runtime: FfmpegRuntime) -> dict[str, object]:
         "version_major": runtime.version_major,
         "shared_libraries": bool(runtime.shared_libraries),
         "torchcodec_compatible": bool(runtime.torchcodec_compatible),
+        "critical_sha256": _critical_runtime_hashes(runtime),
     }
 
 
@@ -316,7 +356,15 @@ def recorded_ffmpeg_provenance(repo_root: Path) -> dict[str, object] | None:
 def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
     recorded = recorded_ffmpeg_provenance(repo_root)
     current_runtime = ffmpeg_runtime()
-    current = ffmpeg_provenance(current_runtime)
+    try:
+        current = ffmpeg_provenance(current_runtime)
+    except RuntimeError as exc:
+        return {
+            "ok": False,
+            "recorded": recorded,
+            "current": current_runtime.as_dict(),
+            "error": str(exc),
+        }
     if recorded is None:
         return {
             "ok": False,
@@ -344,10 +392,11 @@ def ffmpeg_provenance_status(repo_root: Path) -> dict[str, object]:
             "recorded": recorded,
             "current": current,
             "error": (
-                "The FFmpeg runtime changed after PersonaVoice setup. This includes removal of "
-                "the pinned repo-local runtime, a changed explicit override, or a different "
-                "system FFmpeg path/version. Run `persona setup --backend auto` to validate and "
-                "record the current runtime before media/model work."
+                "The FFmpeg runtime changed after PersonaVoice setup. This includes modified "
+                "FFmpeg executables/shared DLLs, removal of the pinned repo-local runtime, a "
+                "changed explicit override, or a different system FFmpeg path/version. Run "
+                "`persona setup --backend auto` to validate and record the current runtime "
+                "before media/model work."
             ),
         }
     return {"ok": True, "recorded": recorded, "current": current, "error": None}
