@@ -18,6 +18,7 @@ from personavoice.pipeline import prepare_persona
 from personavoice.project import find_repo_root, get_persona, init_persona
 from personavoice.repair import repair_failed_model_materializations
 from personavoice.setup_env import download_models, install_environments
+from personavoice.setup_lock import SetupLockError, setup_lock
 from personavoice.status import persona_status
 from personavoice.training import train_persona
 
@@ -97,42 +98,50 @@ def setup(
             f"{', '.join(sorted(SETUP_BACKENDS))}."
         )
     root = find_repo_root()
-    result = install_environments(root, backend=None if backend == "auto" else backend)
-    if download:
-        result["models"] = _download_models_or_explain(
-            root,
-            include_seed_vc=not skip_seed_vc_models,
-        )
-    if verify:
-        verification = doctor_report(
-            root,
-            deep=True,
-            require_seed_vc=not skip_seed_vc_models,
-        )
-        if download and not verification["ready_offline"]:
-            repaired = repair_failed_model_materializations(
-                root,
-                verification,
-                include_seed_vc=not skip_seed_vc_models,
-            )
-            if repaired:
-                result["model_recovery"] = {
-                    "discarded_materializations": repaired,
-                    "download": _download_models_or_explain(
-                        root,
-                        include_seed_vc=not skip_seed_vc_models,
-                    ),
-                }
+    try:
+        # Serialize the complete setup transaction: environment sync, model
+        # materialization/repair, verification, and final state publication.
+        # The OS lock is crash-safe and is released automatically on process exit.
+        with setup_lock(root):
+            result = install_environments(root, backend=None if backend == "auto" else backend)
+            if download:
+                result["models"] = _download_models_or_explain(
+                    root,
+                    include_seed_vc=not skip_seed_vc_models,
+                )
+            if verify:
                 verification = doctor_report(
                     root,
                     deep=True,
                     require_seed_vc=not skip_seed_vc_models,
                 )
-        result["verification"] = verification
-        if not verification["ready_offline"]:
+                if download and not verification["ready_offline"]:
+                    repaired = repair_failed_model_materializations(
+                        root,
+                        verification,
+                        include_seed_vc=not skip_seed_vc_models,
+                    )
+                    if repaired:
+                        result["model_recovery"] = {
+                            "discarded_materializations": repaired,
+                            "download": _download_models_or_explain(
+                                root,
+                                include_seed_vc=not skip_seed_vc_models,
+                            ),
+                        }
+                        verification = doctor_report(
+                            root,
+                            deep=True,
+                            require_seed_vc=not skip_seed_vc_models,
+                        )
+                result["verification"] = verification
+                if not verification["ready_offline"]:
+                    _print(result)
+                    raise typer.Exit(1)
             _print(result)
-            raise typer.Exit(1)
-    _print(result)
+    except SetupLockError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(2) from None
 
 
 @app.command("init")

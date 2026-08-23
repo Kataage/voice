@@ -11,9 +11,10 @@ from personavoice.hardware import (
     seed_vc_cuda_supported,
     selected_nvidia_gpu,
 )
+from personavoice.runtime_dependencies import ffmpeg_provenance_status
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-ENVIRONMENT_CONTRACT_SCHEMA = 4
+ENVIRONMENT_CONTRACT_SCHEMA = 5
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -71,6 +72,12 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
             "setup_sha256": _sha256(repo_root / "src" / "personavoice" / "setup_env.py"),
             "runtime_dependencies_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "runtime_dependencies.py"
+            ),
+            "ffmpeg_contract_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "ffmpeg_contract.py"
+            ),
+            "ffmpeg_materializer_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "ffmpeg_materializer.py"
             ),
             "cuda_preflight_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "cuda_preflight.py"
@@ -339,7 +346,7 @@ def require_current_environment(
     *,
     worker_name: str | None = None,
 ) -> dict[str, Any]:
-    """Return setup state only when dependency and current-hardware contracts are valid."""
+    """Return setup state only when dependency, runtime, and hardware contracts are valid."""
 
     setup_path = repo_root / ".runtime" / "setup.json"
     if not setup_path.is_file():
@@ -360,6 +367,9 @@ def require_current_environment(
     status = environment_contract_status(repo_root, setup.get("environment_contract"))
     if not status["ok"]:
         raise RuntimeError(str(status["error"]))
+    ffmpeg = ffmpeg_provenance_status(repo_root)
+    if not ffmpeg["ok"]:
+        raise RuntimeError(str(ffmpeg["error"]))
     hardware = runtime_hardware_status(setup, worker_name=worker_name)
     if not hardware["ok"]:
         raise RuntimeError(str(hardware["error"]))

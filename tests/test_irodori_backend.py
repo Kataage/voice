@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from personavoice import environment_contract as environment
 from personavoice import hardware, irodori
 from personavoice.environment_contract import environment_contract
 
@@ -27,6 +28,11 @@ def test_recorded_irodori_backend_is_used_without_runtime_autodetection(
         raise AssertionError("runtime must not re-detect the Irodori backend")
 
     monkeypatch.setattr(hardware, "detect_irodori_backend", fail_if_autodetected)
+    monkeypatch.setattr(
+        environment,
+        "ffmpeg_provenance_status",
+        lambda _root: {"ok": True, "error": None},
+    )
     assert irodori.configured_backend(tmp_path) == "cpu"
     assert irodori.backend_device("cpu") == "cpu"
 

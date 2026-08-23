@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from personavoice import environment_contract as environment
 from personavoice import irodori, setup_env
 from personavoice.environment_contract import environment_contract
 from personavoice.model_assets import (
@@ -128,6 +129,7 @@ def test_prepare_manifest_passes_local_codec_and_recorded_cpu_backend(
     tmp_path: Path,
     monkeypatch,
 ):
+    monkeypatch.setattr(irodori, "local_model_env", lambda *_args, **_kwargs: {})
     vendor = tmp_path / "vendor" / "Irodori-TTS"
     vendor.mkdir(parents=True)
     (vendor / "prepare_manifest.py").write_text("", encoding="utf-8")
@@ -161,6 +163,11 @@ def test_prepare_manifest_passes_local_codec_and_recorded_cpu_backend(
         irodori,
         "sha256_file",
         lambda path: IRODORI_DACVAE_SHA256 if path == codec else "0" * 64,
+    )
+    monkeypatch.setattr(
+        environment,
+        "ffmpeg_provenance_status",
+        lambda _root: {"ok": True, "error": None},
     )
     irodori.prepare_manifest(tmp_path, source, manifest, latents)
 

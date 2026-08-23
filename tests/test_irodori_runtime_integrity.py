@@ -65,6 +65,7 @@ def test_vendor_runtime_requires_pinned_clean_checkout(tmp_path: Path, monkeypat
 
 
 def test_irodori_runtime_rejects_corrupt_pinned_assets(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(irodori, "local_model_env", lambda *_args, **_kwargs: {})
     base = tmp_path / "models" / "irodori" / "v4.1-small" / IRODORI_MODEL_FILENAME
     codec = tmp_path / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
     base.parent.mkdir(parents=True)
@@ -83,6 +84,13 @@ def test_online_base_materialization_replaces_corruption_and_rehashes(
     tmp_path: Path,
     monkeypatch,
 ):
+    cache = tmp_path / "hf-cache"
+    cache.mkdir()
+    monkeypatch.setattr(
+        irodori,
+        "local_model_env",
+        lambda *_args, **_kwargs: {"HUGGINGFACE_HUB_CACHE": str(cache)},
+    )
     base = tmp_path / "models" / "irodori" / "v4.1-small" / IRODORI_MODEL_FILENAME
     base.parent.mkdir(parents=True)
     base.write_bytes(b"corrupt")

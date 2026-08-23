@@ -120,6 +120,7 @@ def test_worker_batch_contract_rejects_duplicate_ids_and_invalid_error_rows():
 
 
 def test_worker_call_rejects_invalid_subprocess_result_before_return(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(workers, "ffmpeg_environment", lambda: {})
     project = tmp_path / "workers" / "asr"
     project.mkdir(parents=True)
     instance = workers.Worker(name="asr", project_dir=project)

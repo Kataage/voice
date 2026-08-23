@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from personavoice import inference, setup_env
+from personavoice import inference, setup_env, workers
 from personavoice.api import ui
 from personavoice.captions import annotate_text, build_caption, normalize_events
 from personavoice.config import PersonaConfig
@@ -215,7 +215,8 @@ def test_training_invalidation_removes_stale_outputs(tmp_path: Path):
     assert all(not path.exists() for path in stale)
 
 
-def test_huggingface_cache_layout_is_consistent(tmp_path: Path):
+def test_huggingface_cache_layout_is_consistent(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(workers, "ffmpeg_environment", lambda: {})
     env = local_model_env(tmp_path, offline=True)
     hf_home = Path(env["HF_HOME"])
     hub_cache = Path(env["HUGGINGFACE_HUB_CACHE"])
@@ -378,6 +379,7 @@ def test_synthesize_forwards_cfg_and_checks_output(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(inference, "codec_checkpoint", lambda _root: codec)
     monkeypatch.setattr(inference, "configured_backend", lambda _root: "cpu")
     monkeypatch.setattr(inference, "selected_nvidia_gpu", lambda: None)
+    monkeypatch.setattr(inference, "local_model_env", lambda *_args, **_kwargs: {})
 
     def fake_run(args, **_kwargs):
         argv = [str(value) for value in args]

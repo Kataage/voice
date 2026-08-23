@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from personavoice import environment_contract as env_contract
-from personavoice import hardware, setup_env
+from personavoice import hardware, setup_env, workers
 from personavoice.workers import local_model_env
 
 
@@ -115,7 +115,8 @@ def test_blackwell_setup_keeps_main_cuda_and_falls_seed_vc_back_to_cpu(monkeypat
     assert extras["seed_vc"] == "cpu"
 
 
-def test_local_model_env_forces_deterministic_cuda_order(tmp_path: Path):
+def test_local_model_env_forces_deterministic_cuda_order(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(workers, "ffmpeg_environment", lambda: {})
     env = local_model_env(tmp_path)
     assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
 
@@ -133,7 +134,7 @@ def test_environment_contract_includes_runtime_policy_sources(tmp_path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("v1", encoding="utf-8")
     recorded = env_contract.environment_contract(tmp_path)
-    assert recorded["schema"] == 4
+    assert recorded["schema"] == env_contract.ENVIRONMENT_CONTRACT_SCHEMA
     (tmp_path / "src/personavoice/hardware.py").write_text("v2", encoding="utf-8")
     status = env_contract.environment_contract_status(tmp_path, recorded)
     assert status["ok"] is False
@@ -150,7 +151,7 @@ def test_setup_state_records_gpu_provenance(tmp_path: Path, monkeypatch: pytest.
     # This is a focused publication test; environment mutation is stubbed.
     gpu = _gpu("8.6", uuid="GPU-recorded")
     monkeypatch.setattr(setup_env.shutil, "which", lambda _name: "/tool")
-    monkeypatch.setattr(setup_env, "require_ffmpeg_runtime", lambda: None)
+    monkeypatch.setattr(setup_env, "ensure_ffmpeg_runtime", lambda _root: None)
     monkeypatch.setattr(setup_env, "_validate_cuda_backend", lambda _backend: gpu)
     monkeypatch.setattr(setup_env, "seed_vc_contract_digest", lambda _root: "0" * 64)
     monkeypatch.setattr(
