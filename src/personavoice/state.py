@@ -3,13 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import shutil
+import socket
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from personavoice.atomic import atomic_write_json
 from personavoice.dataset import SCHEMA_VERSION as DATASET_SCHEMA_VERSION
@@ -21,6 +24,7 @@ from personavoice.model_assets import (
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
 )
+from personavoice.stage_lock import stage_lock
 from personavoice.worker_contracts import purge_invalid_prepare_caches
 
 PREPARE_RESULT_SCHEMA = 4
@@ -466,54 +470,70 @@ class StateStore:
         *,
         force: bool = False,
     ) -> Iterator[dict[str, Any]]:
-        state = self.load()
-        stage = state.setdefault("stages", {}).setdefault(name, {})
-        if name == "prepare":
-            old_fingerprint = stage.get("fingerprint")
-            old_policy = stage.get("cache_policy_version")
-            must_invalidate = (
-                force
-                or old_policy != PREPARE_CACHE_POLICY_VERSION
-                or (old_fingerprint is not None and old_fingerprint != fingerprint)
-            )
-            if must_invalidate:
-                self._invalidate_prepare_derived()
-            purge_invalid_prepare_caches(self.path.parent)
+        # The OS lock is the source of truth for liveness. It is released by the
+        # kernel on normal exit, exceptions, crashes, and forced process death,
+        # so long-running jobs never depend on arbitrary stale timeouts or PID
+        # reuse heuristics. Acquire before mutating state/cache so a second
+        # process cannot invalidate artifacts owned by the active stage.
+        with stage_lock(self.path.parent, name):
+            state = self.load()
+            stage = state.setdefault("stages", {}).setdefault(name, {})
+            if name == "prepare":
+                old_fingerprint = stage.get("fingerprint")
+                old_policy = stage.get("cache_policy_version")
+                must_invalidate = (
+                    force
+                    or old_policy != PREPARE_CACHE_POLICY_VERSION
+                    or (old_fingerprint is not None and old_fingerprint != fingerprint)
+                )
+                if must_invalidate:
+                    self._invalidate_prepare_derived()
+                purge_invalid_prepare_caches(self.path.parent)
 
-        stage.update(
-            {
-                "status": "running",
-                "fingerprint": fingerprint,
-                "started_at": _now(),
-                "finished_at": None,
-                "error": None,
-            }
-        )
-        if name == "prepare":
-            stage["cache_policy_version"] = PREPARE_CACHE_POLICY_VERSION
-        self.save(state)
-        try:
-            yield stage
-        except Exception as exc:
-            state = self.load()
-            stage = state.setdefault("stages", {}).setdefault(name, {})
+            try:
+                hostname = socket.gethostname()
+            except OSError:
+                hostname = None
             stage.update(
                 {
-                    "status": "failed",
-                    "finished_at": _now(),
-                    "error": str(exc),
-                }
-            )
-            self.save(state)
-            raise
-        else:
-            state = self.load()
-            stage = state.setdefault("stages", {}).setdefault(name, {})
-            stage.update(
-                {
-                    "status": "complete",
-                    "finished_at": _now(),
+                    "status": "running",
+                    "fingerprint": fingerprint,
+                    "started_at": _now(),
+                    "finished_at": None,
                     "error": None,
+                    "runner": {
+                        "lock_protocol": 1,
+                        "run_id": uuid4().hex,
+                        "pid": os.getpid(),
+                        "hostname": hostname,
+                    },
                 }
             )
+            if name == "prepare":
+                stage["cache_policy_version"] = PREPARE_CACHE_POLICY_VERSION
             self.save(state)
+            try:
+                yield stage
+            except Exception as exc:
+                state = self.load()
+                stage = state.setdefault("stages", {}).setdefault(name, {})
+                stage.update(
+                    {
+                        "status": "failed",
+                        "finished_at": _now(),
+                        "error": str(exc),
+                    }
+                )
+                self.save(state)
+                raise
+            else:
+                state = self.load()
+                stage = state.setdefault("stages", {}).setdefault(name, {})
+                stage.update(
+                    {
+                        "status": "complete",
+                        "finished_at": _now(),
+                        "error": None,
+                    }
+                )
+                self.save(state)

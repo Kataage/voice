@@ -19,6 +19,7 @@ from personavoice.project import find_repo_root, get_persona, init_persona
 from personavoice.repair import repair_failed_model_materializations
 from personavoice.setup_env import download_models, install_environments
 from personavoice.setup_lock import SetupLockError, setup_lock
+from personavoice.stage_lock import StageLockError
 from personavoice.status import persona_status
 from personavoice.training import train_persona
 
@@ -187,13 +188,23 @@ def status(
 @app.command()
 def prepare(name: str, force: bool = False) -> None:
     root, paths, cfg = _load(name)
-    _print(prepare_persona(root, paths, cfg, force=force))
+    try:
+        result = prepare_persona(root, paths, cfg, force=force)
+    except StageLockError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(2) from None
+    _print(result)
 
 
 @app.command()
 def train(name: str, force: bool = False) -> None:
     root, paths, cfg = _load(name)
-    _print(train_persona(root, paths, cfg, force=force))
+    try:
+        result = train_persona(root, paths, cfg, force=force)
+    except StageLockError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(2) from None
+    _print(result)
 
 
 @app.command()
@@ -204,8 +215,12 @@ def build(
 ) -> None:
     """One-command prepare + train + evaluation."""
     root, paths, cfg = _load(name)
-    result = {"prepare": prepare_persona(root, paths, cfg, force=force)}
-    result["train"] = train_persona(root, paths, cfg, force=force)
+    try:
+        result = {"prepare": prepare_persona(root, paths, cfg, force=force)}
+        result["train"] = train_persona(root, paths, cfg, force=force)
+    except StageLockError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(2) from None
     if evaluate_after:
         result["evaluation"] = evaluate(root, paths, cfg)["summary"]
     _print(result)
