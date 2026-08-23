@@ -166,7 +166,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
     else:
         try:
             os.killpg(process.pid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
+        except OSError:
             process.terminate()
         try:
             process.wait(timeout=5)
@@ -175,7 +175,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
             pass
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
+        except OSError:
             process.kill()
     try:
         process.wait(timeout=5)
@@ -229,16 +229,16 @@ def _run_json_supervised(
                 # communicate() after timeout is safe to retry and preserves the
                 # already captured output according to the subprocess contract.
                 try:
-                    stdout, stderr = process.communicate(timeout=1)
+                    process.communicate(timeout=1)
                 except subprocess.TimeoutExpired:
-                    stdout, stderr = "", ""
+                    pass
                 raise CommandError(
                     "ASR worker made no checkpoint/progress heartbeat for "
                     f"{ASR_STALL_TIMEOUT_SECONDS // 60} minutes ({detail}). "
                     "The worker process tree was terminated so the build cannot hang forever. "
                     "Successful item checkpoints remain reusable; rerun the same prepare/build "
                     "command without --force to resume."
-                )
+                ) from None
     except BaseException:
         _terminate_process_tree(process)
         raise
