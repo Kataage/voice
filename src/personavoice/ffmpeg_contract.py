@@ -166,6 +166,20 @@ def _disk_inventory(bin_dir: Path) -> tuple[dict[str, Path], list[str]]:
     return files, errors
 
 
+def runtime_file_hashes(bin_dir: Path) -> dict[str, str]:
+    """Hash the exact regular-file inventory of an extracted FFmpeg bin tree."""
+
+    files, errors = _disk_inventory(bin_dir)
+    if errors:
+        raise RuntimeError("Invalid pinned FFmpeg runtime tree: " + "; ".join(errors))
+    if not files:
+        raise RuntimeError("Pinned FFmpeg runtime bin tree contains no regular files")
+    return {
+        relative: sha256_file(path)
+        for relative, path in sorted(files.items(), key=lambda item: item[0].casefold())
+    }
+
+
 def validate_runtime_root(root: Path) -> dict[str, object]:
     """Validate the exact materialized runtime without trusting marker paths."""
 
