@@ -139,6 +139,9 @@ def _non_lfm_fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "irodori_lock_sha256": _file_contract(repo_root / "locks" / "Irodori-TTS.uv.lock"),
         "seed_vc_lock_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "uv.lock"),
         "training_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "training.py"),
+        "training_inputs_code_sha256": _file_contract(
+            repo_root / "src" / "personavoice" / "training_inputs.py"
+        ),
         "irodori_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "irodori.py"),
         "seed_vc_worker_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "worker.py"),
         "training": {
