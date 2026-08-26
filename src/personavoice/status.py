@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from personavoice.config import PersonaConfig
+from personavoice.lineage import active_generation_id, active_lineage_id, prepared_paths
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.prepare_checkpoints import prepare_batch_progress
 from personavoice.project import PersonaPaths
@@ -108,6 +109,16 @@ def persona_status(
     prepare["batch_progress"] = prepare_batch_progress(paths.root)
     train = _stage_audit(store, state, "train")
     train["blocked_by_prepare"] = None
+    prepared = prepared_paths(paths)
+    train_result = state.get("stages", {}).get("train", {}).get("result", {})
+    if isinstance(train_result, dict):
+        train["candidate_lineage_id"] = train_result.get("lineage_id")
+        train["candidate_generation_id"] = train_result.get("generation_id")
+        train["candidate_validation"] = train_result.get("validation")
+    else:
+        train["candidate_lineage_id"] = None
+        train["candidate_generation_id"] = None
+        train["candidate_validation"] = None
     if verify_inputs:
         try:
             current_prepare = _prepare_fingerprint(paths, cfg)
@@ -121,17 +132,24 @@ def persona_status(
             except (OSError, ValueError, TypeError):
                 prepare["current_complete"] = False
 
-        try:
-            current_train = _training_fingerprint(paths, cfg)
-        except (OSError, ValueError, TypeError) as exc:
-            train["verification_error"] = f"{type(exc).__name__}: {exc}"
+        if prepared.lineage_id is None:
+            train["verification_error"] = (
+                "no immutable Prepare lineage is selected; run persona prepare before training"
+            )
+            train["current_complete"] = False
+            train["fingerprint_current"] = False
         else:
-            train["current_fingerprint"] = current_train
-            train["fingerprint_current"] = train["recorded_fingerprint"] == current_train
             try:
-                train["current_complete"] = store.is_complete("train", current_train)
-            except (OSError, ValueError, TypeError):
-                train["current_complete"] = False
+                current_train = _training_fingerprint(prepared, cfg)
+            except (OSError, ValueError, TypeError) as exc:
+                train["verification_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                train["current_fingerprint"] = current_train
+                train["fingerprint_current"] = train["recorded_fingerprint"] == current_train
+                try:
+                    train["current_complete"] = store.is_complete("train", current_train)
+                except (OSError, ValueError, TypeError):
+                    train["current_complete"] = False
 
         # Training has the same hard dependency in train_persona: a current,
         # complete prepare stage is required before a trained artifact can be
@@ -145,9 +163,17 @@ def persona_status(
         if not prepare_ready:
             train["current_complete"] = False
 
+    pointer_lineage = active_lineage_id(paths)
+    pointer_generation = active_generation_id(paths)
     return {
         "config": cfg.model_dump(mode="json"),
         "state": state,
+        "lineage": {
+            "prepared_lineage_id": prepared.lineage_id,
+            "active_lineage_id": pointer_lineage,
+            "active_generation_id": pointer_generation,
+            "runtime_uses_active_pointer": True,
+        },
         "audit": {
             "state_readable": True,
             "state_error": None,
