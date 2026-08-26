@@ -137,10 +137,10 @@ uv run --locked persona say alice "最後まで話します" --duration-scale 1.
 同じseed・checkpoint・referenceで原因を切り分けるA/B/C/Dと、leading artifactの条件分離を行う場合は次を使います。
 
 ```bash
-uv run --locked persona diagnose-boundaries alice
+uv run --locked persona diagnose-boundaries alice --no-asr --no-sense
 ```
 
-診断は`outputs/boundary_diagnostics/<timestamp>/report.json`へduration、final-token保持、WAV energy、ASR/CER（指定時）、SenseVoice event（指定時）、reference fingerprint、既存stage fingerprintのsnapshotを保存します。A-Dのmarginは候補評価であり、`persona.yaml`を自動変更しません。詳細とWindows/Linuxの実機smoke/listening手順は[`docs/BOUNDARY_DIAGNOSTICS.md`](docs/BOUNDARY_DIAGNOSTICS.md)を参照してください。診断・推論設定変更はPrepare/LFM/Irodori/Seed-VC artifactを無効化せず、失われた最終音素の後ろへ無音を付加することも修正とは扱いません。
+診断は`outputs/boundary_diagnostics/<timestamp>/report.json`へduration、final-token保持、WAV energy、ASR/CER（`--asr`指定時）、SenseVoice event（`--sense`指定時）、reference fingerprint、既存stage fingerprintのsnapshotを保存します。A-Dのmarginは候補評価であり、`persona.yaml`を自動変更しません。高コストなASR/SenseVoiceを含める場合だけ`--asr --sense`を明示してください。詳細とWindows/Linuxの実機smoke/listening手順は[`docs/BOUNDARY_DIAGNOSTICS.md`](docs/BOUNDARY_DIAGNOSTICS.md)を参照してください。診断・推論設定変更はPrepare/LFM/Irodori/Seed-VC artifactを無効化せず、失われた最終音素の後ろへ無音を付加することも修正とは扱いません。
 
 Irodori LoRAにvalidation-loss best checkpointがある場合は推論時に最良checkpointを優先し、なければ`checkpoint_final`へフォールバックします。生成後はWAVが実際に作成されたことも検証します。Irodori v4.1 Smallのcombined referenceは設定段階でも120秒以下へ制限します。
 
