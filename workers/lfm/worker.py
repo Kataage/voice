@@ -29,6 +29,7 @@ REVISION_MARKER = ".personavoice-revision"
 ADAPTER_REVISION_MARKER = ".personavoice-base-revision"
 TRAINING_METHOD_MARKER = ".personavoice-training-method"
 PROVENANCE_FILE = "provenance.json"
+MAX_GENERATION_TOKENS = 1024
 REQUIRED_MODEL_FILES = (
     "chat_template.jinja",
     "config.json",
@@ -297,9 +298,12 @@ def _generation_kwargs(payload: dict) -> dict:
     if (
         isinstance(raw_max_new_tokens, bool)
         or not isinstance(raw_max_new_tokens, int)
-        or not 1 <= raw_max_new_tokens <= 4096
+        or not 1 <= raw_max_new_tokens <= MAX_GENERATION_TOKENS
     ):
-        raise ValueError("LFM max_new_tokens must be an integer between 1 and 4096")
+        raise ValueError(
+            "LFM max_new_tokens must be an integer between 1 and "
+            f"{MAX_GENERATION_TOKENS}"
+        )
     options = {
         "do_sample": temperature > 0,
         "repetition_penalty": 1.05,

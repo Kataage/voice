@@ -243,9 +243,11 @@ Japanese CER、speaker similarity、duration/prosody/timing、voiced/unvoiced、
 ```bash
 uv run --locked persona chat alice
 uv run --locked persona chat alice "今日は何してた？"
+# Prepare済みmasterからLFMだけ再export（ASR/diarization/SenseVoiceは再実行しない）
+uv run --locked persona export-lfm alice
 ```
 
-LFMが本文と`voice.caption`, `voice.emotion`, `voice.events`を計画しIrodoriへ渡します。構造化JSONが崩れた場合もplain-text fallbackを行い、型の壊れたcaption/emotion/eventsは正規化してからTTSへ渡します。
+`personas/alice/core_profile.yaml`が恒久的なidentity/self-concept、first-person/addressing、stable facts、relationships、conversation rulesを持ちます。profileは毎ターンruntime conditioningとして読み込まれ、learned LFM styleや会話履歴とは別に扱われます。LFMは本文と`voice.caption`, `voice.emotion`, `voice.events`を同時に計画し、canonical normalization後の**同じvoice plan**をIrodoriへ渡します。neutralな返答の`events`は空でよく、fallbackが笑い・息などを勝手に追加することはありません。malformed/empty/degenerate outputはLFM境界で最大1回だけbounded retryし、Irodoriの`text is empty`へ流しません。詳細は[`docs/CORE_PROFILE_LFM_CONTRACT.md`](docs/CORE_PROFILE_LFM_CONTRACT.md)を参照してください。
 
 ## Web UI / API
 
