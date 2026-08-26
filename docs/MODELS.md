@@ -12,7 +12,8 @@ PersonaVoice treats source revisions, dependency lockfiles, model assets, and th
 - DACVAE SHA256: `db120339c5ee7eca1912cdf29bc612b947a0808e69c3cebfb4936b45a762c1d5`
 - Text/caption encoder repo: `sbintuitions/modernbert-ja-310m`
 - Text encoder revision required by the pinned v4 configs: `77675fc96a7e445e982e2ba90246b816efc74ec6`
-- Training configs: `train_v4_small_lora.yaml`, `train_v4_small_speaker_inversion.yaml`
+- Full training config: pinned upstream `train_v4_small.yaml`（新規personaの既定）
+- Optional methods: `train_v4_small_lora.yaml`, `train_v4_small_speaker_inversion.yaml`
 - Conditioning: text + reference/speaker embedding + caption
 - Long reference: combined references supported by upstream (checkpoint limit 120s)
 - Inference: `--num-candidates`, `--num-steps`, `--seed`, dynamic `--lora-adapter`
@@ -21,15 +22,29 @@ The DACVAE weight is materialized at `models/irodori/dacvae/weights.pth` and pas
 
 PersonaVoice intentionally calls upstream scripts instead of copying their model implementation.
 
+`training.irodori.method`ごとの成果物契約は次の通りです。
+
+- `full`: held-out validation lossで選んだ完全checkpointを、`model.safetensors`、`tokenizer/`、`manifest.json`、`provenance.json`を持つmachine-path非依存artifactへatomic変換する。optimizerを含む完全なnumeric checkpointだけをpreemption resume対象にする。公開前は全held-out caseでspeaker-conditioned / no-reference / caption-conditionedを同じspeaker similarity・CER/WER・pronunciation・duration・emotion指標で比較し、外付けidentityに依存しないno-reference + caption/emotion経路を主gateにする。公開後の`auto`推論もfullだけは`--no-ref`が既定。
+- `lora`: validation-loss best checkpointから`adapter_config.json`と単一の非空adapter weightだけを`selected/`へatomic copyするPEFT artifact。trainer/optimizer stateはresume用native checkpoint側にだけ残し、portable candidateには含めない。adapter configのmachine-local base pathは除去し、選択元step/lossと全file SHA-256をprovenanceへ固定する。
+- `speaker-inversion`: `checkpoint_final.speaker.safetensors`。`auxiliary_speaker_inversion: true`ではLoRA/fullの主artifactとは別に保持する。
+
+method変更はoptimization/family fingerprintを変えますが、DACVAE latentの生成contractはmethodを含まないため、同一dataset/model/conditioningの既存latentを再利用します。executorとremote consentはどのmethodのfingerprintにも含まれません。
+
 ## LFM
 
 - Base: `LiquidAI/LFM2.5-1.2B-JP-202606`
 - Pinned snapshot revision: `b31023f2d69b95fbd7876898f8de9fae90e8afbd`
+- `chat_template.jinja` SHA256: `89e790f027916b5a2bca145a6a8454e06ffc7a5043bf3b6d97829aff86bb543f`
+- `config.json` SHA256: `df8dac1ebef28c06a010be6353e7dd2d0a3ff9c2ca23591bb8ced252d74510a1`
 - `model.safetensors` SHA256: `abf38960d3f37c2be7c946a9b6b06d23ed04a1afb8ac192aa3b491e3dcdcf325`
+- `special_tokens_map.json` SHA256: `742aefe2b7dec496e8caffdba03a75d0c1a9925d53bd3f3e0d388c96b591b6f4`
+- `tokenizer.json` SHA256: `d7a0ab0fc22e41ec8c6d7450a9ff9ce40e196ec5e5a2fa6a2105e064e0514ed7`
+- `tokenizer_config.json` SHA256: `8cba5b0c7acab23a0d4cc9ac587346c9220a1b6d288fc5346fe118202fd6f43e`
 - Purpose: Japanese conversation style / response planning and structured delivery planning
 - Architecture contract: 16 layers, including 6 `full_attention` blocks and 10 convolution blocks in the pinned model configuration
-- Fine-tune: TRL SFT + PEFT LoRA
-- SFT dataset: conversational `prompt` + `completion`; loss is explicitly restricted to the authorized persona completion
+- Fine-tune: TRL SFT full model（新規personaの既定）またはPEFT LoRA
+- SFT dataset: conversational `prompt` (`system`/`user`) + `completion` (`assistant` only), with non-empty string content; loss is explicitly restricted to the authorized persona completion. Bundle creation and the isolated trainer both reject role drift before tokenization
+- Completion-mask audit: exact tokenizer/chat templateでraw prompt/full token列を再構成し、prompt prefix、非空completion、2048-token上限を学習前に検証する。TRLが処理した`completion_mask`もraw長のmultisetと照合し、truncationやmask driftを黙って学習しない
 - LoRA intent: attention q/k/v/output projections only
 - Actual Transformers LFM2 output-projection name: `out_proj` (the Liquid TRL documentation currently shows the stale spelling `o_proj`)
 - Target resolution: exact loaded module paths under `.self_attn.` for `q_proj`, `k_proj`, `v_proj`, and `out_proj`; ShortConv `out_proj` is deliberately excluded
@@ -37,9 +52,11 @@ PersonaVoice intentionally calls upstream scripts instead of copying their model
 - Generation defaults: `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`; no additional `top_p` restriction is injected
 - Output contract: JSON containing text plus voice caption/emotion/events
 
-The materialized local snapshot contains `.personavoice-revision`. Setup reuses it only when all required files are non-empty, the revision marker matches the audited revision, and `model.safetensors` matches the audited SHA256. The isolated LFM worker repeats the weight checksum before loading the model, so post-setup replacement or corruption fails closed. A failed explicit download never publishes the revision marker.
+The materialized local snapshot contains `.personavoice-revision`. Setup reuses it only when all required files are non-empty, the revision marker matches the audited revision, and every architecture/tokenizer/chat-template/weight file above matches its audited SHA256. This exact inventory is part of the LFM family fingerprint and is independently enforced by local setup, the isolated inference/training workers, and Modal asset materialization, so local and Modal cannot silently tokenize or construct different models under one training contract. A failed explicit download never publishes the revision marker.
 
 A finalized persona LoRA adapter must contain `adapter_config.json`, a non-empty PEFT adapter weight (`adapter_model.safetensors` or `adapter_model.bin`), and `.personavoice-base-revision` equal to the pinned JP-202606 revision. Both training orchestration and inference reject partial adapters or adapters finalized against another base revision.
+
+`training.lfm.method: full`はPEFTを挿入せず全parameterを学習し、validationで選んだcheckpointから`config.json`、`model.safetensors`、tokenizer一式、`manifest.json`、`provenance.json`を持つportable artifactを作ります。Transformers 5系が保存時に`special_tokens_map.json`を省略した場合も、固定revision/hash検証済みbase snapshotの同ファイルだけを補い、別revisionやmachine pathを混入させません。`method: lora`は上記projectionだけのadapterを作ります。両方ともworkerがsafetensors/config、Trainer step、optimizer、scheduler、CPU/CUDA RNG、precisionとFP16時のscalerをsafe-load検証し、全native fileのSHA-256をatomic attestationへ結び付けたcheckpointだけをresumeします。partial・欠損・改ざん・検証不能checkpointは候補から外しますが、自動削除やnative payloadの書換えはしません。
 
 ## Diarization
 
@@ -91,7 +108,9 @@ SenseVoice is currently materialized through ModelScope, whose `master` label is
 
 Prepare cache validity is bound to the audited ASR revision and weight contract, pyannote revision and asset-hash contract, SenseVoice asset hashes, relevant worker `uv.lock` hashes, and preprocessing implementation hashes in addition to raw/identity/config fingerprints. Updating any of those contracts invalidates derived ASR/diarization/identity/Sense artifacts before rebuilding the dataset. The materialization root is part of the prepare fingerprint because downstream manifests intentionally contain local absolute paths.
 
-Training fingerprints include the pinned Irodori source revision, Irodori base/DACVAE hashes, ModernBERT revision, LFM base revision, Seed-VC source revision, relevant worker/managed lockfile hashes, and the training/Irodori/LFM-contract/Seed worker implementation hashes. A base/source/dependency/implementation update therefore invalidates old persona adapters/checkpoints even if exported dataset bytes are unchanged. If training artifacts exist without a recorded train-stage fingerprint, PersonaVoice treats them as untracked and rebuilds them instead of guessing their provenance.
+Training family fingerprints include the pinned Irodori source revision, Irodori base/DACVAE hashes, ModernBERT revision, LFM base revision and complete architecture/tokenizer/chat-template/weight inventory hashes, Seed-VC source revision, relevant worker/managed lockfile hashes, and family trainer implementation hashes. A base/source/dependency/family-algorithm update therefore invalidates the affected persona artifact/checkpoint even if exported dataset bytes are unchanged。共有runner/bundle/Modal appはplan-level `executor_contract`でlocal deploymentとremote imageの一致を検証しますが、family optimization fingerprintからは除外するため、安全なtransport/orchestration変更だけでcheckpointを捨てません。Executor、remote authorization、Modal resource名、credential、local hardware、quality thresholdもoptimization semanticsではないためfamily fingerprintから除外されます。Training artifacts without a recorded train-stage/family fingerprint are treated as untracked and rebuilt instead of having their provenance guessed.
+
+Full/LoRA training output is first a candidate. Portable manifest/provenance and every file checksum are verified before it can enter state. Candidateはheld-out quality gate合格後にのみpublishedへatomic promotionされ、inferenceは未公開candidateをproduction modelとして扱いません。
 
 ## Backend contract
 

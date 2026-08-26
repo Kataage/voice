@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from personavoice.config import PersonaConfig
+from personavoice.doctor import (
+    _without_secret_values,
+    modal_readiness_status,
+    training_preflight_status,
+)
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.prepare_checkpoints import prepare_batch_progress
 from personavoice.project import PersonaPaths
@@ -67,6 +72,101 @@ def _stage_audit(
     }
 
 
+def _training_operation_status(
+    store: StateStore,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    stages = state.get("stages")
+    stages = stages if isinstance(stages, dict) else {}
+    stage = stages.get("train")
+    stage = stage if isinstance(stage, dict) else {}
+    progress = stage.get("progress")
+    progress = progress if isinstance(progress, dict) else {}
+    submission = progress.get("submission")
+    submission = submission if isinstance(submission, dict) else {}
+    bundle_audit = submission.get("bundle_audit")
+    if not isinstance(bundle_audit, dict):
+        bundle_audit = progress.get("bundle_audit")
+    bundle_audit = bundle_audit if isinstance(bundle_audit, dict) else None
+    result = stage.get("result")
+    result = result if isinstance(result, dict) else {}
+    executor_result = result.get("executor")
+    executor_result = executor_result if isinstance(executor_result, dict) else {}
+    quality = result.get("quality_gate")
+    quality = quality if isinstance(quality, dict) else {}
+
+    recorded_fingerprint = stage.get("fingerprint")
+    candidate_complete = False
+    published_complete = False
+    if isinstance(recorded_fingerprint, str) and recorded_fingerprint:
+        try:
+            candidate_complete = store.is_trained(recorded_fingerprint)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            candidate_complete = False
+        try:
+            published_complete = store.is_complete("train", recorded_fingerprint)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            published_complete = False
+
+    plan_fingerprint = result.get("plan_fingerprint")
+    if not isinstance(plan_fingerprint, str) or not plan_fingerprint:
+        plan_fingerprint = submission.get("plan_fingerprint")
+    if not isinstance(plan_fingerprint, str) or not plan_fingerprint:
+        plan_fingerprint = progress.get("plan_fingerprint")
+    if not isinstance(plan_fingerprint, str) or not plan_fingerprint:
+        plan_fingerprint = None
+
+    families_value = result.get("families")
+    families_value = families_value if isinstance(families_value, dict) else {}
+    families: dict[str, dict[str, Any]] = {}
+    for name in ("irodori", "lfm", "seed-vc"):
+        family = families_value.get(name)
+        if not isinstance(family, dict):
+            continue
+        enabled = family.get("enabled") is True
+        artifact_recorded = isinstance(family.get("artifact"), str) and bool(family.get("artifact"))
+        families[name] = {
+            "enabled": enabled,
+            "method": family.get("method") if isinstance(family.get("method"), str) else None,
+            "candidate_recorded": enabled and artifact_recorded,
+            "candidate_ready": enabled and artifact_recorded and candidate_complete,
+            "published": enabled and artifact_recorded and published_complete,
+        }
+
+    executor = progress.get("executor")
+    if not isinstance(executor, str) or not executor:
+        executor = executor_result.get("kind")
+    if not isinstance(executor, str) or not executor:
+        executor = None
+    call_id = submission.get("call_id")
+    if not isinstance(call_id, str) or not call_id:
+        call_id = None
+    checkpoint = progress.get("checkpoint")
+    if not isinstance(checkpoint, str) or not checkpoint:
+        checkpoint = None
+    step = progress.get("step")
+    if not isinstance(step, int) or isinstance(step, bool) or step < 0:
+        step = None
+
+    return {
+        "executor": executor,
+        "remote_call_id": call_id,
+        "remote_state": (
+            progress.get("remote_state") if isinstance(progress.get("remote_state"), str) else None
+        ),
+        "model": progress.get("model") if isinstance(progress.get("model"), str) else None,
+        "step": step,
+        "checkpoint": checkpoint,
+        "bundle_audit": _without_secret_values(bundle_audit),
+        "plan_fingerprint": plan_fingerprint,
+        "local_preflight": _without_secret_values(executor_result.get("local_preflight")),
+        "candidate_complete": candidate_complete,
+        "published_complete": published_complete,
+        "quality_gate": _without_secret_values(quality),
+        "families": families,
+    }
+
+
 def persona_status(
     repo_root: Path,
     paths: PersonaPaths,
@@ -76,12 +176,27 @@ def persona_status(
 ) -> dict[str, Any]:
     """Return raw persona state plus inexpensive artifact and optional input freshness audits."""
 
+    try:
+        local_training_preflight = training_preflight_status(repo_root, cfg.training)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        local_training_preflight = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    try:
+        modal = modal_readiness_status()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        modal = {
+            "ready": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "network_probe_performed": False,
+        }
     store = StateStore(paths.state)
     try:
         state = store.load()
     except (OSError, ValueError, TypeError) as exc:
         return {
-            "config": cfg.model_dump(mode="json"),
+            "config": _without_secret_values(cfg.model_dump(mode="json")),
             "state": None,
             "audit": {
                 "state_readable": False,
@@ -89,18 +204,22 @@ def persona_status(
                 "prepare": None,
                 "train": None,
                 "inputs_verified": False,
+                "local_training_preflight": local_training_preflight,
+                "modal": modal,
             },
         }
     if not isinstance(state, dict):
         return {
-            "config": cfg.model_dump(mode="json"),
-            "state": state,
+            "config": _without_secret_values(cfg.model_dump(mode="json")),
+            "state": _without_secret_values(state),
             "audit": {
                 "state_readable": False,
                 "state_error": "state.json root is not an object",
                 "prepare": None,
                 "train": None,
                 "inputs_verified": False,
+                "local_training_preflight": local_training_preflight,
+                "modal": modal,
             },
         }
 
@@ -108,6 +227,7 @@ def persona_status(
     prepare["batch_progress"] = prepare_batch_progress(paths.root)
     train = _stage_audit(store, state, "train")
     train["blocked_by_prepare"] = None
+    train["operation"] = _training_operation_status(store, state)
     if verify_inputs:
         try:
             current_prepare = _prepare_fingerprint(paths, cfg)
@@ -138,21 +258,22 @@ def persona_status(
         # considered valid for the current raw/identity inputs. A still-matching
         # dataset fingerprint must not mask stale source media in status output.
         prepare_ready = (
-            prepare.get("fingerprint_current") is True
-            and prepare.get("current_complete") is True
+            prepare.get("fingerprint_current") is True and prepare.get("current_complete") is True
         )
         train["blocked_by_prepare"] = not prepare_ready
         if not prepare_ready:
             train["current_complete"] = False
 
     return {
-        "config": cfg.model_dump(mode="json"),
-        "state": state,
+        "config": _without_secret_values(cfg.model_dump(mode="json")),
+        "state": _without_secret_values(state),
         "audit": {
             "state_readable": True,
             "state_error": None,
             "prepare": prepare,
             "train": train,
             "inputs_verified": verify_inputs,
+            "local_training_preflight": local_training_preflight,
+            "modal": modal,
         },
     }

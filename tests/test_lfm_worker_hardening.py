@@ -26,6 +26,7 @@ def _load_worker(monkeypatch):
 
     contract = types.ModuleType("model_contract")
     contract.audited_attention_lora_targets = lambda _model: []
+    contract.json_contains_absolute_local_path = lambda _value: False
     monkeypatch.setitem(sys.modules, "model_contract", contract)
 
     peft = types.ModuleType("peft")
@@ -77,8 +78,18 @@ def test_lfm_base_path_requires_complete_snapshot_and_pinned_revision(tmp_path: 
     marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         worker.base_path()
-    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
+    monkeypatch.setattr(worker, "_sha256", lambda path: worker.MODEL_ASSET_SHA256[path.name])
     assert Path(worker.base_path()) == base
+
+    monkeypatch.setattr(
+        worker,
+        "_sha256",
+        lambda path: (
+            "0" * 64 if path.name == "tokenizer.json" else worker.MODEL_ASSET_SHA256[path.name]
+        ),
+    )
+    with pytest.raises(RuntimeError, match="tokenizer.json"):
+        worker.base_path()
 
 
 def test_lfm_adapter_requires_nonempty_config_weight_and_revision(tmp_path: Path, monkeypatch):
@@ -109,9 +120,26 @@ def test_lfm_adapter_requires_nonempty_config_weight_and_revision(tmp_path: Path
     worker.verify_adapter(adapter)
 
 
-def test_lfm_infer_passes_batch_encoding_as_keyword_inputs(monkeypatch):
+def test_lfm_zero_temperature_uses_deterministic_generation(monkeypatch) -> None:
     worker = _load_worker(monkeypatch)
-    calls: dict[str, object] = {}
+
+    greedy = worker._generation_kwargs({"temperature": 0.0, "max_new_tokens": 192})
+    assert greedy == {
+        "do_sample": False,
+        "repetition_penalty": 1.05,
+        "max_new_tokens": 192,
+    }
+
+    sampled = worker._generation_kwargs({"temperature": 0.2})
+    assert sampled["do_sample"] is True
+    assert sampled["temperature"] == pytest.approx(0.2)
+    assert sampled["top_k"] == 50
+
+    for invalid in (float("nan"), float("inf"), -0.1, True, "0"):
+        with pytest.raises(ValueError, match="temperature"):
+            worker._generation_kwargs({"temperature": invalid})
+
+    generated_with: dict = {}
 
     class FakeTensor:
         shape = (1, 3)
@@ -143,34 +171,48 @@ def test_lfm_infer_passes_batch_encoding_as_keyword_inputs(monkeypatch):
         def decode(self, generated, *, skip_special_tokens):
             assert generated == [99]
             assert skip_special_tokens is True
-            return "ok"
+            return '{"text":"ok","voice":{"caption":"natural","emotion":"NEUTRAL","events":[]}}'
 
     class FakeModel:
         device = "cpu"
 
         def generate(self, **kwargs):
-            calls.update(kwargs)
-            assert isinstance(kwargs["input_ids"], FakeTensor)
-            assert isinstance(kwargs["attention_mask"], FakeTensor)
+            assert isinstance(kwargs.pop("input_ids"), FakeTensor)
+            assert isinstance(kwargs.pop("attention_mask"), FakeTensor)
+            generated_with.update(kwargs)
             return FakeOutput()
 
     monkeypatch.setattr(worker, "load_base", lambda: (FakeTokenizer(), FakeModel()))
     result = worker.infer(
         {
             "messages": [{"role": "user", "content": "test"}],
+            "full_model": None,
             "adapter": None,
-            "temperature": 0.1,
-            "max_new_tokens": 32,
+            "temperature": 0.0,
+            "max_new_tokens": 192,
         }
     )
 
-    assert result == {"text": "ok"}
-    assert calls["do_sample"] is True
-    assert calls["temperature"] == pytest.approx(0.1)
-    assert calls["top_k"] == 50
-    assert calls["repetition_penalty"] == pytest.approx(1.05)
-    assert calls["max_new_tokens"] == 32
+    assert result["text"].startswith('{"text":"ok"')
+    assert generated_with == greedy
 
+    generated_with.clear()
+    worker.infer(
+        {
+            "messages": [{"role": "user", "content": "test"}],
+            "full_model": None,
+            "adapter": None,
+            "temperature": 0.2,
+            "max_new_tokens": 48,
+        }
+    )
+    assert generated_with == {
+        "do_sample": True,
+        "temperature": pytest.approx(0.2),
+        "top_k": 50,
+        "repetition_penalty": 1.05,
+        "max_new_tokens": 48,
+    }
 
 def test_lfm_download_refuses_incomplete_materialization(tmp_path: Path, monkeypatch):
     worker = _load_worker(monkeypatch)
@@ -185,7 +227,9 @@ def test_lfm_download_refuses_incomplete_materialization(tmp_path: Path, monkeyp
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         worker.download_model({})
     assert not (base / worker.REVISION_MARKER).exists()
-    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
+    monkeypatch.setattr(worker, "_sha256", lambda path: worker.MODEL_ASSET_SHA256[path.name])
     result = worker.download_model({})
     assert result["revision"] == worker.MODEL_REVISION
-    assert (base / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION
+    assert (base / worker.REVISION_MARKER).read_text(
+        encoding="utf-8"
+    ).strip() == worker.MODEL_REVISION

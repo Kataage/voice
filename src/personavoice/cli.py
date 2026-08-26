@@ -10,6 +10,7 @@ from rich.console import Console
 
 from personavoice.config import PersonaConfig
 from personavoice.doctor import report as doctor_report
+from personavoice.environment import load_root_environment
 from personavoice.evaluation import evaluate
 from personavoice.inference import chat_turn, synthesize
 from personavoice.inference import reenact as reenact_audio
@@ -26,10 +27,20 @@ from personavoice.training import train_persona
 app = typer.Typer(no_args_is_help=True, help="PersonaVoice local-first voice persona toolkit")
 console = Console()
 SETUP_BACKENDS = {"auto", "cu126", "cu128", "cpu", "rocm", "xpu"}
+TRAINING_EXECUTORS = {"auto", "local", "modal"}
+
+
+def _repo_root() -> Path:
+    root = find_repo_root()
+    # The loader has an explicit allowlist, never replaces inherited values,
+    # and returns only key names. CLI commands deliberately discard that report
+    # so credentials cannot enter normal command output.
+    load_root_environment(root)
+    return root
 
 
 def _load(name: str):
-    root = find_repo_root()
+    root = _repo_root()
     paths = get_persona(root, name)
     return root, paths, PersonaConfig.load(paths.config)
 
@@ -43,6 +54,18 @@ def _existing_file(path: Path) -> Path:
     if not value.is_file():
         raise typer.BadParameter(f"File does not exist: {value}")
     return value
+
+
+def _executor_override(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized not in TRAINING_EXECUTORS:
+        raise typer.BadParameter(
+            f"Unsupported training executor {value!r}; choose one of "
+            f"{', '.join(sorted(TRAINING_EXECUTORS))}."
+        )
+    return normalized
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -78,7 +101,7 @@ def _download_models_or_explain(root: Path, *, include_seed_vc: bool) -> dict:
 def doctor(
     deep: bool = typer.Option(False, help="Load local models and verify offline readiness."),
 ) -> None:
-    root = find_repo_root()
+    root = _repo_root()
     if deep:
         with console.status(
             "[bold cyan]Deep offline verification is running...[/bold cyan] "
@@ -107,7 +130,7 @@ def setup(
             f"Unsupported Irodori backend {backend!r}; choose one of "
             f"{', '.join(sorted(SETUP_BACKENDS))}."
         )
-    root = find_repo_root()
+    root = _repo_root()
     console.print("[bold]PersonaVoice setup[/bold]")
     console.print(
         "[dim]Environment sync, downloads, and SHA256 verification are mostly network/disk/CPU "
@@ -199,7 +222,7 @@ def init_command(
         help="Record that local voice use is authorized.",
     ),
 ) -> None:
-    paths = init_persona(find_repo_root(), name, authorized=authorized)
+    paths = init_persona(_repo_root(), name, authorized=authorized)
     console.print(f"Created: [bold]{paths.root}[/bold]")
     console.print(
         f"Put videos/audio in {paths.raw} and clean target-speaker clips in {paths.identity}."
@@ -212,9 +235,45 @@ def consent(
     authorized: bool = typer.Option(True, "--authorized/--not-authorized"),
 ) -> None:
     _, paths, cfg = _load(name)
+    if cfg.was_migrated:
+        raise typer.BadParameter(
+            "This persona still uses the v0.3 training schema. Run `persona migrate-config "
+            f"{name} --dry-run` and then `persona migrate-config {name}` before changing consent; "
+            "PersonaVoice will not save a schema migration implicitly."
+        )
     cfg.consent.authorized = authorized
     cfg.save(paths.config)
     console.print(f"consent.authorized = {authorized}")
+
+
+@app.command("migrate-config")
+def migrate_config(
+    name: str,
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Validate and report the migration without writing persona.yaml.",
+    ),
+) -> None:
+    """Explicitly rewrite one legacy v0.3 training config as schema version 2."""
+
+    _, paths, cfg = _load(name)
+    migrated = cfg.was_migrated
+    written = False
+    if migrated and not dry_run:
+        cfg.save_migrated(paths.config)
+        written = True
+    _print(
+        {
+            "persona": name,
+            "source_schema_version": cfg.training.migrated_from_schema_version,
+            "target_schema_version": cfg.training.schema_version,
+            "migration_required": migrated,
+            "written": written,
+            "dry_run": dry_run,
+            "notes": list(cfg.migration_notes),
+        }
+    )
 
 
 @app.command()
@@ -247,14 +306,23 @@ def prepare(name: str, force: bool = False) -> None:
 
 
 @app.command()
-def train(name: str, force: bool = False) -> None:
+def train(
+    name: str,
+    force: bool = False,
+    executor: str | None = typer.Option(
+        None,
+        "--executor",
+        help="Override training.executor for this run: auto, local, or modal.",
+    ),
+) -> None:
+    executor = _executor_override(executor)
     root, paths, cfg = _load(name)
     try:
         with console.status(
             f"[bold cyan]Training persona {name}...[/bold cyan]",
             spinner="dots",
         ):
-            result = train_persona(root, paths, cfg, force=force)
+            result = train_persona(root, paths, cfg, force=force, executor=executor)
     except StageLockError as exc:
         console.print(f"[bold red]{exc}[/bold red]")
         raise typer.Exit(2) from None
@@ -266,8 +334,14 @@ def build(
     name: str,
     force: bool = False,
     evaluate_after: bool = typer.Option(True, "--eval/--no-eval"),
+    executor: str | None = typer.Option(
+        None,
+        "--executor",
+        help="Override training.executor for this run: auto, local, or modal.",
+    ),
 ) -> None:
     """One-command prepare + train + evaluation."""
+    executor = _executor_override(executor)
     root, paths, cfg = _load(name)
     try:
         with console.status(
@@ -279,7 +353,13 @@ def build(
             f"[bold cyan]2/3 Training persona {name}...[/bold cyan]",
             spinner="dots",
         ):
-            result["train"] = train_persona(root, paths, cfg, force=force)
+            result["train"] = train_persona(
+                root,
+                paths,
+                cfg,
+                force=force,
+                executor=executor,
+            )
     except StageLockError as exc:
         console.print(f"[bold red]{exc}[/bold red]")
         raise typer.Exit(2) from None
@@ -406,6 +486,7 @@ def serve(
             "Refusing non-loopback bind. PersonaVoice has no network authentication. "
             "Use --allow-remote only on a trusted network and with deliberate firewall rules."
         )
+    _repo_root()
     import uvicorn
 
     uvicorn.run("personavoice.api:app", host=host, port=port, reload=False)
@@ -413,6 +494,7 @@ def serve(
 
 @app.command()
 def ui(port: int = 8848) -> None:
+    _repo_root()
     import threading
     import time
     import webbrowser

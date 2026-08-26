@@ -13,3 +13,31 @@ watchdogによる終了はprepareの失敗として明示されますが、す�
 `raw/`・`identity/`・prepare設定・固定model/worker contractが変わった場合、または`--force`を指定した場合はcheckpointを含むprepare派生cacheを無効化します。
 
 Prepare cache policyのソース契約はUTF-8テキストの改行をLFへ正規化してからhashするため、同一checkoutのLF/CRLF差だけでWindowsとLinuxのcache policyが変わりません。互換migrationは認識結果の意味論を変えない運用・復旧変更についても、CIで実測した正確なcanonical policy世代だけを明示的な前身として許可します。未知の旧policyや将来の別実装世代を動的に許可せず、意味論が変わったcacheは引き続きfail-closedです。
+
+## Training / Modal preemption resume
+
+Trainingはprepare stageとは独立した`TrainingPlan`とfamily fingerprintを持ちます。Irodori/LFM full、LoRA、Speaker Inversion、optional Seed-VCは各family固有のrun directoryへperiodic checkpointを保存し、model/optimizer/scheduler/stepとcompletion markerが揃ったcheckpointだけを再開候補にします。Irodori full/LoRAはfilenameまたはdirectoryのstepをnative trainer step、WSD/cosine schedulerの`last_step`、single-process dataloader/runtime stateへ結び付けます。Speaker Inversionはpinned Irodori runtimeの`safetensors.safe_open`でupstream固有のempty metadata、単一の`speaker_embedding` float32 tensor、非空2次元shapeを確認し、壊れた新しいembeddingがあれば古い検証済みembeddingへfallbackします。LFMはworker内のrestricted load後にmethod/step/precisionと全native file checksumをattestし、FP16時だけ`scaler.pt`を必須にします。partial、truncated、改ざん、別plan、検証不能checkpointは使わず、選択から外すだけで既存checkpointを自動削除・書換えしません。
+
+通常のPC再起動・preemption・CLI中断では、同じ`persona train <name>`または`persona build <name>`を`--force`なしで再実行してください。localは最新の完全checkpointから続けます。Modalは`state.json`へ保存済みのsecret-free call ID、plan fingerprint、family contractsを読み、新しいjob/bundleを作らず同じFunctionCallをpollします。`spawn()`受理後かつcall ID保存前に停止した場合も、再送callはpersistent plan claimが選んだcanonical call IDへredirectされ、二つのtrainerは走りません。異なるplanが同じfamily fingerprint/checkpointを再利用する場合はfamily claimで一writerに直列化されます。remote側もfamily fingerprint namespaceのcomplete checkpointだけをresumeし、result completion markerと全checksumが揃うまでlocal candidateとして確定しません。推論用artifactへのpublishは、その後のlocal held-out quality gate合格時だけです。
+
+`persona status <name>`では次を区別できます。
+
+- `audit.prepare.batch_progress`: ASR/diarization/Sense等のitem checkpoint進捗。
+- `audit.train.operation.remote_call_id`, `remote_state`, `step`, `checkpoint`: local/Modal training進捗。
+- `plan_fingerprint`: executor間で共通のsemantic plan。
+- `candidate_complete`: 学習成果物とchecksumは揃っているが、まだ公開前の場合を含む。
+- `published_complete`: local held-out quality gate合格後に推論用artifactへ昇格済み。
+
+## Invalidation matrix
+
+| Change | Prepare cache / dataset | Irodori latent | Family checkpoint |
+|---|---|---|---|
+| `executor` local/Modal/auto、Modal app/GPU、remote consent | reuse | reuse | reuse（同じplan） |
+| quality threshold | reuse | reuse | reuseして再評価 |
+| Irodori/LFM methodまたはoptimizer設定 | reuse | method非依存contractが同じならreuse | 対応familyだけ新fingerprint |
+| raw/identity/prepare semantics、ASR/diarization/Sense contract | dependent cacheをinvalidate | 新datasetなら再生成 | 新training inputなら新fingerprint |
+| training base/source/lock/implementation | reuse | latent contract変更時だけ再生成 | 対応familyをinvalidate |
+| `prepare --force` | prepare派生cache/checkpointを明示破棄 | dataset再生成後に必要なら再生成 | input fingerprint次第 |
+| `train --force` | reuse | valid contractはreuse | stageへ再進入するが、family固有の完全artifact/checkpoint契約はreuse可 |
+
+Routingだけの変更やv0.3→schema v2の意味保存migrationを理由に、正常なprepare/cache/latent/checkpointを破棄してはいけません。逆にmethod、base revision、dataset bytesが違うcheckpointを名前だけでresumeしてはいけません。

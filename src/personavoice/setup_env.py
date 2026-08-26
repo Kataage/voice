@@ -35,7 +35,9 @@ from personavoice.model_assets import (
     IRODORI_SOURCE_REVISION,
     IRODORI_TEXT_ENCODER_ID,
     IRODORI_TEXT_ENCODER_REVISION,
+    LFM_MODEL_ASSET_SHA256,
     LFM_MODEL_ID,
+    LFM_MODEL_REQUIRED_FILES,
     LFM_MODEL_REVISION,
     LFM_MODEL_WEIGHT_SHA256,
     PYANNOTE_MODEL_ASSET_SHA256,
@@ -67,14 +69,7 @@ REVISION_MARKER = ".personavoice-revision"
 IRODORI_LOCK_SWAP_MARKER = "irodori-lock-swap.json"
 IRODORI_MANAGED_PROJECT = "Irodori-TTS.pyproject.toml"
 SUPPORTED_IRODORI_BACKENDS = {"cpu", "cu126", "cu128", "rocm", "xpu"}
-_LFM_REQUIRED_FILES = (
-    "config.json",
-    "model.safetensors",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "chat_template.jinja",
-)
+_LFM_REQUIRED_FILES = LFM_MODEL_REQUIRED_FILES
 _ASR_REQUIRED_FILES = (
     "config.json",
     "model.bin",
@@ -396,6 +391,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
             "lfm_revision": LFM_MODEL_REVISION,
             "lfm_model_sha256": LFM_MODEL_WEIGHT_SHA256,
+            "lfm_asset_sha256": LFM_MODEL_ASSET_SHA256,
             "asr_revision": ASR_MODEL_REVISION,
             "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
             "seed_vc_asset_contract_sha256": seed_vc_contract_digest(repo_root),
@@ -590,9 +586,9 @@ def download_models(
         model_id=LFM_MODEL_ID,
         revision=LFM_MODEL_REVISION,
         local_dir=lfm_dir,
-        required_files=_LFM_REQUIRED_FILES,
+        required_files=LFM_MODEL_REQUIRED_FILES,
         cache_dir=hub_cache,
-        sha256={"model.safetensors": LFM_MODEL_WEIGHT_SHA256},
+        sha256=LFM_MODEL_ASSET_SHA256,
     ):
         downloaded.append(f"{LFM_MODEL_ID}@{LFM_MODEL_REVISION}")
     else:

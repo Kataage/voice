@@ -30,6 +30,20 @@ IRODORI_TEXT_ENCODER_REVISION = "77675fc96a7e445e982e2ba90246b816efc74ec6"
 LFM_MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"
 LFM_MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
 LFM_MODEL_WEIGHT_SHA256 = "abf38960d3f37c2be7c946a9b6b06d23ed04a1afb8ac192aa3b491e3dcdcf325"
+# Complete Transformers architecture/tokenizer contract downloaded from the
+# exact revision above.  The non-weight files influence module construction,
+# token IDs, and chat-template rendering just as directly as the weights do;
+# binding only model.safetensors would allow local and Modal training to run
+# different algorithms under one family fingerprint.
+LFM_MODEL_ASSET_SHA256 = {
+    "chat_template.jinja": "89e790f027916b5a2bca145a6a8454e06ffc7a5043bf3b6d97829aff86bb543f",
+    "config.json": "df8dac1ebef28c06a010be6353e7dd2d0a3ff9c2ca23591bb8ced252d74510a1",
+    "model.safetensors": LFM_MODEL_WEIGHT_SHA256,
+    "special_tokens_map.json": "742aefe2b7dec496e8caffdba03a75d0c1a9925d53bd3f3e0d388c96b591b6f4",
+    "tokenizer.json": "d7a0ab0fc22e41ec8c6d7450a9ff9ce40e196ec5e5a2fa6a2105e064e0514ed7",
+    "tokenizer_config.json": "8cba5b0c7acab23a0d4cc9ac587346c9220a1b6d288fc5346fe118202fd6f43e",
+}
+LFM_MODEL_REQUIRED_FILES = tuple(sorted(LFM_MODEL_ASSET_SHA256))
 
 ASR_MODEL_ID = "Systran/faster-whisper-large-v3"
 ASR_MODEL_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"

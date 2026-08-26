@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import pickle
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,12 @@ import yaml
 from personavoice import dataset, inference, irodori, media, speaker, state, training
 from personavoice.config import PersonaConfig
 from personavoice.project import init_persona
+
+
+def _write_torch_step(path: Path, step: int) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("trainer/data.pkl", pickle.dumps({"step": step}, protocol=4))
+        archive.writestr("trainer/version", "3\n")
 
 
 def test_config_pins_audited_asr_and_irodori_reference_limit():
@@ -189,7 +197,10 @@ def test_irodori_resume_uses_highest_numeric_step(tmp_path: Path):
         checkpoint.mkdir()
         (checkpoint / "adapter_config.json").write_text("{}\n", encoding="utf-8")
         (checkpoint / "adapter_model.safetensors").write_bytes(b"weights")
-        (checkpoint / "trainer_state.pt").write_bytes(b"state")
+        _write_torch_step(
+            checkpoint / "trainer_state.pt",
+            int(checkpoint.name.removeprefix("checkpoint_")),
+        )
     (tmp_path / "checkpoint_best_val_loss_1200_0.2").mkdir()
     assert irodori._latest_resume(tmp_path) == tmp_path / "checkpoint_1000"
 

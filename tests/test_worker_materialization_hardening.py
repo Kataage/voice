@@ -77,6 +77,7 @@ def _load_lfm_worker(monkeypatch):
 
     model_contract = types.ModuleType("model_contract")
     model_contract.audited_attention_lora_targets = lambda model: []
+    model_contract.json_contains_absolute_local_path = lambda _value: False
     monkeypatch.setitem(sys.modules, "model_contract", model_contract)
 
     peft = types.ModuleType("peft")
@@ -278,7 +279,7 @@ def test_lfm_base_path_requires_complete_snapshot_and_revision(tmp_path: Path, m
     marker.write_text(worker.MODEL_REVISION + "\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         worker.base_path()
-    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
+    monkeypatch.setattr(worker, "_sha256", lambda path: worker.MODEL_ASSET_SHA256[path.name])
     assert Path(worker.base_path()) == local
 
 
@@ -295,7 +296,7 @@ def test_lfm_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monk
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         worker.download_model({})
     assert not (local / worker.REVISION_MARKER).exists()
-    monkeypatch.setattr(worker, "_sha256", lambda _path: worker.MODEL_WEIGHT_SHA256)
+    monkeypatch.setattr(worker, "_sha256", lambda path: worker.MODEL_ASSET_SHA256[path.name])
     result = worker.download_model({})
     assert result["revision"] == worker.MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.MODEL_REVISION

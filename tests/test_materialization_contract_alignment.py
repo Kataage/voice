@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 from personavoice import doctor, setup_env
+from personavoice.model_assets import LFM_MODEL_ASSET_SHA256, LFM_MODEL_REQUIRED_FILES
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,6 +40,14 @@ def test_lfm_materialization_contract_is_identical_across_layers():
     worker_files = _tuple_assignment(ROOT / "workers" / "lfm" / "worker.py", "REQUIRED_MODEL_FILES")
     assert worker_files == setup_env._LFM_REQUIRED_FILES
     assert worker_files == doctor._LFM_REQUIRED_FILES
+    worker_hash_files = _dict_string_keys(
+        ROOT / "workers" / "lfm" / "worker.py", "MODEL_ASSET_SHA256"
+    )
+    training_hash_files = _dict_string_keys(
+        ROOT / "workers" / "lfm" / "train.py", "MODEL_ASSET_SHA256"
+    )
+    assert worker_hash_files == training_hash_files == LFM_MODEL_REQUIRED_FILES
+    assert set(worker_hash_files) == set(LFM_MODEL_ASSET_SHA256)
 
 
 def test_asr_materialization_contract_is_identical_across_layers():

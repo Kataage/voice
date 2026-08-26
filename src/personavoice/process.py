@@ -11,6 +11,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from personavoice.environment import SECRET_ENV_KEYS
+
 
 class CommandError(RuntimeError):
     pass
@@ -41,6 +43,12 @@ def _merged_environment(env: dict[str, str] | None) -> dict[str, str]:
     merged = os.environ.copy()
     if env:
         merged.update({key: str(value) for key, value in env.items()})
+    # Credentials loaded by the root process are consumed there (or injected
+    # into Modal through an explicit Secret). Model/uv subprocesses receive
+    # only their non-secret runtime contract, even when the parent was started
+    # with credential variables already present.
+    for key in SECRET_ENV_KEYS:
+        merged.pop(key, None)
     # Every captured subprocess is decoded as UTF-8 below. Force Python children
     # to emit UTF-8 as well so Windows locale/code-page settings cannot corrupt
     # JSON model responses containing Japanese text.

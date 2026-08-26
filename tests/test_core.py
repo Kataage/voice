@@ -343,6 +343,15 @@ def test_auto_reference_mode_can_fall_back_to_no_ref(tmp_path: Path):
     assert args == ["--no-ref"]
 
 
+def test_none_reference_mode_is_a_persistable_explicit_no_ref_choice(tmp_path: Path):
+    paths = init_persona(tmp_path, "alice", authorized=True)
+    cfg = PersonaConfig.load(paths.config)
+    cfg.inference.reference_mode = "none"
+    args: list[str | Path] = []
+    inference._append_reference_args(args, paths, cfg, None)
+    assert args == ["--no-ref"]
+
+
 def test_explicit_reference_overrides_reference_mode(tmp_path: Path):
     paths = init_persona(tmp_path, "alice", authorized=True)
     cfg = PersonaConfig.load(paths.config)

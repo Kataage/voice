@@ -86,7 +86,7 @@ ASR, pyannote, and SenseVoice run in batch workers, loading the model once per p
 
 ## Training inputs changed
 
-Training has its own fingerprint. If the derived dataset or training configuration changes, stale Irodori latents/checkpoints, LFM adapters, and optional Seed-VC persona checkpoints are invalidated before retraining. Use `--force` to explicitly rebuild.
+Training has a plan fingerprint and separate family fingerprints. If the derived dataset, method, optimizer semantics, base revision, lock, or training implementation changes, only incompatible family checkpoints/artifacts are rejected. Executor、remote consent、Modal resource名の変更はoptimization planを変えず、quality threshold変更も既存checkpointを捨てず再評価します。Irodori methodだけを変えた場合も、dataset/model/conditioning contractが同じ事前計算latentは再利用されます。通常の中断復帰に`--force`は不要です。`train --force`もprepare cacheを消さず、family固有の完全artifact/checkpointはその検証契約に従って再利用できます。
 
 ## Irodori backend / out of memory
 
@@ -96,11 +96,79 @@ PersonaVoice patches the official Irodori training config with a conservative ba
 
 If a run is interrupted with the same input fingerprint, rerun the command and PersonaVoice resumes from available upstream checkpoints rather than invalidating them.
 
+## LFM completion mask / maximum sequence length
+
+LFM SFTはsystem/user promptではなく、許可済みpersonaのassistant completionだけへlossを掛けます。prompt roleは`system`/`user`、completion roleは`assistant`だけを許可し、空contentやrole driftはbundle作成時とworker側の両方で拒否します。workerは固定tokenizer/chat templateで各raw例を再構成し、promptがfull sequenceの厳密なprefixであること、completion tokenが1個以上あること、full sequenceが2048 token以下であることを、model学習開始前に検査します。さらにTRLが生成した`completion_mask`の長さ・連続性・件数をraw側と照合します。
+
+`exceeds the audited maximum sequence length`、`zero completion tokens`、`completion mask ... drifted`等で停止した場合は、該当する会話を意味を保った複数例へ分割するか、過長なcontext/completionを短くしてからprepare/trainを再実行してください。上限を上げたりtruncationを許可して先へ進めると、completion全体が切れてpersona lossが消える可能性があるためfail-closedです。失敗したnative checkpointやprepare cacheを手動削除する必要はありません。training inputが変われば新しいfamily fingerprintになり、旧checkpointは証跡として保持されたまま再開対象外になります。
+
+## Local full-training preflight failed
+
+新規personaのIrodori/LFM methodは`full`です。`auto`または`local`は、監査済みCUDA setup、総/free VRAM、available RAM、workspace diskを学習開始前に確認します。不足時にLoRAへ自動変更しないため、次のいずれかを明示してください。
+
+1. `persona doctor`の`local_training_preflight.failures`を解消して`--executor local`を再実行する。
+2. remote processingを許可しModal SDK/authを設定して、同じplanを`--executor modal`で実行する。
+3. 本当に別methodを望む場合だけ`persona.yaml`の`method: lora`を編集する。この変更は別family planです。
+
+`--executor`は1回限りのrouting overrideでconfigを保存しません。`status`のplan fingerprintが同じなら、local/Modal切替だけでprepare/latent/checkpointを削除しないでください。
+
+## Modal executor is unavailable or unauthorized
+
+`persona doctor`の`modal`には`SDK installed`相当のbool、auth configured、credentialの非secret sourceだけが表示され、token ID/secret値や`.env`内容は表示されません。doctorはModalへnetwork probeを行いません。
+
+Production machineではlock済みoptional extraを使い、deployを先に完了させます。既定Function名は`train`です。
+
+```bash
+uv sync --locked --extra modal
+uv run --locked --extra modal modal setup
+uv run --locked --extra modal modal deploy -m personavoice.modal_app
+uv run --locked --extra modal persona doctor
+```
+
+app/Volume名を変更する場合は、`PERSONAVOICE_MODAL_APP`と`PERSONAVOICE_MODAL_VOLUME`をdeployとtraining clientで同じ値にします。bundled appのtraining Function名は`train`、terminal cleanup Function名は`recover_terminal_claim`で、persistent claim Dictは`<app名>-claims`としてdeploy時に作られます。このDictはplan/family fingerprintとcall IDだけを持ちます。実行中のcallがある間は手動でclear/deleteしないでください。HF tokenはroot `.env`をuploadしたりshell argvへ含めたりせず、Modal dashboardで`PERSONAVOICE_MODAL_HF_SECRET`（既定`personavoice-huggingface`）と同名のSecretを作り、`HF_TOKEN` keyだけを登録します。`PERSONAVOICE_MODAL_FUNCTION`はclient lookup overrideなので、bundled appでは変更せず、互換な別deploymentを利用する場合だけその公開Function名へ合わせます。GPU既定は`A100-40GB`です。通常のlocal-only環境は`modal` extra不要で、CIもreal SDKのimport/spec構築とfake backendだけを使い実接続しません。
+
+- `Remote training is disabled`: persona全体の`consent.authorized: true`に加えて、remote転送専用の`training.remote_data_authorized: true`を本人同意の範囲に沿って明示する。汎用consent scopeやModal credentialはこのbooleanを代替しない。
+- `Modal authentication is not configured`: 上のlock済みextraを同期し、`modal setup`または`modal token set`、親processの`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET`、もしくはroot `.env`のallowlisted keyを使う。
+- `Modal support is optional`: SDK未導入。`uv sync --locked --extra modal`をproductionでModalを選ぶmachineだけに実行する。
+- `Modal Function lookup failed`: `modal deploy -m personavoice.modal_app`を完了し、deployとclientのapp/Function名および`MODAL_ENVIRONMENT`を一致させる。
+- 保存済みcallがあるのにlocalを選べない: 同じplanを`--executor modal`で再実行してcallをpollする。重複submitを避けるための保護です。
+- `failed-recoverable`: hard timeout等でModalのretryを使い切ったold callをclientが検出し、`recover_terminal_claim`がそのterminal状態をModal側で独立に再確認して、old callだけが所有するfamily claim、plan claimの順に解放済みです。同じ`persona train ... --executor modal`を再実行してください。新callはVolume上のchecksum済みmethod-native checkpointから再開します。状態がrunning、complete、expired/不明、またはclaim ownerが別callの場合は自動解放しません。
+
+Remote consentの検査はbundle作成・auth probe・uploadより前です。bundleにはcanonical plan、Irodori latent、許可済みmetadataのlossless等価性をchecksumで証明するsource manifest、content-addressed latent相対pathのsanitized runtime manifest、LFM会話dataだけが入ります。二種類のIrodori manifestは監査契約と実行契約であり、どちらにもraw audioや絶対local pathは含みません。raw/identity/reference audio、SQLite、`.env`、secret、絶対pathは入りません。Seed-VC FTはaudio非転送contractのためModalでは拒否されます。
+
+## Candidate exists but is not published
+
+`persona train`が正常終了しても、stateが`trained`で`published_complete: false`なら、checksum検証済みcandidateはありますがlocal held-out quality gateがまだ完了または合格していません。speaker similarity、CER/WER、unseen pronunciation、validation loss、duration ratio、emotion/style、base CER regressionの欠損・`NaN`・無限値はfail-closedで、良い値だけを平均して通しません。Irodori fullでは主gateがno-reference + caption/emotion経路であること、`report.json`の`mode_comparison`に3 conditioning経路それぞれの全指標と全caseがあることも確認してください。
+
+LFMが有効なら`report.json`の`lfm`を確認してください。`complete`、candidate/base両方の`contract_passed`、期待completionに対するsimilarity/CER/WER、`required_phrase_coverage_mean`、`base_similarity_regression_max`が全case分そろう必要があります。既定thresholdは順に`>= 0.35`、`<= 0.85`、`<= 1.0`、`>= 1.0`、`<= 0.10`です。`temperature: 0`はworker側でsamplingを無効化したgreedy generationになり、0温度のsampling errorへfallbackしません。training JSONLが壊れたwrapper/completionを含む場合、またはwrapperの実dialogue行やassistant JSONの`text`が固定eval prompt/answerと正規化後に完全一致する場合も、評価は公開前に停止します。
+
+`persona status <name>`で`quality_gate`とfamily candidate状態を確認し、評価環境/held-out inputを直して同じplanを再評価してください。thresholdを下げるために学習checkpointを削除する必要はありません。gateを迂回して`.candidates`をpublished locationへ手作業で移動しないでください。
+
+## v0.3 persona.yaml migration
+
+legacy flat training fieldsは読み込み時にmemory上だけでschema v2へ変換されます。通常の`status`、`prepare`、`train`は`persona.yaml`を自動書換えしません。
+
+```bash
+uv run --locked persona migrate-config alice --dry-run
+uv run --locked persona migrate-config alice
+```
+
+dry-runのnotesで意味保存結果を確認してください。旧IrodoriのLoRA+Speaker Inversionは`method: lora` + `auxiliary_speaker_inversion: true`、両方falseは`enabled: false`です。旧LFM LoRA learning rate等も保持されます。legacy fieldと新しいnested fieldの混在は曖昧なので拒否され、手動解決が必要です。移行自体はdataset/prepare/latent/checkpointのsemantic inputを変更しないため、有効なcacheを一律invalidateしません。
+
+v0.3で作られたLFM optimizer checkpointは削除・上書きされません。ただしcompletion-only mask、固定base inventory、exact native attestationを持たない旧training contractを新しいfull/LoRA runへ推測でresumeすることはありません。互換性のあるIrodori latent、prepare output、完成artifactは各validatorを通ったものだけ個別に再利用されます。
+
+## Root .env and offline/secret handling
+
+`.env.example`からroot `.env`を作成できますが、PersonaVoiceが読むのは明示allowlistだけです。親processの値が常に優先され、unknown key、`PYTHONPATH`等は注入されません。secret値はloader report、doctor、status、training state、bundle、Modal payloadへ返しません。`.env`の`${...}`展開やcommand substitutionは行わずliteralとして扱います。
+
+通常のprepare/inference/deep doctorはmaterialize済みmodelをofflineで使います。`HF_TOKEN`はgated assetを明示的な`persona setup`で初回取得する場合だけ必要です。`--offline`相当の通常経路で不足modelをremoteから黙って取得することはありません。
+
 ## Reference mode errors
 
 `inference.reference_mode` is intentional rather than advisory:
 
-- `auto`: prefer Speaker Inversion embedding, then prepared audio references, then unconditioned synthesis.
+- `auto`: LoRA/Speaker Inversion/baseではSpeaker Inversion embedding、prepared audio、unconditionedの順。公開済みfull persona checkpointではweight-owned identityを既定にするため`--no-ref`。
+- `none`: 明示的に`--no-ref`を使い、reference audio/embeddingを付加しない。
 - `speaker-embed`: require `checkpoint_final.speaker.safetensors`; missing embedding is an error.
 - `audio`: require the prepared reference bank; an empty bank is an error.
 - An explicit CLI/API reference overrides the default mode and is always treated as an audio reference.

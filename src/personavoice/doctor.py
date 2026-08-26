@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
+from dataclasses import asdict
+from importlib.util import find_spec
 from pathlib import Path
+from typing import Any
 
-from personavoice.environment_contract import environment_contract_status, runtime_hardware_status
+from personavoice.config import TrainingConfig
+from personavoice.environment import SECRET_ENV_KEYS
+from personavoice.environment_contract import (
+    environment_contract_status,
+    require_current_environment,
+    runtime_hardware_status,
+)
+from personavoice.executors import inspect_local_resources, preflight_local_full
 from personavoice.hardware import hardware_report
 from personavoice.media import sha256_file
+from personavoice.modal_transport import detect_modal_auth
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     ASR_MODEL_WEIGHT_SHA256,
@@ -16,6 +28,8 @@ from personavoice.model_assets import (
     IRODORI_MODEL_FILENAME,
     IRODORI_MODEL_SHA256,
     IRODORI_TEXT_ENCODER_REVISION,
+    LFM_MODEL_ASSET_SHA256,
+    LFM_MODEL_REQUIRED_FILES,
     LFM_MODEL_REVISION,
     LFM_MODEL_WEIGHT_SHA256,
     PYANNOTE_MODEL_ASSET_SHA256,
@@ -28,17 +42,11 @@ from personavoice.process import run
 from personavoice.runtime_dependencies import ffmpeg_runtime
 from personavoice.seed_vc_assets import materialization_status as seed_vc_materialization_status
 from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_REVISION
+from personavoice.training_plan import FamilyPlan, TrainingPlan
 from personavoice.workers import local_model_env, worker
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-_LFM_REQUIRED_FILES = (
-    "config.json",
-    "model.safetensors",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "chat_template.jinja",
-)
+_LFM_REQUIRED_FILES = LFM_MODEL_REQUIRED_FILES
 _ASR_REQUIRED_FILES = (
     "config.json",
     "model.bin",
@@ -58,6 +66,157 @@ _SENSE_REQUIRED_FILES = (
     "am.mvn",
     "chn_jpn_yue_eng_ko_spectok.bpe.model",
 )
+
+_SECRET_FIELD_NAMES = frozenset(
+    {
+        "access_token",
+        "api_token",
+        "hf_token",
+        "modal_token_id",
+        "modal_token_secret",
+        "password",
+        "token",
+        "token_id",
+        "token_secret",
+    }
+)
+
+
+def _secret_field(key: object) -> bool:
+    folded = str(key).casefold().replace("-", "_")
+    return (
+        folded in _SECRET_FIELD_NAMES
+        or folded == "authorization"
+        or folded.startswith("authorization_")
+        or folded.startswith("token_")
+        or folded.endswith("_token")
+        or "credential" in folded
+        or "password" in folded
+        or "secret" in folded
+    )
+
+
+def _without_secret_values(
+    value: Any,
+    *,
+    secret_values: tuple[str, ...] | None = None,
+) -> Any:
+    """Omit secret fields and redact known process secrets wherever they occur."""
+
+    if secret_values is None:
+        secret_values = tuple(
+            candidate for key in SECRET_ENV_KEYS if (candidate := os.environ.get(key, ""))
+        )
+
+    if isinstance(value, dict):
+        return {
+            str(key): _without_secret_values(child, secret_values=secret_values)
+            for key, child in value.items()
+            if not _secret_field(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_without_secret_values(child, secret_values=secret_values) for child in value]
+    if isinstance(value, str) and any(secret in value for secret in secret_values):
+        return "[redacted]"
+    return value
+
+
+def _preflight_plan(training: TrainingConfig) -> TrainingPlan:
+    def family(name: str, *, enabled: bool, method: str, settings: dict[str, Any]) -> FamilyPlan:
+        return FamilyPlan(
+            family=name,
+            enabled=enabled,
+            method=method,
+            dataset_fingerprint="preflight-only",
+            training=settings,
+            model_contract={},
+            implementation_contract={},
+            checkpoint_policy={},
+            evaluation_policy={},
+        )
+
+    return TrainingPlan(
+        persona="doctor-preflight",
+        files=(),
+        families=(
+            family(
+                "irodori",
+                enabled=training.irodori.enabled,
+                method=training.irodori.method,
+                settings=training.irodori.model_dump(mode="json"),
+            ),
+            family(
+                "lfm",
+                enabled=training.lfm.enabled,
+                method=training.lfm.method,
+                settings=training.lfm.model_dump(mode="json"),
+            ),
+            family(
+                "seed-vc",
+                enabled=training.seed_vc.finetune,
+                method="finetune",
+                settings=training.seed_vc.model_dump(mode="json"),
+            ),
+        ),
+    )
+
+
+def training_preflight_status(
+    repo_root: Path,
+    training: TrainingConfig | None = None,
+) -> dict[str, Any]:
+    """Report the same conservative local full-training admission check used by train."""
+
+    setup = _setup_state(repo_root)
+    setup_error: str | None = None
+    try:
+        current_setup = require_current_environment(repo_root)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        setup_current = False
+        setup_error = f"{type(exc).__name__}: {exc}"
+    else:
+        setup_current = True
+        setup = current_setup
+    backend = str(setup.get("irodori_backend") or "unknown")
+    resources = inspect_local_resources(
+        repo_root,
+        backend=backend,
+        setup_current=setup_current,
+    )
+    selected_training = TrainingConfig() if training is None else training
+    preflight = preflight_local_full(_preflight_plan(selected_training), resources)
+    result = {
+        "ok": preflight.ok,
+        "setup_current": setup_current,
+        "setup_error": setup_error,
+        "requested_full_families": list(preflight.full_families),
+        "resources": asdict(resources),
+        "requirements": {
+            "gpu_total_mib": preflight.required_gpu_total_mib,
+            "gpu_free_mib": preflight.required_gpu_free_mib,
+            "ram_available_bytes": preflight.required_ram_available_bytes,
+            "disk_free_bytes": preflight.required_disk_free_bytes,
+        },
+        "failures": [asdict(item) for item in preflight.failures],
+    }
+    return _without_secret_values(result)
+
+
+def modal_readiness_status() -> dict[str, Any]:
+    """Inspect only SDK presence and credential configuration; never contact Modal."""
+
+    try:
+        sdk_installed = find_spec("modal") is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        sdk_installed = False
+    auth = detect_modal_auth()
+    return {
+        "ready": sdk_installed and auth.configured,
+        "sdk_installed": sdk_installed,
+        "auth_configured": auth.configured,
+        "auth_source": auth.source,
+        "network_probe_performed": False,
+    }
 
 
 def _setup_state(repo_root: Path) -> dict:
@@ -149,6 +308,7 @@ def _model_asset_integrity(
         "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
         "lfm_revision": LFM_MODEL_REVISION,
         "lfm_model_sha256": LFM_MODEL_WEIGHT_SHA256,
+        "lfm_asset_sha256": LFM_MODEL_ASSET_SHA256,
         "asr_revision": ASR_MODEL_REVISION,
         "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
         "seed_vc_asset_contract_sha256": seed_vc_status.get("contract_sha256"),
@@ -188,6 +348,7 @@ def _model_asset_integrity(
         "seed_vc": seed_vc_status,
         "irodori_sha256": None,
         "dacvae_sha256": None,
+        "lfm_asset_sha256": None,
     }
     errors = []
     if recorded != expected_setup:
@@ -224,6 +385,18 @@ def _model_asset_integrity(
                 errors.append("Irodori checkpoint checksum mismatch")
             if dacvae_sha != IRODORI_DACVAE_SHA256:
                 errors.append("Irodori DACVAE checksum mismatch")
+    lfm_dir = repo_root / "models" / "lfm" / "base"
+    if deep and all(_nonempty_file(lfm_dir / name) for name in LFM_MODEL_REQUIRED_FILES):
+        try:
+            lfm_hashes = {
+                name: sha256_file(lfm_dir / name) for name in LFM_MODEL_REQUIRED_FILES
+            }
+        except OSError as exc:
+            errors.append(f"LFM asset checksum read failed: {exc}")
+        else:
+            result["lfm_asset_sha256"] = lfm_hashes
+            if lfm_hashes != LFM_MODEL_ASSET_SHA256:
+                errors.append("LFM base asset checksum contract mismatch")
     if errors:
         result["ok"] = False
         result["errors"] = errors
@@ -319,21 +492,16 @@ def report(
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
-        "lfm": all(_nonempty_file(lfm_dir / name) for name in _LFM_REQUIRED_FILES),
+        "lfm": all(_nonempty_file(lfm_dir / name) for name in LFM_MODEL_REQUIRED_FILES),
         "asr": all(_nonempty_file(asr_dir / name) for name in _ASR_REQUIRED_FILES),
-        "pyannote": all(
-            _nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES
-        ),
+        "pyannote": all(_nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES),
         "sense": all(_nonempty_file(sense_dir / name) for name in _SENSE_REQUIRED_FILES)
         and _read_revision(runtime / "sense-model-ready") == "verified",
         "seed_vc_models": bool(seed_vc_status.get("ok")),
         "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
         "irodori_vendor": _nonempty_file(repo_root / "vendor/Irodori-TTS/infer.py"),
     }
-    workers = {
-        name: (repo_root / "workers" / name / ".venv").is_dir()
-        for name in WORKER_NAMES
-    }
+    workers = {name: (repo_root / "workers" / name / ".venv").is_dir() for name in WORKER_NAMES}
     active_workers = tuple(name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc")
     setup = _setup_state(repo_root)
     environment = environment_contract_status(repo_root, setup.get("environment_contract"))
@@ -397,10 +565,7 @@ def report(
 
     lockfiles = {
         "root": (repo_root / "uv.lock").is_file(),
-        **{
-            name: (repo_root / "workers" / name / "uv.lock").is_file()
-            for name in WORKER_NAMES
-        },
+        **{name: (repo_root / "workers" / name / "uv.lock").is_file() for name in WORKER_NAMES},
         "irodori_managed": (repo_root / "locks" / "Irodori-TTS.uv.lock").is_file(),
     }
     required_model_keys = {
@@ -438,13 +603,15 @@ def report(
         and vendors_ready
     )
     deep_ready = all(bool(value.get("ok")) for value in worker_health.values()) if deep else True
-    return {
+    local_training_preflight = training_preflight_status(repo_root)
+    modal = modal_readiness_status()
+    result = {
         "python": sys.version.split()[0],
         "commands": required,
         "commands_ok": commands_ok,
         "ffmpeg_runtime": ffmpeg_status.as_dict(),
         "hardware": hardware_report(),
-        "setup": setup,
+        "setup": _without_secret_values(setup),
         "environment_contract": environment,
         "runtime_hardware": runtime_hardware,
         "seed_vc_runtime_hardware": seed_vc_runtime_hardware,
@@ -457,4 +624,7 @@ def report(
         "reproducible_environment": reproducible,
         "ready_offline": base_ready and deep_ready,
         "seed_vc_required": require_seed_vc,
+        "local_training_preflight": local_training_preflight,
+        "modal": modal,
     }
+    return _without_secret_values(result)

@@ -9,6 +9,7 @@ import socket
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from uuid import uuid4
 
 from personavoice.atomic import atomic_write_json
 from personavoice.dataset import SCHEMA_VERSION as DATASET_SCHEMA_VERSION
+from personavoice.environment import SECRET_ENV_KEYS
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     LFM_MODEL_REVISION,
@@ -28,7 +30,8 @@ from personavoice.stage_lock import stage_lock
 from personavoice.worker_contracts import purge_invalid_prepare_caches
 
 PREPARE_RESULT_SCHEMA = 4
-TRAIN_RESULT_SCHEMA = 8
+TRAIN_RESULT_SCHEMA = 9
+LEGACY_TRAIN_RESULT_SCHEMA = 8
 
 
 def _repo_root() -> Path:
@@ -67,9 +70,7 @@ def _prepare_cache_policy() -> str:
         "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
         "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
         "asr_lock_sha256": _file_contract(repo / "workers" / "asr" / "uv.lock"),
-        "diarization_lock_sha256": _file_contract(
-            repo / "workers" / "diarization" / "uv.lock"
-        ),
+        "diarization_lock_sha256": _file_contract(repo / "workers" / "diarization" / "uv.lock"),
         "sense_lock_sha256": _file_contract(repo / "workers" / "sense" / "uv.lock"),
         "pipeline_code_sha256": _file_contract(repo / "src" / "personavoice" / "pipeline.py"),
         "prepare_checkpoints_code_sha256": _file_contract(
@@ -223,7 +224,10 @@ def _sqlite_contract(path: Path, *, expected_utterances: int) -> bool:
         return False
     if schema_row is None or count_row is None:
         return False
-    return str(schema_row[0]) == str(DATASET_SCHEMA_VERSION) and int(count_row[0]) == expected_utterances
+    return (
+        str(schema_row[0]) == str(DATASET_SCHEMA_VERSION)
+        and int(count_row[0]) == expected_utterances
+    )
 
 
 def _canonical_prepare_json_complete(
@@ -401,12 +405,14 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     return True
 
 
-def _train_artifacts_complete(result: Any, *, expected_fingerprint: str) -> bool:
+def _legacy_train_artifacts_complete(result: Any, *, expected_fingerprint: str) -> bool:
     if not isinstance(result, dict):
         return False
-    if not {"train_schema", "fingerprint", "irodori", "lfm_adapter", "seed_vc_cfm"}.issubset(result):
+    if not {"train_schema", "fingerprint", "irodori", "lfm_adapter", "seed_vc_cfm"}.issubset(
+        result
+    ):
         return False
-    if _safe_int(result.get("train_schema")) != TRAIN_RESULT_SCHEMA:
+    if _safe_int(result.get("train_schema")) != LEGACY_TRAIN_RESULT_SCHEMA:
         return False
     if result.get("fingerprint") != expected_fingerprint:
         return False
@@ -432,8 +438,203 @@ def _train_artifacts_complete(result: Any, *, expected_fingerprint: str) -> bool
     ):
         return False
     seed = result["seed_vc_cfm"]
-    return seed is None or (
-        isinstance(seed, str) and bool(seed) and _nonempty_file(Path(seed))
+    return seed is None or (isinstance(seed, str) and bool(seed) and _nonempty_file(Path(seed)))
+
+
+_SECRET_REDACTION = "[redacted]"
+
+
+def _process_secret_values() -> tuple[str, ...]:
+    """Return configured credential values without exposing their names or values."""
+
+    return tuple(
+        sorted(
+            {
+                value
+                for key in SECRET_ENV_KEYS
+                if isinstance((value := os.environ.get(key)), str) and value
+            },
+            key=len,
+            reverse=True,
+        )
+    )
+
+
+def _redact_process_secrets(value: str | None) -> str | None:
+    if value is None:
+        return None
+    redacted = value
+    for secret in _process_secret_values():
+        redacted = redacted.replace(secret, _SECRET_REDACTION)
+    return redacted
+
+
+def _secret_free(value: Any, *, secret_values: tuple[str, ...] | None = None) -> bool:
+    if secret_values is None:
+        secret_values = _process_secret_values()
+    secret_fragments = ("token", "secret", "password", "credential", "authorization")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key)
+            if any(fragment in key_text.casefold() for fragment in secret_fragments):
+                return False
+            if any(secret in key_text for secret in secret_values):
+                return False
+            if not _secret_free(child, secret_values=secret_values):
+                return False
+    elif isinstance(value, (list, tuple)):
+        return all(_secret_free(child, secret_values=secret_values) for child in value)
+    elif isinstance(value, str):
+        return not any(secret in value for secret in secret_values)
+    return True
+
+
+def _secure_state_before_save(state: dict[str, Any]) -> None:
+    """Reject credential-bearing payloads and redact diagnostic strings in-place."""
+
+    stages = state.get("stages")
+    if not isinstance(stages, dict):
+        return
+    for stage in stages.values():
+        if not isinstance(stage, dict):
+            continue
+        for field in ("result", "progress"):
+            if field in stage and not _secret_free(stage[field]):
+                raise ValueError("State result/progress may not contain credentials or secret values")
+        error = stage.get("error")
+        if isinstance(error, str):
+            stage["error"] = _redact_process_secrets(error)
+
+
+def _portable_persona_path(persona_root: Path, value: Any) -> Path | None:
+    if not isinstance(value, str) or not value:
+        return None
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    root = persona_root.resolve()
+    resolved = (root / relative).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _new_train_artifacts_valid(
+    result: Any,
+    *,
+    expected_fingerprint: str,
+    persona_root: Path,
+    require_published: bool,
+) -> bool:
+    if not isinstance(result, dict) or _safe_int(result.get("train_schema")) != TRAIN_RESULT_SCHEMA:
+        return False
+    required = {
+        "fingerprint",
+        "plan_fingerprint",
+        "executor",
+        "families",
+        "download_verified",
+        "quality_gate",
+    }
+    if not required.issubset(result) or result.get("fingerprint") != expected_fingerprint:
+        return False
+    plan_fingerprint = result.get("plan_fingerprint")
+    if not isinstance(plan_fingerprint, str) or len(plan_fingerprint) != 64:
+        return False
+    if result.get("download_verified") is not True or not _secret_free(result):
+        return False
+    quality = result.get("quality_gate")
+    if require_published and (not isinstance(quality, dict) or quality.get("passed") is not True):
+        return False
+    families = result.get("families")
+    if not isinstance(families, dict):
+        return False
+
+    if set(families) != {"irodori", "lfm", "seed-vc"}:
+        return False
+    published_families: dict[str, tuple[str, str, str]] = {}
+    for name, family in families.items():
+        if not isinstance(family, dict):
+            return False
+        if not isinstance(family.get("enabled"), bool):
+            return False
+        if family.get("enabled") is not True:
+            if family.get("artifact") is not None:
+                return False
+            continue
+        method = family.get("method")
+        family_fingerprint = family.get("family_fingerprint")
+        if (
+            not isinstance(family_fingerprint, str)
+            or len(family_fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in family_fingerprint)
+        ):
+            return False
+        artifact = _portable_persona_path(persona_root, family.get("artifact"))
+        if artifact is None:
+            return False
+        if not isinstance(method, str):
+            return False
+        try:
+            from personavoice.artifacts import verify_training_candidate
+
+            verify_training_candidate(
+                artifact,
+                family=name,
+                method=method,
+                family_fingerprint=family_fingerprint,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+        auxiliary = family.get("auxiliary_speaker_embedding")
+        if auxiliary is not None:
+            auxiliary_path = _portable_persona_path(persona_root, auxiliary)
+            if auxiliary_path is None or not _nonempty_file(auxiliary_path):
+                return False
+        try:
+            relative_model = (
+                artifact.resolve().relative_to((persona_root / "models").resolve()).as_posix()
+            )
+        except ValueError:
+            if require_published:
+                return False
+        else:
+            published_families[name] = (method, family_fingerprint, relative_model)
+    if require_published and published_families:
+        try:
+            from personavoice.artifacts import verify_publication
+
+            verify_publication(
+                persona_root / "models",
+                expected_plan_fingerprint=plan_fingerprint,
+                expected_families=published_families,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+    return True
+
+
+def _train_artifacts_complete(
+    result: Any,
+    *,
+    expected_fingerprint: str,
+    persona_root: Path | None = None,
+) -> bool:
+    schema = _safe_int(result.get("train_schema")) if isinstance(result, dict) else None
+    if schema == LEGACY_TRAIN_RESULT_SCHEMA:
+        return _legacy_train_artifacts_complete(
+            result,
+            expected_fingerprint=expected_fingerprint,
+        )
+    if schema != TRAIN_RESULT_SCHEMA or persona_root is None:
+        return False
+    return _new_train_artifacts_valid(
+        result,
+        expected_fingerprint=expected_fingerprint,
+        persona_root=persona_root,
+        require_published=True,
     )
 
 
@@ -445,6 +646,7 @@ class StateStore:
         return json.loads(self.path.read_text(encoding="utf-8"))
 
     def save(self, state: dict[str, Any]) -> None:
+        _secure_state_before_save(state)
         state["updated_at"] = _now()
         atomic_write_json(self.path, state)
 
@@ -453,17 +655,32 @@ class StateStore:
 
     def is_complete(self, name: str, fingerprint: str) -> bool:
         stage = self.stage(name)
-        if name == "prepare" and not _prepare_policy_compatible(
-            stage.get("cache_policy_version")
-        ):
+        if name == "prepare" and not _prepare_policy_compatible(stage.get("cache_policy_version")):
             return False
         if stage.get("status") != "complete" or stage.get("fingerprint") != fingerprint:
             return False
         if name == "prepare":
             return _prepare_artifacts_complete(self.path.parent, stage.get("result"))
         if name == "train":
-            return _train_artifacts_complete(stage.get("result"), expected_fingerprint=fingerprint)
+            return _train_artifacts_complete(
+                stage.get("result"),
+                expected_fingerprint=fingerprint,
+                persona_root=self.path.parent,
+            )
         return True
+
+    def is_trained(self, fingerprint: str) -> bool:
+        """Return true for a verified schema-v9 candidate, before publication."""
+
+        stage = self.stage("train")
+        if stage.get("status") not in {"trained", "complete"}:
+            return False
+        return _new_train_artifacts_valid(
+            stage.get("result"),
+            expected_fingerprint=fingerprint,
+            persona_root=self.path.parent,
+            require_published=stage.get("status") == "complete",
+        )
 
     def set_result(self, name: str, result: dict[str, Any]) -> None:
         if name == "prepare" and "usable_tts_utterances" in result:
@@ -475,8 +692,29 @@ class StateStore:
                     "Add/clean identity reference audio, add source recordings containing the target "
                     "speaker, or deliberately review prepare.min_identity_similarity."
                 )
+        if not _secret_free(result):
+            raise ValueError("State result may not contain credentials or secret values")
         state = self.load()
         state.setdefault("stages", {}).setdefault(name, {})["result"] = result
+        self.save(state)
+
+    def set_progress(self, name: str, progress: dict[str, Any]) -> None:
+        if not _secret_free(progress):
+            raise ValueError("Training progress may not contain credentials or secret values")
+        state = self.load()
+        stage = state.setdefault("stages", {}).setdefault(name, {})
+        stage["progress"] = progress
+        self.save(state)
+
+    def set_status(self, name: str, status: str, *, error: str | None = None) -> None:
+        if status not in {"running", "trained", "complete", "failed"}:
+            raise ValueError(f"Unsupported stage status: {status!r}")
+        state = self.load()
+        stage = state.setdefault("stages", {}).setdefault(name, {})
+        stage["status"] = status
+        stage["error"] = _redact_process_secrets(error)
+        if status in {"trained", "complete", "failed"}:
+            stage["finished_at"] = _now()
         self.save(state)
 
     def _invalidate_prepare_derived(self) -> None:
@@ -498,15 +736,23 @@ class StateStore:
         fingerprint: str,
         *,
         force: bool = False,
+        success_status: str = "complete",
     ) -> Iterator[dict[str, Any]]:
         # The OS lock is the source of truth for liveness. It is released by the
         # kernel on normal exit, exceptions, crashes, and forced process death,
         # so long-running jobs never depend on arbitrary stale timeouts or PID
         # reuse heuristics. Acquire before mutating state/cache so a second
         # process cannot invalidate artifacts owned by the active stage.
+        if success_status not in {"trained", "complete"}:
+            raise ValueError(f"Unsupported success status: {success_status!r}")
         with stage_lock(self.path.parent, name):
             state = self.load()
             stage = state.setdefault("stages", {}).setdefault(name, {})
+            # Preserve the last durable stage record while the OS lock is held.
+            # Migration callers must not authorize reuse from a snapshot read
+            # before acquiring the lock because another process may finish or
+            # replace that record in between.
+            previous_stage = deepcopy(stage)
             if name == "prepare":
                 old_fingerprint = stage.get("fingerprint")
                 old_policy = stage.get("cache_policy_version")
@@ -542,7 +788,7 @@ class StateStore:
                 stage["cache_policy_version"] = PREPARE_CACHE_POLICY_VERSION
             self.save(state)
             try:
-                yield stage
+                yield previous_stage
             except Exception as exc:
                 state = self.load()
                 stage = state.setdefault("stages", {}).setdefault(name, {})
@@ -550,7 +796,7 @@ class StateStore:
                     {
                         "status": "failed",
                         "finished_at": _now(),
-                        "error": str(exc),
+                        "error": _redact_process_secrets(str(exc)),
                     }
                 )
                 self.save(state)
@@ -560,7 +806,7 @@ class StateStore:
                 stage = state.setdefault("stages", {}).setdefault(name, {})
                 stage.update(
                     {
-                        "status": "complete",
+                        "status": success_status,
                         "finished_at": _now(),
                         "error": None,
                     }

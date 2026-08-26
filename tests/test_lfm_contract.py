@@ -155,6 +155,28 @@ def test_lfm_lora_contract_checks_attention_layer_count():
         contract.audited_attention_lora_targets(MissingLayerModel())
 
 
+def test_lfm_portable_json_path_check_distinguishes_bpe_tokens_from_paths():
+    contract = _load_model_contract()
+
+    assert not contract.json_contains_absolute_local_path(
+        {
+            "model": {
+                "merges": [["/", "/"], ["//", "/Ċ"]],
+                "pattern": r"\\s+",
+            }
+        }
+    )
+    assert contract.json_contains_absolute_local_path(
+        {"tokenizer_file": "/home/private/tokenizer.json"}
+    )
+    assert contract.json_contains_absolute_local_path(
+        {"nested": {"cache_dir": r"C:\private\cache"}}
+    )
+    assert contract.json_contains_absolute_local_path(
+        {"nested": {"model_path": r"\\server\private\model"}}
+    )
+
+
 def test_lfm_adapter_completion_requires_weights_and_revision(tmp_path: Path):
     adapter = tmp_path / "adapter"
     adapter.mkdir()
@@ -180,9 +202,11 @@ def test_lfm_worker_and_trainer_are_pinned_to_jp_202606_contract():
 
     assert 'MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"' in worker
     assert "b31023f2d69b95fbd7876898f8de9fae90e8afbd" in worker
-    assert "temperature=float(payload.get(\"temperature\", 0.1))" in worker
-    assert "top_k=50" in worker
-    assert "repetition_penalty=1.05" in worker
+    assert "def _generation_kwargs(payload: dict)" in worker
+    assert '"do_sample": temperature > 0' in worker
+    assert "**_generation_kwargs(payload)" in worker
+    assert '"top_k": 50' in worker
+    assert '"repetition_penalty": 1.05' in worker
     assert "top_p=" not in worker
     assert "verify_adapter(adapter_path)" in worker
     assert "completion_only_loss=True" in trainer
