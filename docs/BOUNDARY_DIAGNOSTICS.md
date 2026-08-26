@@ -34,7 +34,7 @@ Run this on a machine that has the persona, pinned Irodori checkout, models and
 configured local environments:
 
 ```bash
-uv run --locked persona diagnose-boundaries alice
+uv run --locked persona diagnose-boundaries alice --no-asr --no-sense
 ```
 
 For the four duration/tail rows, text, checkpoint, reference selection and
