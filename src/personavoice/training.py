@@ -788,7 +788,7 @@ def validate_generation(
     atomic_write_json(candidate.generation_manifest, manifest)
     result["validation"] = validation
     store.set_result("train", result)
-    store.set_status("train", "trained")
+    store.set_status("train", "complete" if passed else "trained")
     return validation
 
 
