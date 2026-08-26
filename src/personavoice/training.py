@@ -57,6 +57,25 @@ def _file_contract(path: Path) -> str:
         return "unreadable"
 
 
+def _lineage_fingerprint_input(paths: PersonaPaths) -> dict[str, str | None]:
+    """Bind model-family fingerprints to Prepare semantics when available."""
+
+    if paths.lineage_id is None:
+        return {
+            "lineage_id": None,
+            "lineage_fingerprint": None,
+            "master_fingerprint": None,
+        }
+    record = load_lineage(paths, paths.lineage_id)
+    if not isinstance(record, dict):
+        raise RuntimeError(f"Prepare lineage record is missing: {paths.lineage_id}")
+    return {
+        "lineage_id": paths.lineage_id,
+        "lineage_fingerprint": record.get("lineage_fingerprint"),
+        "master_fingerprint": record.get("master_fingerprint"),
+    }
+
+
 def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     digest = hashlib.sha256()
     digest.update(f"train-schema:{TRAIN_SCHEMA_VERSION}".encode())
@@ -83,6 +102,7 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "seed_vc_worker_code_sha256": _file_contract(
             repo_root / "workers" / "seed_vc" / "worker.py"
         ),
+        "prepare_lineage": _lineage_fingerprint_input(paths),
     }
     digest.update(
         json.dumps(model_contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -105,6 +125,7 @@ def _non_lfm_fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     repo_root = paths.root.parents[1]
     contract = {
         "scope": "non-lfm",
+        "prepare_lineage": _lineage_fingerprint_input(paths),
         "train_schema": TRAIN_SCHEMA_VERSION,
         "irodori_source_revision": IRODORI_REVISION,
         "irodori_model_sha256": IRODORI_MODEL_SHA256,
@@ -140,6 +161,7 @@ def _lfm_fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     repo_root = paths.root.parents[1]
     contract = {
         "scope": "lfm",
+        "prepare_lineage": _lineage_fingerprint_input(paths),
         "train_schema": TRAIN_SCHEMA_VERSION,
         "lfm_contract_schema_version": LFM_CONTRACT_SCHEMA_VERSION,
         "lfm_contract_fingerprint": LFM_CONTRACT_FINGERPRINT,
