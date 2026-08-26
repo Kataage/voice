@@ -444,12 +444,6 @@ def install_environments(
             "qwen_asr_revision": QWEN_ASR_MODEL_REVISION,
             "qwen_forced_aligner_revision": QWEN_FORCED_ALIGNER_MODEL_REVISION,
             "seed_vc_asset_contract_sha256": seed_vc_contract_digest(repo_root),
-            "vevo2_source_revision": VEVO2_SOURCE_REVISION,
-            "vevo2_model_id": VEVO2_MODEL_ID,
-            "vevo2_model_revision": VEVO2_MODEL_REVISION,
-            "vevo2_asset_contract_sha256": vevo2_contract_digest(repo_root),
-            "vevo2_source_license": VEVO2_SOURCE_LICENSE,
-            "vevo2_model_license": VEVO2_MODEL_LICENSE,
         },
         "prepare_assets": {
             "pyannote_revision": PYANNOTE_MODEL_REVISION,
@@ -855,7 +849,7 @@ def download_models(
         else:
             reused.append("Seed-VC-v2-local-runtime")
 
-    # Vevo2 is intentionally not part of the v0.3 setup surface.\n    return {
+    return {
         "downloaded": downloaded,
         "reused": reused,
         "hf_home": str(hf_home),
