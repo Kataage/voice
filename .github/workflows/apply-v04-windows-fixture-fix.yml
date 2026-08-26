@@ -29,31 +29,20 @@ jobs:
           fn = text.index("def test_v03_artifact_adoption_requires_exact_completed_input_and_config_lineage")
           end = text.index("\ndef test_v03_checkpoint_is_losslessly_seeded", fn)
           section = text[fn:end]
-          old_a = '''    (paths.dataset / "irodori_source.jsonl").write_text(
-              '{"audio":"a.flac","text":"hello"}\n', encoding="utf-8"
-          )
-          '''
-          new_a = '''    (paths.dataset / "irodori_source.jsonl").write_text(
-              '{"audio":"a.flac","text":"hello"}\n', encoding="utf-8", newline="\n"
-          )
-          '''
-          old_b = '''    (paths.dataset / "lfm_train.jsonl").write_text(
-              '{"messages":[{"role":"assistant","content":"hello"}]}\n',
-              encoding="utf-8",
-          )
-          '''
-          new_b = '''    (paths.dataset / "lfm_train.jsonl").write_text(
-              '{"messages":[{"role":"assistant","content":"hello"}]}\n',
-              encoding="utf-8",
-              newline="\n",
-          )
-          '''
-          # This function writes lfm_train.jsonl twice; both writes must match
-          # the canonical newline='\\n' used by the v0.3 dataset exporter.
-          if section.count(old_a) != 1 or section.count(old_b) != 2:
-              raise SystemExit("v0.3 lineage fixture shape changed unexpectedly")
-          section = section.replace(old_a, new_a, 1).replace(old_b, new_b)
-          path.write_text(text[:fn] + section + text[end:], encoding="utf-8")
+
+          old = '\'{"audio":"a.flac","text":"hello"}\\n\', encoding="utf-8"'
+          new = '\'{"audio":"a.flac","text":"hello"}\\n\', encoding="utf-8", newline="\\n"'
+          if section.count(old) != 1:
+              raise SystemExit("Irodori fixture write changed unexpectedly")
+          section = section.replace(old, new, 1)
+
+          old = '        encoding="utf-8",\n    )'
+          new = '        encoding="utf-8",\n        newline="\\n",\n    )'
+          if section.count(old) != 3:
+              raise SystemExit(f"expected three LFM fixture writes, found {section.count(old)}")
+          section = section.replace(old, new)
+
+          path.write_text(text[:fn] + section + text[end:], encoding="utf-8", newline="\n")
       - name: Validate
         run: |
           python -m pip install --disable-pip-version-check uv==0.12.5
