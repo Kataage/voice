@@ -43,7 +43,14 @@ LFM_MODEL_ASSET_SHA256 = {
     "tokenizer.json": "d7a0ab0fc22e41ec8c6d7450a9ff9ce40e196ec5e5a2fa6a2105e064e0514ed7",
     "tokenizer_config.json": "8cba5b0c7acab23a0d4cc9ac587346c9220a1b6d288fc5346fe118202fd6f43e",
 }
-LFM_MODEL_REQUIRED_FILES = tuple(sorted(LFM_MODEL_ASSET_SHA256))
+LFM_MODEL_REQUIRED_FILES = (
+    "config.json",
+    "model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "chat_template.jinja",
+)
 
 ASR_MODEL_ID = "Systran/faster-whisper-large-v3"
 ASR_MODEL_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"

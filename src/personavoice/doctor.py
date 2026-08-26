@@ -83,7 +83,14 @@ def _expected_worker_backend(name: str, setup: dict) -> str | None:
         selected = str(setup.get("asr_backend") or "whisper-large-v3").lower()
         if selected == "qwen3-asr-1.7b":
             return str(value or "qwen-cpu")
-        return str(value or "legacy")
+        if value is not None:
+            return str(value)
+        irodori_backend = str(setup.get("irodori_backend") or "").lower()
+        if irodori_backend in {"cpu", "rocm", "xpu"}:
+            return "cpu"
+        if irodori_backend in {"cu126", "cu128"}:
+            return "runtime-auto"
+        return "legacy"
     return None if value is None else str(value)
 
 

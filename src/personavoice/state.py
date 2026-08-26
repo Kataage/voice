@@ -18,6 +18,10 @@ from uuid import uuid4
 
 from personavoice.atomic import atomic_write_json
 from personavoice.dataset import SCHEMA_VERSION as DATASET_SCHEMA_VERSION
+from personavoice.lfm_contract import (
+    LFM_CONTRACT_FINGERPRINT,
+    LFM_CONTRACT_SCHEMA_VERSION,
+)
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     LFM_MODEL_REVISION,
@@ -204,6 +208,7 @@ def _jsonl_contract(path: Path, *, path_key: str | None = None) -> int | None:
     if not path.is_file():
         return None
     count = 0
+    lfm_marker_mode: bool | None = None
     try:
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -212,6 +217,19 @@ def _jsonl_contract(path: Path, *, path_key: str | None = None) -> int | None:
                 value = json.loads(line)
                 if not isinstance(value, dict):
                     return None
+                if path.name == "lfm_train.jsonl":
+                    marker = value.get("lfm_contract")
+                    has_marker = marker is not None
+                    if lfm_marker_mode is not None and has_marker != lfm_marker_mode:
+                        return None
+                    lfm_marker_mode = has_marker
+                    if has_marker and (
+                        not isinstance(marker, dict)
+                        or type(marker.get("schema_version")) is not int
+                        or marker.get("schema_version") != LFM_CONTRACT_SCHEMA_VERSION
+                        or marker.get("fingerprint") != LFM_CONTRACT_FINGERPRINT
+                    ):
+                        return None
                 count += 1
                 if path_key is not None:
                     raw_path = value.get(path_key)

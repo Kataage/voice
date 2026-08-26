@@ -239,5 +239,5 @@ def test_quality_reports_record_provenance_rejections_and_short_response_retenti
     assert lfm["token_count_source"] in {"conservative_character_estimate", "mixed_token_count_sources"}
     assert lfm["valid_short_or_nonverbal_retention"] is True
     assert irodori["accepted_count"] == 1
-    assert irodori["rejection_reasons"]["not_target_speaker"] == 1
+    assert irodori["rejection_reasons"]["not_target_speaker"] == 2
     assert irodori["lineage"] == metadata

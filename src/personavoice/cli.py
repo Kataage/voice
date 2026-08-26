@@ -70,7 +70,7 @@ def _download_models_or_explain(
     root: Path,
     *,
     include_seed_vc: bool,
-    asr_backend: str,
+    asr_backend: str = "large-v3",
 ) -> dict:
     try:
         return download_models(
