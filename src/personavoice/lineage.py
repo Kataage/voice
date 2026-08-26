@@ -1,7 +1,7 @@
 """Versioned Prepare/model-generation contracts.
 
 This module intentionally contains no model loading.  It is the small,
-deterministic boundary shared by setup, Prepare, training, publication and
+deterministic boundary shared by setup, Prepare, training, activation and
 runtime selection.  A lineage is a candidate until the activation pointer is
 atomically replaced by the explicit ``persona activate`` command.
 """

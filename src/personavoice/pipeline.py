@@ -403,7 +403,7 @@ def _batch_asr(
     checkpoints = checkpoint_dir(paths.cache / "asr")
 
     def normalize(source: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
-        # A pre-v0.4 legacy cache may not carry backend provenance.  It remains
+        # A historical legacy cache may not carry backend provenance.  It remains
         # readable for compatibility, while every worker result written by the
         # current contract is normalized and therefore lineage-bound.
         if not value.get("backend"):
