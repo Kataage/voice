@@ -26,7 +26,6 @@ from personavoice.irodori import (
     speaker_embedding_complete,
     vendor_dir,
 )
-from personavoice.lineage import effective_paths
 from personavoice.lfm_contract import (
     LFM_CONTRACT_FINGERPRINT,
     LFM_CONTRACT_SCHEMA_VERSION,
@@ -36,6 +35,7 @@ from personavoice.lfm_contract import (
     build_lfm_messages,
     normalize_lfm_output,
 )
+from personavoice.lineage import effective_paths
 from personavoice.process import run
 from personavoice.profile import load_core_profile
 from personavoice.project import PersonaPaths

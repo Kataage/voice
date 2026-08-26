@@ -124,7 +124,7 @@ def test_generation_activation_preserves_candidates_and_supports_verified_rollba
     first_artifact = (
         paths.for_generation(lineage_id, first_id).models / "lfm" / "lineage.json"
     )
-    first_artifact.write_text("tampered\n", encoding="utf-8")
+    first_artifact.write_bytes(b"!" + first_artifact.read_bytes()[1:])
     with pytest.raises(RuntimeError, match="digest mismatch"):
         activate_generation(
             paths,
@@ -239,5 +239,5 @@ def test_quality_reports_record_provenance_rejections_and_short_response_retenti
     assert lfm["token_count_source"] in {"conservative_character_estimate", "mixed_token_count_sources"}
     assert lfm["valid_short_or_nonverbal_retention"] is True
     assert irodori["accepted_count"] == 1
-    assert irodori["rejection_reasons"]["missing_target_speaker_evidence"] == 1
+    assert irodori["rejection_reasons"]["not_target_speaker"] == 1
     assert irodori["lineage"] == metadata

@@ -12,12 +12,12 @@ from uuid import uuid4
 from personavoice.atomic import atomic_write_json, atomic_write_text
 from personavoice.irodori import prepare_manifest
 from personavoice.lineage import load_lineage
+from personavoice.media import sha256_file
 from personavoice.model_assets import (
     IRODORI_DACVAE_REVISION,
     IRODORI_DACVAE_SHA256,
     IRODORI_SOURCE_REVISION,
 )
-from personavoice.media import sha256_file
 from personavoice.project import PersonaPaths
 
 IRODORI_INPUT_CONTRACT_SCHEMA = 1
