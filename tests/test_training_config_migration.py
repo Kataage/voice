@@ -267,11 +267,12 @@ def test_v03_artifact_adoption_requires_exact_completed_input_and_config_lineage
     paths = PersonaPaths(tmp_path / "personas" / "alice")
     paths.dataset.mkdir(parents=True)
     (paths.dataset / "irodori_source.jsonl").write_text(
-        '{"audio":"a.flac","text":"hello"}\n', encoding="utf-8"
+        '{"audio":"a.flac","text":"hello"}\n', encoding="utf-8", newline="\n"
     )
     (paths.dataset / "lfm_train.jsonl").write_text(
         '{"messages":[{"role":"assistant","content":"hello"}]}\n',
         encoding="utf-8",
+        newline="\n",
     )
     cfg = PersonaConfig.model_validate(
         {
@@ -309,12 +310,14 @@ def test_v03_artifact_adoption_requires_exact_completed_input_and_config_lineage
     (paths.dataset / "lfm_train.jsonl").write_text(
         '{"messages":[{"role":"assistant","content":"changed"}]}\n',
         encoding="utf-8",
+        newline="\n",
     )
     assert not training_module._legacy_v03_lineage_verified(previous, paths, cfg)
 
     (paths.dataset / "lfm_train.jsonl").write_text(
         '{"messages":[{"role":"assistant","content":"hello"}]}\n',
         encoding="utf-8",
+        newline="\n",
     )
     cfg.training.lfm.epochs = 4.0
     assert not training_module._legacy_v03_lineage_verified(previous, paths, cfg)
