@@ -93,7 +93,52 @@ def _successful(rows: list[dict[str, Any]], *, label: str) -> dict[str, dict[str
     return output
 
 
-def _identity(repo_root: Path, paths: PersonaPaths) -> list[float] | None:
+def _best_effort_embeddings(
+    repo_root: Path,
+    items: list[dict[str, str]],
+    *,
+    label: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Collect independent pyannote embeddings while failing quality closed.
+
+    Invalid/non-finite worker outputs stay rejected by the worker
+    contract, but one bad sample must not erase unrelated ASR,
+    pronunciation, duration or emotion metrics. Missing speaker
+    metrics remain None so publication still fails closed.
+    """
+
+    diarization = worker(repo_root, "diarization")
+    results: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for item in items:
+        item_id = str(item.get("id") or "")
+        audio = item.get("audio")
+        if not item_id or not isinstance(audio, str) or not audio:
+            if item_id:
+                errors[item_id] = f"{label}: invalid-request"
+            continue
+        try:
+            value = diarization.call(repo_root, "embed", {"audio": audio})
+        except Exception as exc:
+            reason = (
+                "invalid-response-schema"
+                if "invalid response schema" in str(exc).casefold()
+                else type(exc).__name__
+            )
+            errors[item_id] = f"{label}: {reason}"
+            continue
+        embedding = value.get("embedding") if isinstance(value, dict) else None
+        if not isinstance(embedding, list) or not embedding:
+            errors[item_id] = f"{label}: empty-embedding"
+            continue
+        results[item_id] = value
+    return results, errors
+
+
+def _identity(
+    repo_root: Path,
+    paths: PersonaPaths,
+) -> tuple[list[float] | None, dict[str, str]]:
     refs = [
         path
         for path in paths.identity.rglob("*")
@@ -101,21 +146,19 @@ def _identity(repo_root: Path, paths: PersonaPaths) -> list[float] | None:
         and path.suffix.lower() in {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus"}
     ][:5]
     if not refs:
-        return None
-    response = worker(repo_root, "diarization").call(
+        return None, {}
+    results, errors = _best_effort_embeddings(
         repo_root,
-        "batch",
-        {
-            "embeddings": [
-                {"id": str(index), "audio": str(path.resolve())} for index, path in enumerate(refs)
-            ],
-            "diarizations": [],
-        },
+        [
+            {"id": str(index), "audio": str(path.resolve())}
+            for index, path in enumerate(refs)
+        ],
+        label="identity",
     )
-    results = _successful(response.get("embeddings") or [], label="identity embedding")
-    embeddings = [result["embedding"] for result in results.values() if result.get("embedding")]
-    return mean_embedding(embeddings) if embeddings else None
-
+    embeddings = [
+        result["embedding"] for result in results.values() if result.get("embedding")
+    ]
+    return (mean_embedding(embeddings) if embeddings else None), errors
 
 def _transcript(value: dict[str, Any]) -> str:
     return "".join(
@@ -432,7 +475,7 @@ def _analyze_voice_sets(
     baseline: dict[str, Path],
     probes: dict[str, dict[str, Path]],
 ) -> dict[str, Any]:
-    target_embedding = _identity(repo_root, paths)
+    target_embedding, identity_embedding_errors = _identity(repo_root, paths)
     all_audio: dict[str, Path] = {}
     all_audio.update({f"candidate:{key}": value for key, value in candidate.items()})
     all_audio.update({f"base:{key}": value for key, value in baseline.items()})
@@ -476,14 +519,10 @@ def _analyze_voice_sets(
         sense_response.get("results") or [],
         label="evaluation SenseVoice",
     )
-    diar_response = worker(repo_root, "diarization").call(
+    embeddings, speaker_embedding_errors = _best_effort_embeddings(
         repo_root,
-        "batch",
-        {"embeddings": analyzed_items, "diarizations": []},
-    )
-    embeddings = _successful(
-        diar_response.get("embeddings") or [],
-        label="evaluation speaker embedding",
+        analyzed_items,
+        label="evaluation",
     )
 
     samples: list[EvaluationSample] = []
@@ -499,7 +538,7 @@ def _analyze_voice_sets(
         acoustic = sense[candidate_id]
         speaker_score = None
         if target_embedding is not None:
-            embedding = embeddings[candidate_id].get("embedding")
+            embedding = embeddings.get(candidate_id, {}).get("embedding")
             if embedding:
                 speaker_score = cosine_similarity(target_embedding, embedding)
         baseline_duration = _wav_duration(baseline[case_id])
@@ -535,6 +574,7 @@ def _analyze_voice_sets(
                     candidate_duration,
                 ),
                 "speaker_similarity": speaker_score,
+                "speaker_embedding_error": speaker_embedding_errors.get(candidate_id),
                 "detected_emotion": acoustic.get("emotion"),
                 "detected_events": acoustic.get("events", []),
             }
@@ -558,7 +598,7 @@ def _analyze_voice_sets(
             acoustic = sense[item_id]
             speaker_score = None
             if target_embedding is not None:
-                embedding = embeddings[item_id].get("embedding")
+                embedding = embeddings.get(item_id, {}).get("embedding")
                 if embedding:
                     speaker_score = cosine_similarity(target_embedding, embedding)
             baseline_duration = _wav_duration(baseline[case_id])
@@ -590,6 +630,7 @@ def _analyze_voice_sets(
                         generated_duration,
                     ),
                     "speaker_similarity": speaker_score,
+                    "speaker_embedding_error": speaker_embedding_errors.get(item_id),
                     "detected_emotion": acoustic.get("emotion"),
                     "detected_events": acoustic.get("events", []),
                 }
@@ -615,6 +656,10 @@ def _analyze_voice_sets(
         "mode_comparison": mode_rows,
         "base_cer_mean": baseline_mean,
         "candidate_cer_mean": candidate_mean,
+        "speaker_embedding_diagnostics": {
+            "identity": identity_embedding_errors,
+            "generated": speaker_embedding_errors,
+        },
     }
 
 
@@ -1024,6 +1069,7 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict[s
         "mode_comparison": voice_report["mode_comparison"],
         "base_cer_mean": voice_report["base_cer_mean"],
         "candidate_cer_mean": voice_report["candidate_cer_mean"],
+        "speaker_embedding_diagnostics": voice_report.get("speaker_embedding_diagnostics", {}),
         "lfm": lfm_report,
         "validation": validation,
         "quality_gate": gate,
