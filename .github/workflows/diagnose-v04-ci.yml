@@ -1,0 +1,71 @@
+name: diagnose-v04-ci
+
+on:
+  push:
+    branches: [26-feature]
+    paths:
+      - .github/workflows/diagnose-v04-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: 26-feature
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: v0.3.0
+          path: legacy-v030
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Install uv and sync
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.12.5
+          uv sync --dev --locked
+      - name: Show rendered CLI help
+        run: |
+          uv run --locked python - <<'PY'
+          from typer.testing import CliRunner
+          from personavoice import cli
+          for command in (["train", "--help"], ["build", "--help"]):
+              result = CliRunner().invoke(cli.app, command)
+              print(command, "exit", result.exit_code)
+              print(repr(result.stdout))
+          PY
+      - name: Show exact v0.3.0 fingerprint file hashes
+        shell: bash
+        run: |
+          sha256sum \
+            legacy-v030/locks/Irodori-TTS.uv.lock \
+            legacy-v030/workers/lfm/uv.lock \
+            legacy-v030/workers/seed_vc/uv.lock \
+            legacy-v030/src/personavoice/training.py \
+            legacy-v030/src/personavoice/irodori.py \
+            legacy-v030/workers/lfm/train.py \
+            legacy-v030/workers/lfm/checkpoint_contract.py \
+            legacy-v030/workers/lfm/model_contract.py \
+            legacy-v030/workers/seed_vc/worker.py
+      - name: Show current legacy reconstruction inputs
+        run: |
+          uv run --locked python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+          from personavoice.config import PersonaConfig
+          from personavoice.project import PersonaPaths
+          import personavoice.training as t
+          with tempfile.TemporaryDirectory() as raw:
+              paths = PersonaPaths(Path(raw) / "personas" / "alice")
+              paths.dataset.mkdir(parents=True)
+              (paths.dataset / "irodori_source.jsonl").write_text('{"audio":"a.flac","text":"hello"}\n', encoding="utf-8")
+              (paths.dataset / "lfm_train.jsonl").write_text('{"messages":[{"role":"assistant","content":"hello"}]}\n', encoding="utf-8")
+              cfg = PersonaConfig.model_validate({"name":"alice","training":{"schema_version":1,"irodori_speaker_inversion":True,"irodori_lora":True,"lfm_lora":True}})
+              print("contract", json.dumps(t._legacy_v03_training_contract(cfg), sort_keys=True))
+              print("fingerprints", sorted(t._legacy_v03_fingerprints(paths, cfg)))
+              print("contracts", json.dumps(t._LEGACY_V03_FILE_CONTRACTS, sort_keys=True))
+          PY
