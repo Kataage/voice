@@ -23,8 +23,26 @@ class PrepareConfig(StrictConfigModel):
     language: str = Field(default="ja", min_length=1)
     # PersonaVoice setup/cache contracts audit and materialize exactly this ASR model.
     # Allowing an arbitrary model name here could silently bypass those guarantees.
-    asr_model: Literal[\n        "large-v3",\n        "whisper-large-v3",\n        "openai/whisper-large-v3",\n        "qwen3-asr-1.7b",\n        "Qwen/Qwen3-ASR-1.7B",\n        "qwen3-asr-1.7b-ja-anime-galgame-hf",\n        "jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame-hf",\n    ] = "large-v3"
+    asr_model: Literal[
+        "large-v3",
+        "whisper-large-v3",
+        "openai/whisper-large-v3",
+        "qwen3-asr-1.7b",
+        "Qwen/Qwen3-ASR-1.7B",
+        "qwen3-asr-1.7b-ja-anime-galgame-hf",
+        "jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame-hf",
+    ] = "large-v3"
     asr_compute_type: str = Field(default="auto", min_length=1)
+    asr_device: Literal["auto", "cpu", "cuda"] = "auto"
+    asr_dtype: Literal["auto", "fp16", "fp32"] = "auto"
+    alignment_backend: Literal[
+        "auto",
+        "whisper-native",
+        "qwen3-forced-aligner-0.6b",
+        "domain-ctc",
+        "domain-ctc-aligner",
+    ] = "auto"
+    separation_policy: Literal["off", "auto", "always"] = "auto"
     min_clip_seconds: float = Field(default=1.0, gt=0)
     max_clip_seconds: float = Field(default=18.0, gt=0)
     merge_gap_seconds: float = Field(default=0.45, ge=0)
@@ -59,6 +77,7 @@ class TrainingConfig(StrictConfigModel):
     lfm_lora_r: int = Field(default=16, ge=1)
     lfm_lora_alpha: int = Field(default=32, ge=1)
     seed_vc_max_steps: int = Field(default=1000, ge=1)
+    lfm_max_tokens: int = Field(default=2048, ge=1)
 
 
 class InferenceConfig(StrictConfigModel):
