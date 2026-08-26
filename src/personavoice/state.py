@@ -602,20 +602,6 @@ def _secure_state_before_save(state: dict[str, Any]) -> None:
             stage["error"] = _redact_process_secrets(error)
 
 
-def _portable_persona_path(persona_root: Path, value: Any) -> Path | None:
-    if not isinstance(value, str) or not value:
-        return None
-    relative = Path(value)
-    if relative.is_absolute() or ".." in relative.parts:
-        return None
-    root = persona_root.resolve()
-    resolved = (root / relative).resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError:
-        return None
-    return resolved
-
 
 def _portable_persona_path(persona_root: Path, value: Any) -> Path | None:
     if not isinstance(value, str) or not value:
