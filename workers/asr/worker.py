@@ -24,7 +24,14 @@ REVISION_MARKER = ".personavoice-revision"
 QWEN_MODEL_NAME = "qwen3-asr-1.7b"
 QWEN_MODEL_ID = "Qwen/Qwen3-ASR-1.7B"
 QWEN_MODEL_REVISION = "7278e1e70fe206f11671096ffdd38061171dd6e5"
-QWEN_LEGACY_MODEL_ALIASES = frozenset({\n    "large-v3",\n    "whisper",\n    "whisper-large-v3",\n    "openai/whisper-large-v3",\n})\n\nREQUIRED_MODEL_FILES = (
+QWEN_LEGACY_MODEL_ALIASES = frozenset({
+    "large-v3",
+    "whisper",
+    "whisper-large-v3",
+    "openai/whisper-large-v3",
+})
+
+REQUIRED_MODEL_FILES = (
     "chat_template.json",
     "config.json",
     "generation_config.json",
