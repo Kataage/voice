@@ -141,9 +141,10 @@ def test_lfm_zero_temperature_uses_deterministic_generation(monkeypatch) -> None
 
     generated_with: dict = {}
 
-    class FakeInput:
+    class FakeTensor:
         shape = (1, 3)
 
+    class FakeBatchEncoding(dict):
         def to(self, device):
             assert device == "cpu"
             return self
@@ -156,8 +157,16 @@ def test_lfm_zero_temperature_uses_deterministic_generation(monkeypatch) -> None
     class FakeTokenizer:
         def apply_chat_template(self, messages, **kwargs):
             assert messages == [{"role": "user", "content": "test"}]
-            assert kwargs["add_generation_prompt"] is True
-            return FakeInput()
+            assert kwargs == {
+                "add_generation_prompt": True,
+                "tokenize": True,
+                "return_tensors": "pt",
+                "return_dict": True,
+            }
+            return FakeBatchEncoding(
+                input_ids=FakeTensor(),
+                attention_mask=FakeTensor(),
+            )
 
         def decode(self, generated, *, skip_special_tokens):
             assert generated == [99]
@@ -167,8 +176,9 @@ def test_lfm_zero_temperature_uses_deterministic_generation(monkeypatch) -> None
     class FakeModel:
         device = "cpu"
 
-        def generate(self, input_ids, **kwargs):
-            assert isinstance(input_ids, FakeInput)
+        def generate(self, **kwargs):
+            assert isinstance(kwargs.pop("input_ids"), FakeTensor)
+            assert isinstance(kwargs.pop("attention_mask"), FakeTensor)
             generated_with.update(kwargs)
             return FakeOutput()
 
@@ -203,7 +213,6 @@ def test_lfm_zero_temperature_uses_deterministic_generation(monkeypatch) -> None
         "repetition_penalty": 1.05,
         "max_new_tokens": 48,
     }
-
 
 def test_lfm_download_refuses_incomplete_materialization(tmp_path: Path, monkeypatch):
     worker = _load_worker(monkeypatch)
