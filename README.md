@@ -203,3 +203,29 @@ vendor/Irodori-TTS/.venv   pinned official Irodori environment
 rootと全workerの`uv.lock`はリポジトリへコミットされています。Irodoriは固定upstream checkoutを直接変更しないため、監査済みproject overlayとlockを`locks/Irodori-TTS.pyproject.toml` / `locks/Irodori-TTS.uv.lock`として管理し、setup時だけ原子的に一時適用してvendor checkoutを元のclean状態へ戻します。
 
 通常利用ではbootstrap/setupが`--locked`で同期し、依存定義とlockがずれていれば失敗させます。environment contractにはlockだけでなくGPU/backend選択・FFmpeg runtime・worker起動policyの実装SHA256も含めるため、これらの安全性ロジックが更新されたcheckoutで古いsetup環境をcurrent扱いしません。依存を意図的に更新した時だけlock更新scriptを実行し、生成されたlock差分をレビューしてください。prepare/training cache fingerprintにも関連worker lockのSHA256を含めているため、依存更新後に古い解析結果やadapterを黙って再利用しません。
+
+## v0.3 Issue #42: ASR / Prepare lineage / candidate activation
+
+release/0.3のPrepareは、ASR・alignment・BGM-aware analysisの意味論を含むimmutableなcandidate lineageとして保存します。既存のroot直下のv0.3.0/v0.3.1 dataset・model・outputはhistorical baseline/rollback generationとして残り、lineaged candidateの失敗で上書きされません。
+
+`persona build`はPrepare・v0.3 family training・candidate evaluationまでを行いますが、runtimeを切り替えません。検証後にactivationを明示してください。
+
+```bash
+uv run --locked persona prepare alice
+uv run --locked persona train alice
+uv run --locked persona validate alice
+uv run --locked persona activate alice
+uv run --locked persona status alice --verify
+```
+
+ASR/alignment/separation semanticsまたはmaster lineageが変わった場合は、Irodori Speaker Inversion/LoRA、LFM LoRA、Seed-VCの依存familyを順にcandidate generationへ再構築します。zero-shot Seed-VCはモデル再学習せず、lineage依存のreference/manifest markerだけを生成します。`persona export-lfm`は同一Prepare/master lineageでLFM export/filter policyだけを変更する場合に限るLFM-only regenerationです。
+
+active generationを戻す場合も、削除やforce trainではなく、既存candidateのIDを指定します。manifest、Prepare lineage、全family artifactのsize/SHA256、validationが再検証され、成功したときだけpointerがatomicに置き換わります。
+
+```bash
+uv run --locked persona activate alice \
+  --lineage-id pl-<32 lowercase hex> \
+  --generation-id gen-<32 lowercase hex>
+```
+
+ASR backend、domain license/provenance policy、alignment coupling、analysis-only separation、quality gateの正式な契約は[`docs/ASR_LINEAGE_V03.md`](docs/ASR_LINEAGE_V03.md)、target machineのsetupからrollbackまでの手順は[`docs/TARGET_MACHINE_V03.md`](docs/TARGET_MACHINE_V03.md)を参照してください。

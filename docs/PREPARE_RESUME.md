@@ -13,3 +13,15 @@ watchdogによる終了はprepareの失敗として明示されますが、す�
 `raw/`・`identity/`・prepare設定・固定model/worker contractが変わった場合、または`--force`を指定した場合はcheckpointを含むprepare派生cacheを無効化します。
 
 Prepare cache policyのソース契約はUTF-8テキストの改行をLFへ正規化してからhashするため、同一checkoutのLF/CRLF差だけでWindowsとLinuxのcache policyが変わりません。互換migrationは認識結果の意味論を変えない運用・復旧変更についても、CIで実測した正確なcanonical policy世代だけを明示的な前身として許可します。未知の旧policyや将来の別実装世代を動的に許可せず、意味論が変わったcacheは引き続きfail-closedです。
+
+## Immutable candidate Prepare semantics (release/0.3)
+
+現行のPrepareは、ASR backend/model revision、alignment contract、separation policy/model audit、raw/identity inventory、前処理コードとlockのfingerprintから `pl-<32 hex>` を作ります。意味論が変わると別lineageになり、旧 `pl-*` とactive generationは保持されます。
+
+candidateの派生ファイルは `personas/<name>/generations/prepare/<lineage>/` に作られます。`lineage.json` と `dataset/master.sqlite3`、ASR/alignment/separation provenance、Irodori/LFM quality report、reference/Seed-VC manifestは同じlineage identityを持ちます。raw audioとlossless canonical extractionは分離されたままで、BGM-aware stemはASR/alignmentのanalysis-only入力です。
+
+`persona train`はそのPrepare lineageに対して別の `gen-*` candidateを作ります。Irodori Speaker Inversion/LoRA、LFM LoRA、Seed-VC fine-tuningまたはzero-shot reference-only markerはgeneration-localです。generation manifestがvalidation passedになるまで`active.json`へは反映されません。
+
+`--force` は旧active dataset/modelを再利用して書き換える復旧手段ではありません。Prepareの強制再実行はfresh candidate lineage、trainingの強制再実行はfresh candidate generationを選び、旧generationとactivation historyを保持します。通常の同一fingerprint再実行はatomic checkpointを再検証して再開します。
+
+同一Prepare/master lineageでLFM export/filter policyだけが変わる場合は `persona export-lfm` とLFM-only trainingを許可します。ASR/alignment/separationまたはmaster lineageの変更をLFM-onlyとして扱ってはいけません。
