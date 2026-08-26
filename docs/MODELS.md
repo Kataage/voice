@@ -104,6 +104,34 @@ SenseVoice is currently materialized through ModelScope, whose `master` label is
 - Fine-tune checkpoints are ordered by numeric step, not filename string order.
 - PersonaVoice records cumulative progress in staged run-directory offsets because the pinned upstream trainer can load prior weights but resets its local iteration counter.
 
+### Vevo2 FM-only (v0.4)
+
+- Upstream source: `open-mmlab/Amphion`
+- Pinned source commit: `26f6883110181f1dbfe95c70a7c7dbaf4de5f42a`
+- Source license: MIT ([upstream LICENSE](https://github.com/open-mmlab/Amphion/blob/main/LICENSE))
+- Released model: `RMSnow/Vevo2`
+- Pinned model revision: `2674843cbaa50aa89ee7ccaf5bb15d6ccf46c6c8`
+- Model license: CC BY-NC-ND 4.0 ([model card](https://huggingface.co/RMSnow/Vevo2), [license](https://creativecommons.org/licenses/by-nc-nd/4.0/))
+- Initial supported route: upstream FM-only style-preserved VC, source audio plus target reference
+- Out of scope for this integration: AR+FM, TTS, SVS, editing, and Vevo2 fine-tuning
+- Isolated environment: `workers/vevo2`, Python 3.10, Torch 2.4.0 CPU/cu124 extras
+- Model view: `models/vevo2/assets/vevo2`
+- Readiness marker: `.runtime/vevo2-models-ready`, containing the SHA256 of `config/vevo2_assets.json`
+- Whisper dependency: official OpenAI Whisper `medium.pt`, SHA256-pinned in the same contract
+
+The eight FM model files and their SHA256 values are intentionally declared in
+[`config/vevo2_assets.json`](../config/vevo2_assets.json) rather than inferred from a
+directory listing. `persona setup` is the only materialization path. The root worker
+launcher verifies the pinned Amphion checkout, the local model revision marker, every
+required file, and the separate Whisper checksum before it starts the pipeline. Normal
+inference and deep doctor set Hugging Face offline flags; a missing or damaged file is an
+error, not a remote retry.
+
+The source license and model-weight license are tracked separately. MIT source code does
+not grant commercial rights to CC BY-NC-ND model weights or to any component terms. Review
+all upstream terms before redistribution or commercial use. See [`docs/VEVO2.md`](VEVO2.md)
+for setup, backend selection, A/B metrics, and target-machine validation.
+
 ## Cache/training reproducibility
 
 Prepare cache validity is bound to the audited ASR revision and weight contract, pyannote revision and asset-hash contract, SenseVoice asset hashes, relevant worker `uv.lock` hashes, and preprocessing implementation hashes in addition to raw/identity/config fingerprints. Updating any of those contracts invalidates derived ASR/diarization/identity/Sense artifacts before rebuilding the dataset. The materialization root is part of the prepare fingerprint because downstream manifests intentionally contain local absolute paths.

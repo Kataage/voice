@@ -74,7 +74,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        worker: [asr, diarization, sense, lfm, seed_vc]
+        worker: [asr, diarization, sense, lfm, seed_vc, vevo2]
         include:
           - worker: asr
             extra: ''
@@ -93,6 +93,10 @@ jobs:
             gpu_extra: '--extra cu128'
             legacy_gpu_extra: '--extra cu126'
           - worker: seed_vc
+            extra: '--extra cpu'
+            gpu_extra: '--extra cu124'
+            legacy_gpu_extra: ''
+          - worker: vevo2
             extra: '--extra cpu'
             gpu_extra: '--extra cu124'
             legacy_gpu_extra: ''
