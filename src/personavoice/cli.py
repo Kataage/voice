@@ -10,13 +10,16 @@ from rich.console import Console
 
 from personavoice.boundary_diagnostics import run_boundary_diagnostics
 from personavoice.config import PersonaConfig
+from personavoice.dataset import export_lfm
 from personavoice.doctor import report as doctor_report
 from personavoice.environment import load_root_environment
 from personavoice.evaluation import evaluate
 from personavoice.inference import VC_BACKENDS, chat_turn, synthesize
 from personavoice.inference import reenact as reenact_audio
 from personavoice.inference import repeat as repeat_audio
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.pipeline import prepare_persona
+from personavoice.profile import load_core_profile
 from personavoice.project import find_repo_root, get_persona, init_persona
 from personavoice.repair import repair_failed_model_materializations
 from personavoice.setup_env import download_models, install_environments
@@ -328,6 +331,35 @@ def prepare(name: str, force: bool = False) -> None:
         console.print(f"[bold red]{exc}[/bold red]")
         raise typer.Exit(2) from None
     _print(result)
+
+
+@app.command("export-lfm")
+def export_lfm_command(name: str) -> None:
+    """Regenerate only the LFM SFT export from an existing Prepare master."""
+
+    root, paths, cfg = _load(name)
+    del root
+    master = paths.dataset / "master.sqlite3"
+    if not master.is_file():
+        raise typer.BadParameter("Prepare master.sqlite3 is missing; run persona prepare first")
+    output = paths.dataset / "lfm_train.jsonl"
+    count = export_lfm(
+        master,
+        output,
+        cfg.name,
+        profile=load_core_profile(paths.core_profile, persona_name=cfg.name),
+    )
+    _print(
+        {
+            "lfm_examples": count,
+            "path": str(output.resolve()),
+            "contract": {
+                "schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+                "fingerprint": LFM_CONTRACT_FINGERPRINT,
+            },
+            "prepare_irodori_vc_reused": True,
+        }
+    )
 
 
 @app.command()

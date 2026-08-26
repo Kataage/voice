@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from personavoice.environment import SECRET_ENV_KEYS
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.training_plan import TrainingPlan
 
 BUNDLE_SCHEMA_VERSION = 1
@@ -375,6 +376,19 @@ def _validate_lfm_dataset(path: Path) -> None:
         ):
             raise ValueError(
                 f"LFM dataset line {line_number} must preserve conversational prompt/completion"
+            )
+        # Historical prepared datasets may not have this marker and remain
+        # loadable.  New exports carry the exact runtime/output contract so a
+        # future SFT export cannot silently drift from inference semantics.
+        contract = row.get("lfm_contract")
+        if contract is not None and (
+            not isinstance(contract, Mapping)
+            or set(contract) != {"schema_version", "fingerprint"}
+            or contract.get("schema_version") != LFM_CONTRACT_SCHEMA_VERSION
+            or contract.get("fingerprint") != LFM_CONTRACT_FINGERPRINT
+        ):
+            raise ValueError(
+                f"LFM dataset line {line_number} has an unsupported runtime contract"
             )
         for label, messages, allowed_roles in (
             ("prompt", prompt, {"system", "user"}),
