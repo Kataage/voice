@@ -345,6 +345,15 @@ class InferenceConfig(StrictConfigModel):
     default_num_steps: int = Field(default=24, ge=1, le=500)
     tts_cfg_scale: float = Field(default=3.0, ge=0, le=100)
     reference_mode: Literal["auto", "none", "speaker-embed", "audio"] = "auto"
+    # These values are intentionally part of the inference contract rather
+    # than being inherited from the pinned upstream CLI defaults.  Changing
+    # them affects generated audio only; they are not training inputs and are
+    # therefore deliberately excluded from prepare/training fingerprints.
+    duration_scale: float = Field(default=1.0, gt=0, le=4)
+    trim_tail: bool = True
+    tail_window_size: int = Field(default=20, ge=1, le=4096)
+    tail_std_threshold: float = Field(default=0.05, ge=0, le=10)
+    tail_mean_threshold: float = Field(default=0.1, ge=0, le=10)
     seed_vc_diffusion_steps: int = Field(default=30, ge=1, le=500)
     seed_vc_similarity_cfg: float = Field(default=0.7, ge=0)
     seed_vc_intelligibility_cfg: float = Field(default=0.7, ge=0)

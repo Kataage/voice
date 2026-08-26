@@ -8,6 +8,7 @@ import typer
 from huggingface_hub.errors import GatedRepoError
 from rich.console import Console
 
+from personavoice.boundary_diagnostics import run_boundary_diagnostics
 from personavoice.config import PersonaConfig
 from personavoice.doctor import report as doctor_report
 from personavoice.environment import load_root_environment
@@ -399,6 +400,36 @@ def say(
         seed=seed,
     )
     _print({"outputs": [str(path) for path in outputs]})
+
+
+@app.command("diagnose-boundaries")
+def diagnose_boundaries(
+    name: str,
+    seed: int = typer.Option(20260826, help="Fixed seed used for every comparable condition."),
+    margin_scale: float = typer.Option(
+        1.10,
+        help="Duration margin to evaluate as C/D; this never changes persona.yaml automatically.",
+    ),
+    asr: bool = typer.Option(True, "--asr/--no-asr", help="Run pinned ASR for CER/onset evidence."),
+    sense: bool = typer.Option(
+        True,
+        "--sense/--no-sense",
+        help="Run SenseVoice for non-verbal event evidence.",
+    ),
+) -> None:
+    """Run Issue #33's inference-only duration/tail and onset diagnosis."""
+
+    root, paths, cfg = _load(name)
+    result = run_boundary_diagnostics(
+        root,
+        paths,
+        cfg,
+        seed=seed,
+        margin_scale=margin_scale,
+        include_asr=asr,
+        include_sense=sense,
+    )
+    _print(result)
 
 
 @app.command()

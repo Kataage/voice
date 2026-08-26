@@ -25,6 +25,7 @@ uv run --locked persona ui
 - LFM2.5-1.2B-JP-202606: full fine-tuning（既定）+ LoRA + 発話スタイル計画
 - Seed-VC v2: 入力音声の間・抑揚・演技を使ったVoice Conversion
 - `say`, `reenact`, `repeat`, `chat`, Web UI, localhost REST API
+- Irodori境界診断（duration / tail A/B、leading artifactのseed・reference・caption比較）
 - canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidation
 - rootと各ML stackを独立した`uv`環境に隔離
 - root / worker / Irodoriを監査済み`uv.lock`へ固定
@@ -185,6 +186,19 @@ uv run --locked persona migrate-config alice
 ```
 
 ## 生成
+
+Irodoriのduration predictorとlatent tail trimmingはupstreamの既定値へ暗黙依存せず、
+`persona.yaml`の`inference.duration_scale`、`inference.trim_tail`、`inference.tail_*`
+で明示的に制御されます。既存personaを再学習せずにIssue #33の同一seed A/Bを確認するには、
+次を実行してください。
+
+```bash
+uv run --locked persona diagnose-boundaries alice
+```
+
+診断レポート、ASR/CER、最終token保持、energy envelope、reference fingerprint、
+target-machine listening手順は[`docs/BOUNDARY_DIAGNOSTICS.md`](docs/BOUNDARY_DIAGNOSTICS.md)
+にまとめています。診断や推論設定の変更はPrepare/LFM/学習checkpointを無効化しません。
 
 ```bash
 uv run --locked persona say alice "おはよう"
