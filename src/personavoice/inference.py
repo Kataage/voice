@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +56,19 @@ def _nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _sha256_file(path: Path) -> str | None:
+    try:
+        if not path.is_file():
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def _safe_candidate_count(requested: int, *, backend: str) -> int:
@@ -149,13 +164,20 @@ def _append_reference_args(
     paths: PersonaPaths,
     cfg: PersonaConfig,
     ref: str | Path | None,
+    *,
+    mode_override: str | None = None,
 ) -> None:
     speaker = paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
     if ref is not None:
         _append_audio_reference_args(args, resolve_reference(paths, ref))
         return
 
-    mode = cfg.inference.reference_mode
+    mode = mode_override or cfg.inference.reference_mode
+    if mode not in {"auto", "none", "speaker-embed", "audio"}:
+        raise ValueError(f"Unsupported Irodori reference mode: {mode!r}")
+    if mode == "none":
+        args += ["--no-ref"]
+        return
     if mode == "speaker-embed":
         if not speaker_embedding_complete(speaker):
             raise FileNotFoundError(
@@ -184,6 +206,67 @@ def _append_reference_args(
         args += ["--no-ref"]
 
 
+def _effective_reference_mode(
+    paths: PersonaPaths,
+    cfg: PersonaConfig,
+    ref: str | Path | None,
+    *,
+    mode_override: str | None = None,
+) -> str:
+    """Describe the conditioning selected by ``_append_reference_args``."""
+
+    if ref is not None:
+        return "audio"
+    mode = mode_override or cfg.inference.reference_mode
+    if mode not in {"auto", "none", "speaker-embed", "audio"}:
+        raise ValueError(f"Unsupported Irodori reference mode: {mode!r}")
+    if mode != "auto":
+        return mode
+    speaker = paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
+    if speaker_embedding_complete(speaker):
+        return "speaker-embed"
+    if any(_nonempty_file(path) for path in reference_files(paths.references)):
+        return "audio"
+    return "none"
+
+
+def _reference_fingerprint(
+    paths: PersonaPaths,
+    ref: str | Path | None,
+    *,
+    effective_mode: str,
+) -> str:
+    """Fingerprint selected reference contents without persisting local paths/audio."""
+
+    try:
+        if ref is not None:
+            selected = resolve_reference(paths, ref)
+        elif effective_mode == "audio":
+            selected = [
+                path for path in reference_files(paths.references) if _nonempty_file(path)
+            ]
+        elif effective_mode == "speaker-embed":
+            selected = [
+                paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
+            ]
+        else:
+            selected = []
+        files = []
+        for path in selected:
+            digest = _sha256_file(path)
+            if digest is not None:
+                files.append({"sha256": digest, "kind": path.suffix.lower()})
+    except (FileNotFoundError, OSError, RuntimeError):
+        return "unavailable"
+    payload = json.dumps(
+        {"mode": effective_mode, "files": files},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def synthesize(
     repo_root: Path,
     paths: PersonaPaths,
@@ -197,6 +280,16 @@ def synthesize(
     candidates: int | None = None,
     seed: int | None = None,
     output: Path | None = None,
+    base_only: bool = False,
+    reference_mode: str | None = None,
+    caption_conditioning: bool = True,
+    duration_scale: float | None = None,
+    trim_tail: bool | None = None,
+    tail_window_size: int | None = None,
+    tail_std_threshold: float | None = None,
+    tail_mean_threshold: float | None = None,
+    metadata: dict[str, Any] | None = None,
+    capture_logs: bool = False,
 ) -> list[Path]:
     _ensure_authorized(cfg)
     if not text.strip():
@@ -216,6 +309,37 @@ def synthesize(
         raise ValueError("candidates must be at least 1")
     requested = _safe_candidate_count(requested, backend=backend)
 
+    effective_duration_scale = (
+        cfg.inference.duration_scale if duration_scale is None else float(duration_scale)
+    )
+    effective_trim_tail = cfg.inference.trim_tail if trim_tail is None else bool(trim_tail)
+    effective_tail_window_size = (
+        cfg.inference.tail_window_size
+        if tail_window_size is None
+        else int(tail_window_size)
+    )
+    effective_tail_std_threshold = (
+        cfg.inference.tail_std_threshold
+        if tail_std_threshold is None
+        else float(tail_std_threshold)
+    )
+    effective_tail_mean_threshold = (
+        cfg.inference.tail_mean_threshold
+        if tail_mean_threshold is None
+        else float(tail_mean_threshold)
+    )
+    if not math.isfinite(effective_duration_scale) or not 0 < effective_duration_scale <= 4:
+        raise ValueError("duration_scale must be finite and between 0 and 4")
+    if not 1 <= effective_tail_window_size <= 4096:
+        raise ValueError("tail_window_size must be between 1 and 4096")
+    if (
+        not math.isfinite(effective_tail_std_threshold)
+        or not 0 <= effective_tail_std_threshold <= 10
+        or not math.isfinite(effective_tail_mean_threshold)
+        or not 0 <= effective_tail_mean_threshold <= 10
+    ):
+        raise ValueError("tail thresholds must be finite and between 0 and 10")
+
     args: list[str | Path] = [
         "uv",
         "run",
@@ -234,8 +358,6 @@ def synthesize(
         device,
         "--text",
         text,
-        "--caption",
-        _caption(style, emotion, events),
         "--num-steps",
         str(cfg.inference.default_num_steps),
         "--num-candidates",
@@ -246,24 +368,80 @@ def synthesize(
         str(cfg.inference.tts_cfg_scale),
         "--cfg-scale-caption",
         str(cfg.inference.tts_cfg_scale),
+        "--duration-scale",
+        str(effective_duration_scale),
+        "--trim-tail" if effective_trim_tail else "--no-trim-tail",
+        "--tail-window-size",
+        str(effective_tail_window_size),
+        "--tail-std-threshold",
+        str(effective_tail_std_threshold),
+        "--tail-mean-threshold",
+        str(effective_tail_mean_threshold),
         "--output-wav",
         output,
     ]
     lora = _best_lora_adapter(paths)
-    if lora is not None:
+    if lora is not None and not base_only:
         args += ["--lora-adapter", lora]
-    _append_reference_args(args, paths, cfg, ref)
+    if caption_conditioning:
+        args += ["--caption", _caption(style, emotion, events)]
+    selected_reference_mode = _effective_reference_mode(
+        paths,
+        cfg,
+        ref,
+        mode_override=reference_mode,
+    )
+    _append_reference_args(
+        args,
+        paths,
+        cfg,
+        ref,
+        mode_override=reference_mode,
+    )
     if seed is not None:
         args += ["--seed", str(seed)]
-    run(args, cwd=vendor, env=local_model_env(repo_root))
+    completed = run(
+        args,
+        cwd=vendor,
+        env=local_model_env(repo_root),
+        capture=capture_logs,
+    )
+    stdout = getattr(completed, "stdout", "") or ""
+    stderr = getattr(completed, "stderr", "") or ""
     if requested == 1:
-        return _verify_outputs([output])
-    suffix = output.suffix or ".wav"
-    generated = [
-        output.with_name(f"{output.stem}_{index:03d}{suffix}")
-        for index in range(1, requested + 1)
-    ]
-    return _verify_outputs(generated)
+        generated = _verify_outputs([output])
+    else:
+        suffix = output.suffix or ".wav"
+        generated = _verify_outputs(
+            [
+                output.with_name(f"{output.stem}_{index:03d}{suffix}")
+                for index in range(1, requested + 1)
+            ]
+        )
+    if metadata is not None:
+        metadata.update(
+            {
+                "requested_text": text,
+                "seed": seed,
+                "checkpoint": str(base),
+                "method": "base-only" if base_only else ("lora" if lora else "base"),
+                "reference_mode": selected_reference_mode,
+                "reference_fingerprint": _reference_fingerprint(
+                    paths,
+                    ref,
+                    effective_mode=selected_reference_mode,
+                ),
+                "duration_scale": effective_duration_scale,
+                "trim_tail": effective_trim_tail,
+                "tail_window_size": effective_tail_window_size,
+                "tail_std_threshold": effective_tail_std_threshold,
+                "tail_mean_threshold": effective_tail_mean_threshold,
+                "command": [str(value) for value in args],
+                "stdout": stdout,
+                "stderr": stderr,
+            }
+        )
+    return generated
 
 
 def _best_reference(paths: PersonaPaths) -> Path:

@@ -8,6 +8,7 @@ import typer
 from huggingface_hub.errors import GatedRepoError
 from rich.console import Console
 
+from personavoice.boundary_diagnostics import run_boundary_diagnostics
 from personavoice.config import PersonaConfig
 from personavoice.doctor import report as doctor_report
 from personavoice.evaluation import evaluate
@@ -304,6 +305,15 @@ def say(
     ref: str | None = None,
     candidates: int | None = None,
     seed: int | None = None,
+    duration_scale: float | None = typer.Option(
+        None,
+        help="Override inference.duration_scale for this utterance only.",
+    ),
+    trim_tail: bool | None = typer.Option(
+        None,
+        "--trim-tail/--no-trim-tail",
+        help="Override latent tail trimming for this utterance only.",
+    ),
 ) -> None:
     root, paths, cfg = _load(name)
     outputs = synthesize(
@@ -317,8 +327,44 @@ def say(
         ref=ref,
         candidates=candidates,
         seed=seed,
+        duration_scale=duration_scale,
+        trim_tail=trim_tail,
     )
     _print({"outputs": [str(path) for path in outputs]})
+
+
+@app.command("diagnose-boundaries")
+def diagnose_boundaries(
+    name: str,
+    seed: int = typer.Option(20260826, help="Fixed seed used for every comparable condition."),
+    margin_scale: float = typer.Option(
+        1.10,
+        help="Duration margin to evaluate as C/D; this never changes persona.yaml automatically.",
+    ),
+    asr: bool = typer.Option(
+        True,
+        "--asr/--no-asr",
+        help="Run pinned ASR for CER/onset evidence.",
+    ),
+    sense: bool = typer.Option(
+        True,
+        "--sense/--no-sense",
+        help="Run SenseVoice for non-verbal event evidence.",
+    ),
+) -> None:
+    """Run the Issue #33 inference-only duration/tail and onset diagnosis."""
+
+    root, paths, cfg = _load(name)
+    result = run_boundary_diagnostics(
+        root,
+        paths,
+        cfg,
+        seed=seed,
+        margin_scale=margin_scale,
+        include_asr=asr,
+        include_sense=sense,
+    )
+    _print(result)
 
 
 @app.command()

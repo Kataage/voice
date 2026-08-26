@@ -24,6 +24,7 @@ uv run --locked persona ui
 - LFM2.5-1.2B-JP-202606: 会話/口調LoRA + 発話スタイル計画
 - Seed-VC v2: 入力音声の間・抑揚・演技を使ったVoice Conversion
 - `say`, `reenact`, `repeat`, `chat`, Web UI, localhost REST API
+- Irodori境界診断（duration/tail A/B、leading artifactのseed・reference・caption比較）
 - canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidation
 - rootと各ML stackを独立した`uv`環境に隔離
 - root / worker / Irodoriを監査済み`uv.lock`へ固定
@@ -126,6 +127,20 @@ uv run --locked persona say alice "ふぅ……疲れた" --event sigh
 uv run --locked persona say alice "こんにちは" --ref happy
 uv run --locked persona say alice "こんにちは" --ref C:\path\to\reference.wav
 ```
+
+Irodoriのduration predictorとlatent tail trimmingはupstreamの既定値へ暗黙依存せず、`persona.yaml`の`inference.duration_scale`、`inference.trim_tail`、`inference.tail_*`で明示的に制御されます。1回だけ設定を上書きする場合は、たとえば次のようにします。
+
+```bash
+uv run --locked persona say alice "最後まで話します" --duration-scale 1.10 --no-trim-tail
+```
+
+同じseed・checkpoint・referenceで原因を切り分けるA/B/C/Dと、leading artifactの条件分離を行う場合は次を使います。
+
+```bash
+uv run --locked persona diagnose-boundaries alice --no-asr --no-sense
+```
+
+診断は`outputs/boundary_diagnostics/<timestamp>/report.json`へduration、final-token保持、WAV energy、ASR/CER（`--asr`指定時）、SenseVoice event（`--sense`指定時）、reference fingerprint、既存stage fingerprintのsnapshotを保存します。A-Dのmarginは候補評価であり、`persona.yaml`を自動変更しません。高コストなASR/SenseVoiceを含める場合だけ`--asr --sense`を明示してください。詳細とWindows/Linuxの実機smoke/listening手順は[`docs/BOUNDARY_DIAGNOSTICS.md`](docs/BOUNDARY_DIAGNOSTICS.md)を参照してください。診断・推論設定変更はPrepare/LFM/Irodori/Seed-VC artifactを無効化せず、失われた最終音素の後ろへ無音を付加することも修正とは扱いません。
 
 Irodori LoRAにvalidation-loss best checkpointがある場合は推論時に最良checkpointを優先し、なければ`checkpoint_final`へフォールバックします。生成後はWAVが実際に作成されたことも検証します。Irodori v4.1 Smallのcombined referenceは設定段階でも120秒以下へ制限します。
 

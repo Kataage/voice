@@ -28,6 +28,8 @@ class TTSRequest(BaseModel):
     ref: str | None = None
     candidates: int | None = None
     seed: int | None = None
+    duration_scale: float | None = Field(default=None, gt=0, le=4)
+    trim_tail: bool | None = None
 
 
 class AudioRequest(BaseModel):
@@ -112,6 +114,8 @@ async def tts(request: TTSRequest) -> dict:
                 ref=request.ref,
                 candidates=request.candidates,
                 seed=request.seed,
+                duration_scale=request.duration_scale,
+                trim_tail=request.trim_tail,
             )
         return {"outputs": [_output_item(request.persona, paths, path) for path in outputs]}
     except Exception as exc:

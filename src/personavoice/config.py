@@ -65,7 +65,15 @@ class InferenceConfig(StrictConfigModel):
     default_candidates: int = Field(default=3, ge=1, le=16)
     default_num_steps: int = Field(default=24, ge=1, le=500)
     tts_cfg_scale: float = Field(default=3.0, ge=0, le=100)
-    reference_mode: Literal["auto", "speaker-embed", "audio"] = "auto"
+    reference_mode: Literal["auto", "none", "speaker-embed", "audio"] = "auto"
+    # Explicit inference-only boundary controls.  They are intentionally kept
+    # out of Prepare/training fingerprints so existing personas can use them
+    # without regenerating data or retraining.
+    duration_scale: float = Field(default=1.0, gt=0, le=4)
+    trim_tail: bool = True
+    tail_window_size: int = Field(default=20, ge=1, le=4096)
+    tail_std_threshold: float = Field(default=0.05, ge=0, le=10)
+    tail_mean_threshold: float = Field(default=0.1, ge=0, le=10)
     seed_vc_diffusion_steps: int = Field(default=30, ge=1, le=500)
     seed_vc_similarity_cfg: float = Field(default=0.7, ge=0)
     seed_vc_intelligibility_cfg: float = Field(default=0.7, ge=0)
