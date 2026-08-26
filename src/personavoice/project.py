@@ -125,14 +125,16 @@ class PersonaPaths:
 
     @property
     def models(self) -> Path:
-        return self.lineage_root / "models"
+        return self.generation_root / "models"
 
     @property
     def outputs(self) -> Path:
-        return self.lineage_root / "outputs"
+        return self.generation_root / "outputs"
 
     @property
     def cache(self) -> Path:
+        # Prepare caches are shared by all model generations of one immutable
+        # lineage. Training receives a generation-local cache explicitly.
         return self.lineage_root / "cache"
 
     @property

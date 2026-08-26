@@ -448,61 +448,121 @@ def effective_paths(paths: PersonaPaths) -> PersonaPaths:
     )
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_candidate_file(candidate: PersonaPaths, relative: Any) -> Path:
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+        raise RuntimeError("Generation artifact paths must be relative to the candidate generation")
+    target = (candidate.generation_root / relative).resolve()
+    try:
+        target.relative_to(candidate.generation_root.resolve())
+    except ValueError as exc:
+        raise RuntimeError("Generation artifact escapes its candidate generation") from exc
+    return target
+
+
+def _verify_generation_manifest(
+    candidate: PersonaPaths,
+    record: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    expected_generation_fingerprint: str | None,
+) -> str:
+    if manifest.get("schema_version") != ACTIVE_GENERATION_SCHEMA_VERSION:
+        raise RuntimeError("Candidate generation manifest has an unsupported schema")
+    if manifest.get("kind") != "personavoice-v03-generation":
+        raise RuntimeError("Candidate generation is not a v0.3 generation manifest")
+    if candidate.generation_id is not None and manifest.get("generation_id") != candidate.generation_id:
+        raise RuntimeError("Candidate generation id does not match its path")
+    if candidate.generation_id is None and manifest.get("generation_id") is not None:
+        raise RuntimeError("Lineage-root generation must not declare a separate generation id")
+    for key in ("lineage_id", "lineage_fingerprint", "master_fingerprint"):
+        if manifest.get(key) != record.get(key):
+            raise RuntimeError(f"Candidate generation {key} does not match its Prepare lineage")
+    if expected_generation_fingerprint is not None and manifest.get(
+        "generation_fingerprint"
+    ) != expected_generation_fingerprint:
+        raise RuntimeError("Candidate generation fingerprint does not match the requested value")
+    generation_fingerprint = manifest.get("generation_fingerprint")
+    if not isinstance(generation_fingerprint, str) or re.fullmatch(
+        r"[0-9a-f]{64}", generation_fingerprint
+    ) is None:
+        raise RuntimeError("Candidate generation has no valid fingerprint")
+    validation = manifest.get("validation")
+    if not isinstance(validation, dict) or validation.get("passed") is not True:
+        raise RuntimeError("Candidate generation has not passed validation")
+    families = manifest.get("families")
+    if not isinstance(families, dict):
+        raise RuntimeError("Candidate generation has no family manifest")
+    required_families = {"irodori", "lfm", "seed_vc"}
+    missing = sorted(required_families - set(families))
+    if missing:
+        raise RuntimeError("Candidate generation is missing family entries: " + ", ".join(missing))
+    for family in sorted(required_families):
+        value = families.get(family)
+        if not isinstance(value, dict):
+            raise RuntimeError(f"Candidate family {family} is invalid")
+        status = value.get("status")
+        if status not in {"complete", "not_requested"}:
+            raise RuntimeError(f"Candidate family {family} is not complete")
+        if status == "not_requested":
+            continue
+        artifacts = value.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise RuntimeError(f"Candidate family {family} has no artifacts")
+        for item in artifacts:
+            if not isinstance(item, dict):
+                raise RuntimeError(f"Candidate family {family} contains an invalid artifact")
+            path = _safe_candidate_file(candidate, item.get("path"))
+            if not path.is_file() or path.stat().st_size <= 0:
+                raise RuntimeError(f"Candidate artifact is missing or empty: {path}")
+            recorded_size = item.get("size")
+            recorded_sha = item.get("sha256")
+            if type(recorded_size) is not int or recorded_size != path.stat().st_size:
+                raise RuntimeError(f"Candidate artifact size mismatch: {path}")
+            if not isinstance(recorded_sha, str) or recorded_sha != _sha256_file(path):
+                raise RuntimeError(f"Candidate artifact digest mismatch: {path}")
+    return generation_fingerprint
+
+
 def activate_generation(
     paths: PersonaPaths,
     lineage_id: str,
     *,
-    plan_fingerprint: str | None = None,
+    generation_id: str | None = None,
+    generation_fingerprint: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically activate a fully published candidate generation."""
+    """Atomically activate a validated v0.3 candidate generation."""
 
     if not _LINEAGE_ID_RE.fullmatch(lineage_id):
         raise ValueError(f"Invalid Prepare lineage id: {lineage_id!r}")
-    if generation_id is None:
-        # Compatibility for the first candidate implementation: a manifest at
-        # the lineage root may be activated only when it declares no separate
-        # generation. New training always writes generations/train/<id>.
-        candidate = paths.for_lineage(lineage_id)
-    else:
-        candidate = paths.for_generation(lineage_id, generation_id)
+    candidate = (
+        paths.for_generation(lineage_id, generation_id)
+        if generation_id is not None
+        else paths.for_lineage(lineage_id)
+    )
     record = load_lineage(paths, lineage_id)
     if record is None:
         raise RuntimeError(f"Prepare lineage record is missing or unreadable: {lineage_id}")
+    manifest_path = candidate.generation_manifest
     try:
-        publication = json.loads(
-            (candidate.models / "publication.json").read_text(encoding="utf-8")
-        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Candidate generation has no readable publication contract") from exc
-    if not isinstance(publication, dict):
-        raise RuntimeError("Candidate publication contract is not an object")
-    if publication.get("lineage_id") != lineage_id:
-        raise RuntimeError("Candidate publication belongs to a different Prepare lineage")
-    quality_gate = publication.get("quality_gate")
-    if not isinstance(quality_gate, dict) or quality_gate.get("passed") is not True:
-        raise RuntimeError("Candidate publication has not passed the quality gate")
-    recorded_plan = publication.get("plan_fingerprint")
-    if plan_fingerprint is not None and recorded_plan != plan_fingerprint:
-        raise RuntimeError("Candidate publication belongs to a different TrainingPlan")
-    if not isinstance(recorded_plan, str) or re.fullmatch(r"[0-9a-f]{64}", recorded_plan) is None:
-        raise RuntimeError("Candidate publication has no valid TrainingPlan fingerprint")
-    if publication.get("prepare_lineage_fingerprint") != record.get("lineage_fingerprint"):
-        raise RuntimeError("Candidate publication lineage fingerprint does not match its record")
-    if publication.get("master_fingerprint") != record.get("master_fingerprint"):
-        raise RuntimeError("Candidate publication master fingerprint does not match its record")
-    # Validate every published artifact digest before moving the pointer.  A
-    # readable marker alone is not sufficient for activation after a partial
-    # copy or manual mutation of a candidate generation.
-    from personavoice.artifacts import verify_publication
-
-    try:
-        verify_publication(
-            candidate.models,
-            expected_plan_fingerprint=recorded_plan,
-        )
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise RuntimeError("Candidate publication failed byte-level verification") from exc
-
+        raise RuntimeError("Candidate generation has no readable v0.3 generation manifest") from exc
+    if not isinstance(manifest, dict):
+        raise RuntimeError("Candidate generation manifest is not an object")
+    verified_fingerprint = _verify_generation_manifest(
+        candidate,
+        record,
+        manifest,
+        expected_generation_fingerprint=generation_fingerprint,
+    )
     pointer = active_generation_path(paths)
     pointer.parent.mkdir(parents=True, exist_ok=True)
     with stage_lock(paths.root, "activate"):
@@ -517,14 +577,21 @@ def activate_generation(
             history = paths.root / "generations" / "activation-history"
             history.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-            atomic_write_json(history / f"{stamp}-{lineage_id}-{hashlib.sha256(_canonical(previous).encode()).hexdigest()[:8]}.json", previous)
-        activated_at = datetime.now(UTC).isoformat()
+            previous_digest = hashlib.sha256(
+                _canonical(previous).encode("utf-8")
+            ).hexdigest()[:8]
+            atomic_write_json(
+                history / f"{stamp}-{lineage_id}-{previous_digest}.json",
+                previous,
+            )
         pointer_value = {
             "schema_version": ACTIVE_GENERATION_SCHEMA_VERSION,
+            "kind": "personavoice-v03-active-generation",
             "persona": paths.root.name,
             "active_lineage_id": lineage_id,
-            "active_plan_fingerprint": recorded_plan,
-            "activated_at": activated_at,
+            "active_generation_id": candidate.generation_id,
+            "active_generation_fingerprint": verified_fingerprint,
+            "activated_at": datetime.now(UTC).isoformat(),
             "previous_lineage_id": (
                 previous.get("active_lineage_id") if previous is not None else None
             ),
@@ -532,10 +599,10 @@ def activate_generation(
                 previous.get("active_generation_id") if previous is not None else None
             ),
         }
-        # atomic_write_json uses a same-directory temp file + replace.  No
-        # partially written pointer can make an old active persona disappear.
+        # This is the single mutable pointer. All candidate artifacts were
+        # verified before the replace, so an interrupted write leaves the old
+        # active pointer intact.
         atomic_write_json(pointer, pointer_value)
-    record["active"] = True
     return pointer_value
 
 
