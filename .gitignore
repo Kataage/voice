@@ -4,6 +4,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-*/
+.test-*/
 .ruff_cache/
 
 # Local runtime and persona artifacts

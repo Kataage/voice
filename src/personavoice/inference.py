@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from personavoice.artifacts import verify_publication
 from personavoice.captions import (
     annotate_text,
     build_caption,
@@ -19,6 +20,7 @@ from personavoice.irodori import (
     base_checkpoint,
     codec_checkpoint,
     configured_backend,
+    irodori_full_artifact_complete,
     lora_adapter_complete,
     reference_files,
     speaker_embedding_complete,
@@ -117,6 +119,61 @@ def _best_lora_adapter(paths: PersonaPaths) -> Path | None:
     return final if lora_adapter_complete(final) else None
 
 
+def _publication_contract_present(paths: PersonaPaths) -> bool:
+    marker = paths.models / "publication.json"
+    return marker.exists() or marker.is_symlink()
+
+
+def _verified_publication(paths: PersonaPaths) -> dict[str, Any] | None:
+    marker = paths.models / "publication.json"
+    if marker.is_symlink():
+        return None
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    plan_fingerprint = value.get("plan_fingerprint")
+    if not isinstance(plan_fingerprint, str) or re.fullmatch(
+        r"[0-9a-f]{64}", plan_fingerprint
+    ) is None:
+        return None
+    try:
+        return verify_publication(
+            paths.models,
+            expected_plan_fingerprint=plan_fingerprint,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _published_primary_artifact(
+    paths: PersonaPaths,
+    family: str,
+) -> tuple[str, Path] | None:
+    value = _verified_publication(paths)
+    if value is None:
+        return None
+    artifacts = value["artifacts"]
+    root = paths.models.resolve()
+    for artifact in artifacts:
+        if artifact.get("family") != family or artifact.get("component") != "primary":
+            continue
+        method = artifact["method"]
+        relative = artifact.get("path")
+        candidate = (root / relative).resolve()
+        return method, candidate
+    return None
+
+
+def _published_artifact(paths: PersonaPaths, family: str, method: str) -> Path | None:
+    selected = _published_primary_artifact(paths, family)
+    if selected is None or selected[0] != method:
+        return None
+    return selected[1]
+
+
 def _verify_outputs(paths: list[Path]) -> list[Path]:
     missing = []
     for path in paths:
@@ -149,15 +206,24 @@ def _append_reference_args(
     paths: PersonaPaths,
     cfg: PersonaConfig,
     ref: str | Path | None,
+    *,
+    mode_override: str | None = None,
+    speaker_embedding_override: Path | None = None,
+    allow_legacy_speaker_embedding: bool = True,
 ) -> None:
-    speaker = paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
+    speaker = speaker_embedding_override
+    if speaker is None and allow_legacy_speaker_embedding:
+        speaker = paths.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
     if ref is not None:
         _append_audio_reference_args(args, resolve_reference(paths, ref))
         return
 
-    mode = cfg.inference.reference_mode
+    mode = mode_override or cfg.inference.reference_mode
+    if mode == "none":
+        args += ["--no-ref"]
+        return
     if mode == "speaker-embed":
-        if not speaker_embedding_complete(speaker):
+        if speaker is None or not speaker_embedding_complete(speaker):
             raise FileNotFoundError(
                 "inference.reference_mode is 'speaker-embed', but no complete trained speaker "
                 "embedding exists. Run `persona train` with Irodori Speaker Inversion enabled "
@@ -176,7 +242,7 @@ def _append_reference_args(
         _append_audio_reference_args(args, refs)
         return
 
-    if speaker_embedding_complete(speaker):
+    if speaker is not None and speaker_embedding_complete(speaker):
         args += ["--ref-embed", speaker]
     elif refs:
         _append_audio_reference_args(args, refs)
@@ -197,6 +263,11 @@ def synthesize(
     candidates: int | None = None,
     seed: int | None = None,
     output: Path | None = None,
+    irodori_artifact: Path | None = None,
+    irodori_method: str | None = None,
+    base_only: bool = False,
+    reference_mode: str | None = None,
+    caption_conditioning: bool = True,
 ) -> list[Path]:
     _ensure_authorized(cfg)
     if not text.strip():
@@ -216,6 +287,45 @@ def synthesize(
         raise ValueError("candidates must be at least 1")
     requested = _safe_candidate_count(requested, backend=backend)
 
+    checkpoint = base
+    lora: Path | None = None
+    speaker_override: Path | None = None
+    full_persona = False
+    publication_present = _publication_contract_present(paths)
+    if base_only and (irodori_artifact is not None or irodori_method is not None):
+        raise ValueError("base_only cannot be combined with an Irodori candidate override")
+    if irodori_artifact is not None:
+        method = irodori_method
+        if method == "full":
+            if not irodori_full_artifact_complete(irodori_artifact):
+                raise RuntimeError("Irodori full-model candidate failed portable verification")
+            checkpoint = irodori_artifact / "model.safetensors"
+            full_persona = True
+        elif method == "lora":
+            if not lora_adapter_complete(irodori_artifact):
+                raise RuntimeError("Irodori LoRA candidate is incomplete")
+            lora = irodori_artifact
+        elif method == "speaker-inversion":
+            if not speaker_embedding_complete(irodori_artifact):
+                raise RuntimeError("Irodori speaker-inversion candidate is incomplete")
+            speaker_override = irodori_artifact
+        else:
+            raise ValueError("irodori_method is required for a candidate override")
+    elif not base_only:
+        published = _published_primary_artifact(paths, "irodori")
+        if published is not None:
+            method, artifact = published
+            if method == "full":
+                checkpoint = artifact / "model.safetensors"
+                full_persona = True
+            elif method == "lora":
+                lora = artifact
+            elif method == "speaker-inversion":
+                speaker_override = artifact
+        elif not publication_present:
+            lora = _best_lora_adapter(paths)
+
+    caption = _caption(style, emotion, events) if caption_conditioning else "自然に話している。"
     args: list[str | Path] = [
         "uv",
         "run",
@@ -225,7 +335,7 @@ def synthesize(
         "python",
         vendor / "infer.py",
         "--checkpoint",
-        base,
+        checkpoint,
         "--codec-repo",
         codec,
         "--model-device",
@@ -235,7 +345,7 @@ def synthesize(
         "--text",
         text,
         "--caption",
-        _caption(style, emotion, events),
+        caption,
         "--num-steps",
         str(cfg.inference.default_num_steps),
         "--num-candidates",
@@ -249,10 +359,28 @@ def synthesize(
         "--output-wav",
         output,
     ]
-    lora = _best_lora_adapter(paths)
     if lora is not None:
         args += ["--lora-adapter", lora]
-    _append_reference_args(args, paths, cfg, ref)
+    effective_reference_mode = reference_mode
+    if (
+        effective_reference_mode is None
+        and ref is None
+        and full_persona
+        and cfg.inference.reference_mode == "auto"
+    ):
+        # A full persona checkpoint owns its default identity in model weights.
+        # Keep explicit audio/speaker modes available, but do not silently make
+        # the standard full-model path depend on an external reference bank.
+        effective_reference_mode = "none"
+    _append_reference_args(
+        args,
+        paths,
+        cfg,
+        ref,
+        mode_override=effective_reference_mode,
+        speaker_embedding_override=speaker_override,
+        allow_legacy_speaker_embedding=not publication_present,
+    )
     if seed is not None:
         args += ["--seed", str(seed)]
     run(args, cwd=vendor, env=local_model_env(repo_root))
@@ -260,8 +388,7 @@ def synthesize(
         return _verify_outputs([output])
     suffix = output.suffix or ".wav"
     generated = [
-        output.with_name(f"{output.stem}_{index:03d}{suffix}")
-        for index in range(1, requested + 1)
+        output.with_name(f"{output.stem}_{index:03d}{suffix}") for index in range(1, requested + 1)
     ]
     return _verify_outputs(generated)
 
@@ -337,7 +464,9 @@ def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Pat
     if not text:
         if sense.get("events"):
             return [reenact(repo_root, paths, cfg, source, transfer_style=True)]
-        raise RuntimeError("No speech or supported non-verbal event could be detected in the source audio")
+        raise RuntimeError(
+            "No speech or supported non-verbal event could be detected in the source audio"
+        )
     return synthesize(
         repo_root,
         paths,
@@ -408,17 +537,41 @@ def chat_turn(
     system = (
         f"あなたは{cfg.name}として自然に会話します。"
         "返答はJSONのみ。形式は "
-        "{\"text\":\"...\",\"voice\":{\"caption\":\"...\","
-        "\"emotion\":\"NEUTRAL\",\"events\":[]}}。"
+        '{"text":"...","voice":{"caption":"...",'
+        '"emotion":"NEUTRAL","events":[]}}。'
     )
     messages = [{"role": "system", "content": system}]
     messages.extend(history or [])
     messages.append({"role": "user", "content": prompt})
-    adapter = paths.models / "lfm" / "adapter"
+    publication_present = _publication_contract_present(paths)
+    published = _published_primary_artifact(paths, "lfm")
+    full_model = published[1] if published is not None and published[0] == "full" else None
+    published_adapter = (
+        published[1] if published is not None and published[0] == "lora" else None
+    )
+    legacy_adapter = paths.models / "lfm" / "adapter"
     result = worker(repo_root, "lfm").call(
         repo_root,
         "infer",
-        {"messages": messages, "adapter": str(adapter) if adapter.is_dir() else None},
+        {
+            "messages": messages,
+            "full_model": (
+                str(full_model) if full_model is not None and full_model.is_dir() else None
+            ),
+            "adapter": (
+                str(published_adapter)
+                if published_adapter is not None
+                else (
+                    str(legacy_adapter)
+                    if (
+                        full_model is None
+                        and not publication_present
+                        and legacy_adapter.is_dir()
+                    )
+                    else None
+                )
+            ),
+        },
     )
     plan = _normalize_chat_plan(_extract_json(str(result.get("text") or "")))
     voice = plan["voice"]

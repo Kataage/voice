@@ -8,6 +8,7 @@ import pytest
 from personavoice import setup_env
 from personavoice.model_assets import (
     ASR_MODEL_WEIGHT_SHA256,
+    LFM_MODEL_ASSET_SHA256,
     LFM_MODEL_WEIGHT_SHA256,
     PYANNOTE_MODEL_ASSET_SHA256,
 )
@@ -101,6 +102,12 @@ def test_root_and_isolated_worker_checksum_constants_stay_aligned():
 
     assert f'PINNED_MODEL_WEIGHT_SHA256 = "{ASR_MODEL_WEIGHT_SHA256}"' in asr
     assert f'MODEL_WEIGHT_SHA256 = "{LFM_MODEL_WEIGHT_SHA256}"' in lfm
+    lfm_train = (ROOT / "workers" / "lfm" / "train.py").read_text(encoding="utf-8")
+    for relative, digest in LFM_MODEL_ASSET_SHA256.items():
+        if relative == "model.safetensors":
+            continue
+        assert f'"{relative}": "{digest}"' in lfm
+        assert f'"{relative}": "{digest}"' in lfm_train
     for relative, digest in PYANNOTE_MODEL_ASSET_SHA256.items():
         assert f'"{relative}": "{digest}"' in diarization
 
@@ -110,6 +117,8 @@ def test_model_docs_checksum_contract_stays_aligned():
 
     assert f'`model.bin` SHA256: `{ASR_MODEL_WEIGHT_SHA256}`' in models_doc
     assert f'`model.safetensors` SHA256: `{LFM_MODEL_WEIGHT_SHA256}`' in models_doc
+    for relative, digest in LFM_MODEL_ASSET_SHA256.items():
+        assert f'`{relative}` SHA256: `{digest}`' in models_doc
     for relative, digest in PYANNOTE_MODEL_ASSET_SHA256.items():
         assert f'`{relative}` SHA256: `{digest}`' in models_doc
 

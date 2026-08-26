@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 from personavoice.atomic import atomic_write_text
 
@@ -47,7 +48,63 @@ class PrepareConfig(StrictConfigModel):
         return self
 
 
-class TrainingConfig(StrictConfigModel):
+class IrodoriTrainingConfig(StrictConfigModel):
+    enabled: bool = True
+    method: Literal["full", "lora", "speaker-inversion"] = "full"
+    auxiliary_speaker_inversion: bool = False
+    max_steps: int = Field(default=4000, ge=1)
+    speaker_inversion_max_steps: int = Field(default=2000, ge=1)
+    conditioning: Literal["speaker", "none"] = "speaker"
+    validation_ratio: float = Field(default=0.0005, gt=0, lt=1)
+    validation_every: int = Field(default=1000, ge=1)
+    checkpoint_best_n: int = Field(default=5, ge=1)
+
+    @model_validator(mode="after")
+    def validate_auxiliary_method(self) -> Self:
+        if self.method == "speaker-inversion" and self.auxiliary_speaker_inversion:
+            raise ValueError(
+                "training.irodori.auxiliary_speaker_inversion must be false when "
+                "training.irodori.method is speaker-inversion"
+            )
+        return self
+
+
+class LFMTrainingConfig(StrictConfigModel):
+    enabled: bool = True
+    method: Literal["full", "lora"] = "full"
+    epochs: float = Field(default=3.0, gt=0)
+    learning_rate: float = Field(default=2e-5, gt=0)
+    validation_ratio: float = Field(default=0.1, gt=0, lt=1)
+    save_steps: int = Field(default=25, ge=1)
+    lora_r: int = Field(default=16, ge=1)
+    lora_alpha: int = Field(default=32, ge=1)
+
+
+class SeedVCTrainingConfig(StrictConfigModel):
+    finetune: bool = False
+    max_steps: int = Field(default=1000, ge=1)
+
+
+class QualityGateConfig(StrictConfigModel):
+    enabled: bool = True
+    require_validation: bool = True
+    min_speaker_similarity: float = Field(default=0.45, ge=0, le=1)
+    max_cer: float = Field(default=0.25, ge=0, le=1)
+    max_wer: float = Field(default=0.50, ge=0, le=1)
+    min_emotion_accuracy: float = Field(default=0.40, ge=0, le=1)
+    min_unseen_text_similarity: float = Field(default=0.75, ge=0, le=1)
+    max_duration_ratio_error: float = Field(default=0.50, ge=0, le=1)
+    max_base_cer_regression: float = Field(default=0.10, ge=0, le=1)
+    min_lfm_expected_similarity: float = Field(default=0.35, ge=0, le=1)
+    max_lfm_expected_cer: float = Field(default=0.85, ge=0, le=2)
+    max_lfm_expected_wer: float = Field(default=1.00, ge=0, le=2)
+    min_lfm_required_phrase_coverage: float = Field(default=1.00, ge=0, le=1)
+    max_lfm_base_similarity_regression: float = Field(default=0.10, ge=0, le=1)
+
+
+class _LegacyTrainingConfig(StrictConfigModel):
+    """The complete v0.3.0 training shape used only for lossless migration."""
+
     irodori_speaker_inversion: bool = True
     irodori_lora: bool = True
     lfm_lora: bool = True
@@ -61,11 +118,233 @@ class TrainingConfig(StrictConfigModel):
     seed_vc_max_steps: int = Field(default=1000, ge=1)
 
 
+class TrainingConfig(StrictConfigModel):
+    SCHEMA_VERSION: ClassVar[int] = 2
+    LEGACY_SCHEMA_VERSION: ClassVar[int] = 1
+    LEGACY_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "irodori_speaker_inversion",
+            "irodori_lora",
+            "lfm_lora",
+            "seed_vc_finetune",
+            "irodori_max_steps",
+            "speaker_inversion_max_steps",
+            "lfm_epochs",
+            "lfm_learning_rate",
+            "lfm_lora_r",
+            "lfm_lora_alpha",
+            "seed_vc_max_steps",
+        }
+    )
+    NESTED_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "executor",
+            "remote_data_authorized",
+            "irodori",
+            "lfm",
+            "seed_vc",
+            "quality_gate",
+        }
+    )
+
+    schema_version: Literal[2] = 2
+    executor: Literal["auto", "local", "modal"] = "auto"
+    remote_data_authorized: bool = False
+    irodori: IrodoriTrainingConfig = Field(default_factory=IrodoriTrainingConfig)
+    lfm: LFMTrainingConfig = Field(default_factory=LFMTrainingConfig)
+    seed_vc: SeedVCTrainingConfig = Field(default_factory=SeedVCTrainingConfig)
+    quality_gate: QualityGateConfig = Field(default_factory=QualityGateConfig)
+    migration_notes: tuple[str, ...] = Field(
+        default=(),
+        exclude=True,
+        frozen=True,
+        repr=False,
+    )
+    migrated_from_schema_version: int | None = Field(
+        default=None,
+        exclude=True,
+        frozen=True,
+        repr=False,
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_shape(cls, value: Any, info: ValidationInfo) -> Any:
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping):
+            return value
+
+        raw = dict(value)
+        # Pydantic re-runs model-level validation after field assignment and
+        # supplies the complete internal field mapping in that path. Excluded
+        # migration metadata is therefore legitimate only when ``field_name``
+        # identifies assignment validation; callers may never inject it while
+        # constructing a config.
+        assignment_validation = info.field_name in cls.model_fields
+        if not assignment_validation and (
+            "migration_notes" in raw or "migrated_from_schema_version" in raw
+        ):
+            raise ValueError("training migration metadata is read-only")
+
+        raw_version = raw.get("schema_version")
+        if raw_version is not None and type(raw_version) is not int:
+            raise ValueError(
+                f"unsupported training schema_version {raw_version!r}; expected integer 1 or 2"
+            )
+        legacy_keys = cls.LEGACY_KEYS.intersection(raw)
+        nested_keys = cls.NESTED_KEYS.intersection(raw)
+        explicitly_legacy = raw_version == cls.LEGACY_SCHEMA_VERSION
+        explicitly_current = raw_version == cls.SCHEMA_VERSION
+
+        if legacy_keys and (nested_keys or explicitly_current):
+            conflicts = sorted(legacy_keys | nested_keys | {"schema_version"})
+            raise ValueError(
+                "training config mixes legacy flat fields with schema v2 fields: "
+                + ", ".join(conflicts)
+            )
+        if explicitly_legacy and nested_keys:
+            raise ValueError(
+                "training schema_version 1 cannot contain schema v2 fields: "
+                + ", ".join(sorted(nested_keys))
+            )
+        if raw_version is not None and not explicitly_legacy and not explicitly_current:
+            raise ValueError(
+                f"unsupported training schema_version {raw_version!r}; expected 1 or 2"
+            )
+
+        if not legacy_keys and not explicitly_legacy:
+            return raw
+
+        # Pass every non-version key through the strict legacy model so typos
+        # cannot disappear as a side effect of migration.
+        legacy_payload = {key: item for key, item in raw.items() if key != "schema_version"}
+        legacy = _LegacyTrainingConfig.model_validate(legacy_payload)
+
+        if legacy.irodori_lora:
+            irodori_enabled = True
+            irodori_method = "lora"
+            auxiliary_speaker_inversion = legacy.irodori_speaker_inversion
+        elif legacy.irodori_speaker_inversion:
+            irodori_enabled = True
+            irodori_method = "speaker-inversion"
+            auxiliary_speaker_inversion = False
+        else:
+            irodori_enabled = False
+            irodori_method = "lora"
+            auxiliary_speaker_inversion = False
+
+        notes = [
+            "Migrated the v0.3.0 flat training configuration to training schema_version 2.",
+            (
+                "Preserved Irodori behavior as "
+                f"enabled={str(irodori_enabled).lower()}, method={irodori_method}, "
+                "auxiliary_speaker_inversion="
+                f"{str(auxiliary_speaker_inversion).lower()}."
+            ),
+            (f"Preserved LFM behavior as enabled={str(legacy.lfm_lora).lower()}, method=lora."),
+            (f"Preserved Seed-VC behavior as finetune={str(legacy.seed_vc_finetune).lower()}."),
+        ]
+        return {
+            "schema_version": cls.SCHEMA_VERSION,
+            "executor": "auto",
+            "remote_data_authorized": False,
+            "irodori": {
+                "enabled": irodori_enabled,
+                "method": irodori_method,
+                "auxiliary_speaker_inversion": auxiliary_speaker_inversion,
+                "max_steps": legacy.irodori_max_steps,
+                "speaker_inversion_max_steps": legacy.speaker_inversion_max_steps,
+            },
+            "lfm": {
+                "enabled": legacy.lfm_lora,
+                "method": "lora",
+                "epochs": legacy.lfm_epochs,
+                "learning_rate": legacy.lfm_learning_rate,
+                "lora_r": legacy.lfm_lora_r,
+                "lora_alpha": legacy.lfm_lora_alpha,
+            },
+            "seed_vc": {
+                "finetune": legacy.seed_vc_finetune,
+                "max_steps": legacy.seed_vc_max_steps,
+            },
+            "quality_gate": QualityGateConfig().model_dump(mode="json"),
+            "migration_notes": tuple(notes),
+            "migrated_from_schema_version": cls.LEGACY_SCHEMA_VERSION,
+        }
+
+    def canonical_dict(self) -> dict[str, Any]:
+        """Return the strict schema-v2 payload without transient migration metadata."""
+
+        return self.model_dump(mode="json")
+
+    @property
+    def was_migrated(self) -> bool:
+        return self.migrated_from_schema_version is not None
+
+    # Read/write aliases keep the v0.3.0 Python API usable while callers move to
+    # the nested schema. They are not accepted as schema-v2 input fields and are
+    # never emitted by canonical serialization.
+    @property
+    def irodori_speaker_inversion(self) -> bool:
+        return self.irodori.enabled and (
+            self.irodori.method == "speaker-inversion" or self.irodori.auxiliary_speaker_inversion
+        )
+
+    @property
+    def irodori_lora(self) -> bool:
+        return self.irodori.enabled and self.irodori.method == "lora"
+
+    @property
+    def lfm_lora(self) -> bool:
+        return self.lfm.enabled and self.lfm.method == "lora"
+
+    @property
+    def seed_vc_finetune(self) -> bool:
+        return self.seed_vc.finetune
+
+    @seed_vc_finetune.setter
+    def seed_vc_finetune(self, value: bool) -> None:
+        self.seed_vc.finetune = value
+
+    @property
+    def irodori_max_steps(self) -> int:
+        return self.irodori.max_steps
+
+    @property
+    def speaker_inversion_max_steps(self) -> int:
+        return self.irodori.speaker_inversion_max_steps
+
+    @property
+    def lfm_epochs(self) -> float:
+        return self.lfm.epochs
+
+    @property
+    def lfm_learning_rate(self) -> float:
+        return self.lfm.learning_rate
+
+    @property
+    def lfm_lora_r(self) -> int:
+        return self.lfm.lora_r
+
+    @property
+    def lfm_lora_alpha(self) -> int:
+        return self.lfm.lora_alpha
+
+    @property
+    def seed_vc_max_steps(self) -> int:
+        return self.seed_vc.max_steps
+
+    @seed_vc_max_steps.setter
+    def seed_vc_max_steps(self, value: int) -> None:
+        self.seed_vc.max_steps = value
+
+
 class InferenceConfig(StrictConfigModel):
     default_candidates: int = Field(default=3, ge=1, le=16)
     default_num_steps: int = Field(default=24, ge=1, le=500)
     tts_cfg_scale: float = Field(default=3.0, ge=0, le=100)
-    reference_mode: Literal["auto", "speaker-embed", "audio"] = "auto"
+    reference_mode: Literal["auto", "none", "speaker-embed", "audio"] = "auto"
     seed_vc_diffusion_steps: int = Field(default=30, ge=1, le=500)
     seed_vc_similarity_cfg: float = Field(default=0.7, ge=0)
     seed_vc_intelligibility_cfg: float = Field(default=0.7, ge=0)
@@ -106,12 +385,29 @@ class PersonaConfig(StrictConfigModel):
             )
         return config
 
-    def save(self, path: Path) -> None:
-        atomic_write_text(
-            path,
-            yaml.safe_dump(
-                self.model_dump(mode="json"),
-                allow_unicode=True,
-                sort_keys=False,
-            ),
+    @property
+    def migration_notes(self) -> tuple[str, ...]:
+        return self.training.migration_notes
+
+    @property
+    def was_migrated(self) -> bool:
+        return self.training.was_migrated
+
+    def migrated_yaml(self) -> str:
+        """Serialize the current canonical schema without mutating the source file."""
+
+        return yaml.safe_dump(
+            self.model_dump(mode="json"),
+            allow_unicode=True,
+            sort_keys=False,
         )
+
+    def save_migrated(self, path: Path) -> tuple[str, ...]:
+        """Atomically publish canonical YAML and return value-free migration notes."""
+
+        notes = self.migration_notes
+        atomic_write_text(path, self.migrated_yaml())
+        return notes
+
+    def save(self, path: Path) -> None:
+        atomic_write_text(path, self.migrated_yaml())
