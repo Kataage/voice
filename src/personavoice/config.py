@@ -22,10 +22,30 @@ class ConsentConfig(StrictConfigModel):
 
 class PrepareConfig(StrictConfigModel):
     language: str = Field(default="ja", min_length=1)
-    # PersonaVoice setup/cache contracts audit and materialize exactly this ASR model.
-    # Allowing an arbitrary model name here could silently bypass those guarantees.
-    asr_model: Literal["large-v3"] = "large-v3"
+    # The new-persona default is the audited general Qwen backend.  ``large-v3``
+    # remains a stable alias for the legacy/reference path and is never removed
+    # from old persona configs.
+    asr_model: Literal[
+        "qwen3-asr-1.7b",
+        "large-v3",
+        "whisper-large-v3",
+        "qwen3-asr-1.7b-ja-anime-galgame-hf",
+    ] = "qwen3-asr-1.7b"
     asr_compute_type: str = Field(default="auto", min_length=1)
+    asr_device: Literal["auto", "cpu", "cuda"] = "auto"
+    asr_dtype: Literal["auto", "fp16", "fp32"] = "auto"
+    # ``auto`` selects the contract implied by the transcription backend; it
+    # never performs a hidden cross-backend substitution.
+    alignment_backend: Literal[
+        "auto",
+        "whisper-native",
+        "qwen3-forced-aligner-0.6b",
+        "domain-ctc",
+    ] = "auto"
+    # Separation is analysis-only.  The original source remains the canonical
+    # audio used for clips, TTS and VC unless a downstream contract explicitly
+    # says otherwise.
+    separation_policy: Literal["off", "auto", "always"] = "auto"
     min_clip_seconds: float = Field(default=1.0, gt=0)
     max_clip_seconds: float = Field(default=18.0, gt=0)
     merge_gap_seconds: float = Field(default=0.45, ge=0)

@@ -9,6 +9,7 @@ from personavoice.doctor import (
     modal_readiness_status,
     training_preflight_status,
 )
+from personavoice.lineage import active_lineage_id, load_lineage
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.prepare_checkpoints import prepare_batch_progress
 from personavoice.project import PersonaPaths
@@ -275,5 +276,13 @@ def persona_status(
             "inputs_verified": verify_inputs,
             "local_training_preflight": local_training_preflight,
             "modal": modal,
+            "active_generation": (
+                {
+                    "lineage_id": active_id,
+                    "lineage": load_lineage(paths, active_id),
+                }
+                if (active_id := active_lineage_id(paths)) is not None
+                else None
+            ),
         },
     }

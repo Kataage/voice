@@ -19,6 +19,7 @@ PERSONA_DIRS = (
     "cache",
     "logs",
 )
+_LINEAGE_ID_RE = re.compile(r"^pl-[0-9a-f]{32}$")
 
 
 def utc_now() -> str:
@@ -35,6 +36,42 @@ def safe_name(value: str) -> str:
 @dataclass(frozen=True)
 class PersonaPaths:
     root: Path
+    # ``None`` preserves the v0.3/v0.4 legacy layout for old personas and
+    # narrow LFM-only exports.  New upstream Prepare work uses an immutable
+    # generation root selected by this field.
+    lineage_id: str | None = None
+
+    @property
+    def lineage_root(self) -> Path:
+        if self.lineage_id is None:
+            return self.root
+        return self.root / "generations" / "prepare" / self.lineage_id
+
+    @property
+    def generation_root(self) -> Path:
+        return self.lineage_root
+
+    @property
+    def generations(self) -> Path:
+        return self.root / "generations"
+
+    @property
+    def lineage_record(self) -> Path:
+        return self.lineage_root / "lineage.json"
+
+    def for_lineage(self, lineage_id: str) -> PersonaPaths:
+        value = str(lineage_id)
+        if not _LINEAGE_ID_RE.fullmatch(value):
+            raise ValueError(f"Invalid Prepare lineage id: {lineage_id!r}")
+        return PersonaPaths(root=self.root, lineage_id=value)
+
+    def ensure_lineage(self) -> None:
+        if self.lineage_id is None:
+            return
+        for dirname in ("dataset", "references", "models", "outputs", "cache"):
+            directory = self.lineage_root / dirname
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / ".gitkeep").touch(exist_ok=True)
 
     @property
     def config(self) -> Path:
@@ -58,23 +95,23 @@ class PersonaPaths:
 
     @property
     def dataset(self) -> Path:
-        return self.root / "dataset"
+        return self.lineage_root / "dataset"
 
     @property
     def references(self) -> Path:
-        return self.root / "references"
+        return self.lineage_root / "references"
 
     @property
     def models(self) -> Path:
-        return self.root / "models"
+        return self.lineage_root / "models"
 
     @property
     def outputs(self) -> Path:
-        return self.root / "outputs"
+        return self.lineage_root / "outputs"
 
     @property
     def cache(self) -> Path:
-        return self.root / "cache"
+        return self.lineage_root / "cache"
 
     @property
     def logs(self) -> Path:
@@ -89,6 +126,8 @@ def init_persona(repo_root: Path, name: str, *, authorized: bool = False) -> Per
         directory = root / dirname
         directory.mkdir(exist_ok=True)
         (directory / ".gitkeep").touch(exist_ok=True)
+    (root / "generations" / "prepare").mkdir(parents=True, exist_ok=True)
+    (root / "generations" / "activation-history").mkdir(parents=True, exist_ok=True)
 
     config = PersonaConfig(name=name, consent=ConsentConfig(authorized=authorized))
     if not (root / "persona.yaml").exists():

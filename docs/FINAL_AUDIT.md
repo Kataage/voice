@@ -95,3 +95,28 @@ The full-model executor implementation was rechecked against the clean v0.3.0 ba
 - Remote bundle validation rejects Windows, UNC, file-URI, audio, and POSIX absolute paths even when they are embedded in LFM message text, while ordinary HTTPS documentation URLs remain transferable. Portable model verification requires the on-disk regular-file set to match its checksum inventory exactly; publication rollback restores the previous v0.3 artifact even when the new candidate installation fails after archival and before marker creation.
 
 These are contract and small-model/native-state validations, not a claim that a paid Modal A100 job or a multi-hour full 1.2B/v4.1-Small persona training run was performed. Production acceptance still requires authorized held-out media, the local quality gate, and target-hardware/Modal execution as applicable.
+
+## Issue #41 acceptance review (2026-08-27)
+
+The final review was performed against the Issue #41 body and its latest
+`ChatGPT Work / Luna Max execution plan` comment on GitHub, with the parent Issue #40 and
+merged PRs #44/#43/#38 as the compatibility boundary.
+
+- Branching: the implementation branch is based on the latest GitHub `main` after PR #44;
+  `release/0.3` and the #37 line are not targets.
+- Backend policy: Whisper remains legacy/reference; general Qwen3-ASR and its pinned
+  ForcedAligner are first-class contracts; the anime/domain model is disabled because the
+  effective dataset/head provenance is not cleared by the page's Apache badge.
+- Data generation: ASR, alignment, BGM analysis, immutable Prepare lineage, master,
+  references, Irodori/LFM exports, VC manifests, TrainingPlan, publication, and explicit
+  atomic activation carry auditable identity/fingerprint metadata.
+- Quality: LFM and Irodori reports retain deterministic accept/reject reasons, pathologies,
+  target evidence, durations, overlap/coverage, text/token distributions, text hashes,
+  transcript/alignment provenance, and boundary evidence. Valid short Japanese and
+  non-verbal responses are not removed by a minimum-character shortcut.
+- Portability: Qwen device/dtype/attention selection is explicit and inspectable; no BF16,
+  FlashAttention, hidden ASR arbitration, or hosted-CI production model download is used.
+- Validation boundary: repository tests, compile/Ruff, fixtures, lock resolution, and CI
+  contracts do not establish real ASR accuracy, Irodori quality, VC acoustic quality, VRAM,
+  or retraining results on a GTX 1080 Ti. Those claims remain intentionally pending the
+  target-machine workflow in [`ASR_LINEAGE.md`](ASR_LINEAGE.md).

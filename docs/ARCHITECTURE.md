@@ -10,6 +10,33 @@
 6. consent gate、local bind、secret非保存をデフォルトにする。
 7. upstream revisionと全Python依存をlockし、同じcheckoutから同じ環境を再現できるようにする。
 
+## ASR / Prepare generation graph
+
+v0.4のPrepareは、legacy Whisperを既定動作として引きずらず、一般用途のQwen3-ASRを
+明示的に選べるモデル backend registryから解決します。Whisperはlegacy/reference、
+`Qwen/Qwen3-ASR-1.7B`はmodern general backendです。anime/domain checkpointはページの
+license badgeだけでは有効化せず、dataset・変換重み・alignment headを含むeffective
+license/provenance auditが完了しない限りdisabledです。詳細なrevisionと対象マシン手順は
+[`ASR_LINEAGE.md`](ASR_LINEAGE.md)に固定しています。
+
+ASR transcription and alignment are separate contracts. Qwen general ASR uses the pinned
+`Qwen3-ForcedAligner-0.6B`; the domain `ctc_aligner.pt` is a distinct, disabled head coupled
+only to the exact domain encoder/revision. A CTC head is never sent through another encoder.
+Whisper native word timestamps are represented as the legacy alignment contract.
+
+The lineage identity binds raw/identity inventory, ASR and alignment model revisions, the
+separator policy and audited local model digest, Prepare schema, and implementation policy.
+Candidate data lives in `generations/prepare/<lineage>/`. `active.json` is the only runtime
+selection pointer. Training, publication, validation, and runtime paths carry the same
+lineage/master fingerprints; activation validates all of them under a lock and replaces the
+pointer atomically. Previous pointers remain in `activation-history` for rollback.
+
+BGM separation is deterministic `off`/`auto`/`always` analysis. The source lossless audio
+and canonical clips remain untouched; only a content-addressed derived stem enters ASR
+analysis. The separator wrapper/model terms and exact local digest are recorded in a
+machine-readable manifest. Missing or unaudited weights fail only when separation is
+selected, never by silently downloading or substituting a model.
+
 ## Runtime layout
 
 ```text
@@ -56,6 +83,7 @@ re-runs or modifies Prepare.
 Lossless source audioはsource SHAから作るため`cache/audio/`を再利用できます。一方、次のartifactはASRモデル・言語・diarization・segmentation・identity条件などprepare semanticsに依存するため、prepare fingerprintまたはcache policyが変わった場合に破棄します。
 
 - `cache/asr/`
+- `cache/alignment/`
 - `cache/diarization/`
 - `cache/identity/`
 - `cache/sense/`
@@ -79,6 +107,12 @@ SenseVoiceSmall is used acoustically, not from transcript sentiment. It provides
 - Vevo2: zero-shot FM-only style-preserved VC is selectable in v0.4. The worker uses
   source audio plus target reference and does not expose AR+FM, TTS, SVS, editing, or
   fine-tuning routes.
+
+ASR semantics are a family dependency. A new ASR/alignment/separation lineage regenerates
+the master, references, Irodori and LFM exports, and lineage-bound VC manifests. Zero-shot
+VC weights are not retrained without an explicit fine-tune setting, but its references and
+manifests are regenerated from the new lineage. No ASR backend is manually A/B'd during
+ordinary use and no opaque multi-ASR arbitration selects transcripts behind the user's back.
 
 学習はまずexecutor非依存・machine path非依存のimmutable `TrainingPlan`を作ります。dataset/model revision/family trainer hash、family methodとoptimization設定、checkpoint policyに加え、local/Modalが共有するrunner/bundle/Modal appの`executor_contract` hashを含みます。remote deploymentが古いshared runnerなら実行前に拒否します。一方、`executor_contract`、`executor`、remote consent、credential、local hardware、quality thresholdはfamily optimization fingerprintへ含めないため、runnerの安全修正やrouting/公開policyだけの変更では、family markerを新planへ再attestして実checkpointを再利用できます。同じplanのcanonical JSON bytesをlocal/Modalへ渡すため、routing変更でprepare、Irodori latent、または互換checkpointを無効化しません。quality threshold変更もoptimizer checkpointを捨てず、candidateの再評価・公開判断だけを更新します。
 

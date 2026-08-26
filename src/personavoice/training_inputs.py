@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from personavoice.atomic import atomic_write_json, atomic_write_text
 from personavoice.irodori import prepare_manifest
+from personavoice.lineage import load_lineage
 from personavoice.model_assets import (
     IRODORI_DACVAE_REVISION,
     IRODORI_DACVAE_SHA256,
@@ -131,9 +132,14 @@ def legacy_manifest_compatible(source: Path, manifest: Path) -> bool:
     return True
 
 
-def irodori_input_contract(repo_root: Path, source: Path) -> dict[str, Any]:
+def irodori_input_contract(
+    repo_root: Path,
+    source: Path,
+    *,
+    lineage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     del repo_root  # Reserved for a future pinned local codec/preparation asset contract.
-    return {
+    value: dict[str, Any] = {
         "schema_version": IRODORI_INPUT_CONTRACT_SCHEMA,
         "latent_policy_version": IRODORI_LATENT_POLICY_VERSION,
         "source_sha256": sha256_file(source),
@@ -141,6 +147,41 @@ def irodori_input_contract(repo_root: Path, source: Path) -> dict[str, Any]:
         "dacvae_revision": IRODORI_DACVAE_REVISION,
         "dacvae_sha256": IRODORI_DACVAE_SHA256,
     }
+    rows = _source_rows(source) or []
+    value["source_evidence"] = [
+        {
+            "utterance_id": row.get("utterance_id"),
+            "text_hash": row.get("text_hash") or hashlib.sha256(
+                str(row.get("text") or "").encode("utf-8")
+            ).hexdigest(),
+            "asr_backend": (row.get("provenance") or {}).get("asr_backend")
+            if isinstance(row.get("provenance"), dict)
+            else None,
+            "asr_model_revision": (row.get("provenance") or {}).get("asr_model_revision")
+            if isinstance(row.get("provenance"), dict)
+            else None,
+            "alignment_backend": (row.get("provenance") or {}).get("alignment_backend")
+            if isinstance(row.get("provenance"), dict)
+            else None,
+            "alignment_model_revision": (
+                (row.get("provenance") or {}).get("alignment_model_revision")
+                if isinstance(row.get("provenance"), dict)
+                else None
+            ),
+            "boundary_evidence": row.get("boundary_evidence"),
+        }
+        for row in rows
+    ]
+    if lineage is not None:
+        value["prepare_lineage"] = {
+            "lineage_id": lineage.get("lineage_id"),
+            "lineage_fingerprint": lineage.get("lineage_fingerprint"),
+            "master_fingerprint": lineage.get("master_fingerprint"),
+            "asr": lineage.get("asr"),
+            "alignment": lineage.get("alignment"),
+            "separation": lineage.get("separation"),
+        }
+    return value
 
 
 def _contract_key(contract: dict[str, Any]) -> str:
@@ -222,7 +263,7 @@ def ensure_irodori_manifest(
     source = paths.dataset / "irodori_source.jsonl"
     if not _nonempty_file(source):
         raise FileNotFoundError("Prepared Irodori source dataset is missing or empty")
-    contract = irodori_input_contract(repo_root, source)
+    contract = irodori_input_contract(repo_root, source, lineage=load_lineage(paths))
     key = _contract_key(contract)
 
     legacy = paths.dataset / "irodori_manifest.jsonl"

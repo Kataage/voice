@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -95,14 +96,18 @@ def _checkpoint_directory(payload: dict) -> Path | None:
     except ValueError as exc:
         raise ValueError("Prepare checkpoint directory escapes PERSONAVOICE_ROOT") from exc
     parts = relative.parts
-    if (
-        len(parts) < 5
-        or parts[0] != "personas"
-        or parts[2] != "cache"
-        or parts[-1] != ".checkpoints"
-    ):
+    base_layout = len(parts) >= 5 and parts[0] == "personas" and parts[2] == "cache"
+    lineage_layout = (
+        len(parts) >= 8
+        and parts[0] == "personas"
+        and parts[2:4] == ("generations", "prepare")
+        and re.fullmatch(r"pl-[0-9a-f]{32}", parts[4] or "") is not None
+        and parts[5] == "cache"
+    )
+    if (not base_layout and not lineage_layout) or parts[-1] != ".checkpoints":
         raise ValueError(
-            "Prepare checkpoint directory must be personas/<name>/cache/<kind>/.checkpoints"
+            "Prepare checkpoint directory must be personas/<name>/cache/<kind>/.checkpoints "
+            "or personas/<name>/generations/prepare/<lineage>/cache/<kind>/.checkpoints"
         )
     resolved.mkdir(parents=True, exist_ok=True)
     verified = resolved.resolve()

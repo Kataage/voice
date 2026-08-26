@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -16,7 +17,7 @@ def _load_asr_worker(monkeypatch):
     monkeypatch.setitem(sys.modules, "ctranslate2", ctranslate2)
 
     runtime_policy = types.ModuleType("runtime_policy")
-    runtime_policy.choose_compute_type = lambda _device: "float32"
+    runtime_policy.choose_compute_type = lambda *_args: "float32"
     monkeypatch.setitem(sys.modules, "runtime_policy", runtime_policy)
 
     faster_whisper = types.ModuleType("faster_whisper")
@@ -169,6 +170,111 @@ def test_asr_download_does_not_finalize_incomplete_snapshot(tmp_path: Path, monk
     result = worker.download({})
     assert result["revision"] == worker.PINNED_MODEL_REVISION
     assert (local / worker.REVISION_MARKER).read_text(encoding="utf-8").strip() == worker.PINNED_MODEL_REVISION
+
+
+def _write_qwen_files(local: Path, required: tuple[str, ...]) -> None:
+    local.mkdir(parents=True, exist_ok=True)
+    for name in required:
+        path = local / name
+        if name.endswith((".json", ".txt")):
+            path.write_text("{}\n", encoding="utf-8")
+        else:
+            path.write_bytes(b"weights")
+
+
+def test_qwen_materialization_requires_revision_and_lfs_provenance(tmp_path: Path, monkeypatch):
+    worker = _load_asr_worker(monkeypatch)
+    monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
+    local = tmp_path / "models" / "asr" / worker.QWEN_MODEL_NAME
+    _write_qwen_files(local, worker.QWEN_REQUIRED_MODEL_FILES)
+    (local / worker.REVISION_MARKER).write_text(worker.QWEN_MODEL_REVISION + "\n", encoding="utf-8")
+    (local / "integrity_ids.json").write_text(
+        json.dumps(worker.QWEN_ASR_LFS_OIDS), encoding="utf-8"
+    )
+    assert worker._qwen_materialization_complete(
+        local,
+        worker.QWEN_REQUIRED_MODEL_FILES,
+        worker.QWEN_MODEL_REVISION,
+        worker.QWEN_ASR_LFS_OIDS,
+    )
+    (local / "integrity_ids.json").write_text("{}\n", encoding="utf-8")
+    assert not worker._qwen_materialization_complete(
+        local,
+        worker.QWEN_REQUIRED_MODEL_FILES,
+        worker.QWEN_MODEL_REVISION,
+        worker.QWEN_ASR_LFS_OIDS,
+    )
+
+
+def test_qwen_download_writes_both_pinned_integrity_records(tmp_path: Path, monkeypatch):
+    worker = _load_asr_worker(monkeypatch)
+    monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+
+    def fake_snapshot(model_id, *, revision, local_dir, cache_dir):
+        del revision, cache_dir
+        required = (
+            worker.QWEN_REQUIRED_MODEL_FILES
+            if model_id == worker.QWEN_MODEL_ID
+            else worker.QWEN_ALIGNER_REQUIRED_MODEL_FILES
+        )
+        _write_qwen_files(Path(local_dir), required)
+
+    monkeypatch.setattr(worker, "snapshot_download", fake_snapshot)
+    result = worker.download({"model": worker.QWEN_MODEL_NAME})
+    assert len(result["models"]) == 2
+    for name, expected in (
+        (worker.QWEN_MODEL_NAME, worker.QWEN_ASR_LFS_OIDS),
+        (worker.QWEN_ALIGNER_NAME, worker.QWEN_ALIGNER_LFS_OIDS),
+    ):
+        local = tmp_path / "models" / "asr" / name
+        assert json.loads((local / "integrity_ids.json").read_text(encoding="utf-8")) == expected
+    reused = worker.download({"model": worker.QWEN_MODEL_NAME})
+    assert all(item["reused"] for item in reused["models"])
+
+
+def test_qwen_runtime_and_native_call_are_explicit_without_fabricated_confidence(
+    tmp_path: Path,
+    monkeypatch,
+):
+    worker = _load_asr_worker(monkeypatch)
+    torch = types.ModuleType("torch")
+    torch.float16 = object()
+    torch.float32 = object()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    runtime = worker.qwen_runtime_config("auto", "auto")
+    assert runtime["device"] == "cpu"
+    assert runtime["dtype"] == "fp32"
+    assert runtime["fallback_reason"] == "cuda_unavailable"
+    with pytest.raises(RuntimeError, match="torch.cuda.is_available"):
+        worker.qwen_runtime_config("cuda", "auto")
+    with pytest.raises(ValueError, match="fp16 was requested on CPU"):
+        worker.qwen_runtime_config("cpu", "fp16")
+
+    audio = tmp_path / "clip.wav"
+    audio.write_bytes(b"audio")
+    calls = []
+
+    class FakeModel:
+        def transcribe(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "text": "こんにちは",
+                "language": "Japanese",
+                "duration": 1.5,
+                "time_stamps": [{"text": "こんにちは", "start_time": 0.0, "end_time": 1.5}],
+            }
+
+    result = worker._qwen_transcribe_with_model(
+        FakeModel(),
+        str(audio),
+        language="ja",
+        runtime={"device": "cpu", "dtype": "fp32"},
+    )
+    assert calls == [{"audio": str(audio), "language": "Japanese", "return_time_stamps": True}]
+    assert result["segments"][0]["words"] == []
+    assert "avg_logprob" not in result["segments"][0]
 
 
 def test_doctor_asr_static_check_requires_full_offline_snapshot(tmp_path: Path, monkeypatch):

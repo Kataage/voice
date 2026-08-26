@@ -6,3 +6,60 @@ dependencies = [
   "faster-whisper>=1.2.0,<2",
   "huggingface-hub>=0.34,<1",
 ]
+
+[project.optional-dependencies]
+legacy = [
+  "audio-separator==0.44.2",
+]
+qwen = [
+  "qwen-asr==0.0.6",
+  "torch>=2.10,<2.11",
+  "audio-separator==0.44.2",
+]
+qwen-cpu = [
+  "qwen-asr==0.0.6",
+  "torch>=2.10,<2.11",
+  "audio-separator==0.44.2",
+]
+qwen-cu126 = [
+  "qwen-asr==0.0.6",
+  "torch>=2.10,<2.11",
+  "audio-separator==0.44.2",
+]
+qwen-cu128 = [
+  "qwen-asr==0.0.6",
+  "torch>=2.10,<2.11",
+  "audio-separator==0.44.2",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "qwen" },
+    { extra = "qwen-cpu" },
+    { extra = "qwen-cu126" },
+    { extra = "qwen-cu128" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "qwen-cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu126", extra = "qwen-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", extra = "qwen-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

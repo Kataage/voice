@@ -21,6 +21,7 @@ from personavoice.evaluation_metrics import (
 )
 from personavoice.inference import synthesize
 from personavoice.lfm_contract import build_lfm_system_prompt, normalize_lfm_output
+from personavoice.lineage import load_lineage
 from personavoice.pipeline import _prepare_fingerprint
 from personavoice.profile import CoreProfile, load_core_profile
 from personavoice.project import PersonaPaths
@@ -498,6 +499,8 @@ def _analyze_voice_sets(
             "items": audio_items,
             "model": cfg.prepare.asr_model,
             "compute_type": cfg.prepare.asr_compute_type,
+            "device": cfg.prepare.asr_device,
+            "dtype": cfg.prepare.asr_dtype,
             "language": cfg.language,
         },
     )
@@ -998,6 +1001,38 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict[s
     store = StateStore(paths.state)
     if not store.is_complete("prepare", _prepare_fingerprint(paths, cfg)):
         raise RuntimeError("Current prepared data is required before evaluation")
+    # The v0.4 StateStore exposes the Prepare result, but keep the evaluation
+    # boundary compatible with narrow publication fakes and v0.3 state
+    # adapters that only expose the train stage. A candidate train result is
+    # itself lineage-bound, so it is sufficient to select the generation from
+    # that result when present.
+    train_stage = store.stage("train")
+    train_result_hint = train_stage.get("result") if isinstance(train_stage, dict) else None
+    lineage_id = (
+        train_result_hint.get("lineage_id")
+        if isinstance(train_result_hint, dict)
+        else None
+    )
+    if lineage_id is None:
+        try:
+            prepare_stage = store.stage("prepare")
+        except (AssertionError, KeyError):
+            prepare_stage = {}
+        prepare_result = (
+            prepare_stage.get("result") if isinstance(prepare_stage, dict) else None
+        )
+        lineage_id = (
+            prepare_result.get("lineage_id")
+            if isinstance(prepare_result, dict)
+            else None
+        )
+    if lineage_id is not None:
+        try:
+            paths = paths.for_lineage(str(lineage_id))
+        except ValueError as exc:
+            raise RuntimeError("Prepared result contains an invalid Prepare lineage") from exc
+        if load_lineage(paths) is None:
+            raise RuntimeError("Prepared result points to a missing Prepare lineage record")
     train_fingerprint = _fingerprint(paths, cfg)
     if not store.is_trained(train_fingerprint):
         raise RuntimeError("No verified candidate set exists for the current training request")
@@ -1055,6 +1090,15 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict[s
     report: dict[str, Any] = {
         "schema_version": 2,
         "plan_fingerprint": plan.fingerprint,
+        "lineage": (
+            {
+                "lineage_id": plan.prepare_lineage.get("lineage_id"),
+                "lineage_fingerprint": plan.prepare_lineage.get("lineage_fingerprint"),
+                "master_fingerprint": plan.prepare_lineage.get("master_fingerprint"),
+            }
+            if plan.prepare_lineage is not None
+            else None
+        ),
         "summary": voice_report["summary"],
         "complete": voice_report["complete"],
         "errors": voice_report["errors"],

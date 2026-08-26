@@ -15,7 +15,7 @@ from personavoice.hardware import (
 from personavoice.runtime_dependencies import ffmpeg_provenance_status
 
 WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc", "vevo2")
-ENVIRONMENT_CONTRACT_SCHEMA = 7
+ENVIRONMENT_CONTRACT_SCHEMA = 8
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -88,10 +88,25 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
                 repo_root / "src" / "personavoice" / "cuda_preflight.py"
             ),
             "workers_sha256": _sha256(repo_root / "src" / "personavoice" / "workers.py"),
+            "lineage_sha256": _sha256(repo_root / "src" / "personavoice" / "lineage.py"),
+            "asr_contract_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "asr_contract.py"
+            ),
+            "separation_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "separation.py"
+            ),
+            "model_assets_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "model_assets.py"
+            ),
             "vevo2_assets_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "vevo2_assets.py"
             ),
             "vevo2_worker_sha256": _sha256(repo_root / "workers" / "vevo2" / "worker.py"),
+            "asr_worker_sha256": _sha256(repo_root / "workers" / "asr" / "worker.py"),
+            "diarization_worker_sha256": _sha256(
+                repo_root / "workers" / "diarization" / "worker.py"
+            ),
+            "sense_worker_sha256": _sha256(repo_root / "workers" / "sense" / "worker.py"),
             "asr_runtime_policy_sha256": _sha256(
                 repo_root / "workers" / "asr" / "runtime_policy.py"
             ),

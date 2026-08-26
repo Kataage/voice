@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -22,9 +23,13 @@ from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     LFM_MODEL_REVISION,
     PYANNOTE_MODEL_REVISION,
+    QWEN_ASR_MODEL_REVISION,
+    QWEN_FORCED_ALIGNER_MODEL_REVISION,
     SENSE_MODEL_CMVN_SHA256,
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
+    SEPARATOR_SOURCE_REVISION,
+    SEPARATOR_VERSION,
 )
 from personavoice.stage_lock import stage_lock
 from personavoice.worker_contracts import purge_invalid_prepare_caches
@@ -65,6 +70,10 @@ def _prepare_cache_policy() -> str:
         "prepare_result_schema": PREPARE_RESULT_SCHEMA,
         "dataset_schema": DATASET_SCHEMA_VERSION,
         "asr_revision": ASR_MODEL_REVISION,
+        "qwen_asr_revision": QWEN_ASR_MODEL_REVISION,
+        "qwen_forced_aligner_revision": QWEN_FORCED_ALIGNER_MODEL_REVISION,
+        "separator_version": SEPARATOR_VERSION,
+        "separator_source_revision": SEPARATOR_SOURCE_REVISION,
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
         "sense_weight_sha256": SENSE_MODEL_WEIGHT_SHA256,
         "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
@@ -80,6 +89,13 @@ def _prepare_cache_policy() -> str:
         "speaker_code_sha256": _file_contract(repo / "src" / "personavoice" / "speaker.py"),
         "captions_code_sha256": _file_contract(repo / "src" / "personavoice" / "captions.py"),
         "dataset_code_sha256": _file_contract(repo / "src" / "personavoice" / "dataset.py"),
+        "lineage_code_sha256": _file_contract(repo / "src" / "personavoice" / "lineage.py"),
+        "asr_contract_code_sha256": _file_contract(
+            repo / "src" / "personavoice" / "asr_contract.py"
+        ),
+        "separation_code_sha256": _file_contract(
+            repo / "src" / "personavoice" / "separation.py"
+        ),
         # VC backend routing is intentionally excluded: adding or changing a
         # zero-shot VC runtime must not invalidate expensive Prepare/ASR/
         # diarization/SenseVoice caches. Prepare-specific worker code and locks
@@ -95,7 +111,11 @@ def _prepare_cache_policy() -> str:
     return f"14-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
-PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
+# Keep the v0.4 root-cache migration marker stable for already materialized
+# Whisper personas.  New upstream semantics are scoped by the independent
+# Prepare-lineage fingerprint (which includes the dynamic implementation
+# contract) and therefore never reuse this legacy root cache accidentally.
+PREPARE_CACHE_POLICY_VERSION = "14-8fa7f248e19dab94265c"
 PREPARE_CACHE_POLICY_COMPATIBILITY = {
     # The v0.4 LFM export contract is a training-only change.  Keep the
     # previous Prepare generation reusable; profile/runtime and LFM export
@@ -355,7 +375,41 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     if numeric_values["usable_tts_utterances"] > numeric_values["target_utterances"]:
         return False
 
-    dataset = persona_root / "dataset"
+    lineage_id = result.get("lineage_id")
+    if isinstance(lineage_id, str) and lineage_id:
+        lineage_fingerprint = result.get("lineage_fingerprint")
+        master_fingerprint = result.get("master_fingerprint")
+        if (
+            re.fullmatch(r"pl-[0-9a-f]{32}", lineage_id) is None
+            or not isinstance(lineage_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{64}", lineage_fingerprint) is None
+            or not isinstance(master_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{64}", master_fingerprint) is None
+        ):
+            return False
+        generation = persona_root / "generations" / "prepare" / lineage_id
+        dataset = generation / "dataset"
+        references = generation / "references"
+        lineage_record = generation / "lineage.json"
+        try:
+            record = json.loads(lineage_record.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        if (
+            not isinstance(record, dict)
+            or record.get("lineage_id") != lineage_id
+            or record.get("lineage_fingerprint") != lineage_fingerprint
+            or record.get("master_fingerprint") != master_fingerprint
+            or _safe_int(record.get("sources")) != numeric_values["sources"]
+            or _safe_int(record.get("utterances")) != numeric_values["utterances"]
+        ):
+            return False
+    else:
+        # Backward-compatible v0.3/v0.4 root layout.
+        dataset = persona_root / "dataset"
+        references = persona_root / "references"
+        if result.get("lineage_fingerprint") is not None or result.get("master_fingerprint") is not None:
+            return False
     if not all(
         _nonempty_file(path)
         for path in (
@@ -372,13 +426,27 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         expected_usable_seconds=usable_seconds,
     ):
         return False
+    if isinstance(lineage_id, str) and lineage_id:
+        try:
+            master_rows = _json_object_list(dataset / "master.json")
+            from personavoice.lineage import master_fingerprint
+
+            if master_rows is None or master_fingerprint(master_rows) != result.get(
+                "master_fingerprint"
+            ):
+                return False
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
 
     recorded_master = result.get("master_db")
     if not isinstance(recorded_master, str) or not recorded_master:
         return False
     master_db = dataset / "master.sqlite3"
     try:
-        if Path(recorded_master).resolve() != master_db.resolve():
+        recorded_path = Path(recorded_master)
+        if not recorded_path.is_absolute():
+            recorded_path = (persona_root / recorded_path).resolve()
+        if recorded_path != master_db.resolve():
             return False
     except OSError:
         return False
@@ -396,7 +464,7 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         if expected is None or expected < 0 or actual is None or actual != expected:
             return False
 
-    bank = persona_root / "references" / "bank.json"
+    bank = references / "bank.json"
     try:
         bank_value = json.loads(bank.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -407,8 +475,21 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
     if len(reference_files) != numeric_values["references"]:
         return False
     for raw_path in reference_files:
-        if not isinstance(raw_path, str) or not raw_path or not _nonempty_file(Path(raw_path)):
+        if not isinstance(raw_path, str) or not raw_path:
             return False
+        reference_path = Path(raw_path)
+        if not reference_path.is_absolute():
+            reference_path = persona_root / reference_path
+        if not _nonempty_file(reference_path):
+            return False
+    for report_key in ("lfm_quality_report", "irodori_quality_report"):
+        report_value = result.get(report_key)
+        if report_value is not None:
+            report_path = Path(report_value)
+            if not report_path.is_absolute():
+                report_path = persona_root / report_path
+            if not _nonempty_file(report_path):
+                return False
     return True
 
 
@@ -561,6 +642,46 @@ def _new_train_artifacts_valid(
 
     if set(families) != {"irodori", "lfm", "seed-vc"}:
         return False
+    models_root = persona_root / "models"
+    raw_models_root = result.get("models_root")
+    if isinstance(raw_models_root, str) and raw_models_root:
+        models_root = _portable_persona_path(persona_root, raw_models_root)
+        if models_root is None or not models_root.is_dir():
+            return False
+    lineage_id = result.get("lineage_id")
+    lineage_fingerprint = result.get("prepare_lineage_fingerprint")
+    if lineage_id is not None:
+        if (
+            not isinstance(lineage_id, str)
+            or re.fullmatch(r"pl-[0-9a-f]{32}", lineage_id) is None
+            or not isinstance(lineage_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{64}", lineage_fingerprint) is None
+        ):
+            return False
+        expected_generation = persona_root / "generations" / "prepare" / lineage_id
+        expected_models = expected_generation / "models"
+        expected_dataset = expected_generation / "dataset"
+        if models_root.resolve() != expected_models.resolve():
+            return False
+        raw_dataset_root = result.get("dataset_root")
+        dataset_root = _portable_persona_path(persona_root, raw_dataset_root)
+        if dataset_root is None or dataset_root.resolve() != expected_dataset.resolve():
+            return False
+        try:
+            from personavoice.lineage import load_lineage
+            from personavoice.project import PersonaPaths
+
+            record = load_lineage(PersonaPaths(persona_root), lineage_id)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+        if (
+            not isinstance(record, dict)
+            or record.get("lineage_id") != lineage_id
+            or record.get("lineage_fingerprint") != lineage_fingerprint
+        ):
+            return False
+    elif lineage_fingerprint is not None:
+        return False
     published_families: dict[str, tuple[str, str, str]] = {}
     for name, family in families.items():
         if not isinstance(family, dict):
@@ -584,6 +705,12 @@ def _new_train_artifacts_valid(
             return False
         if not isinstance(method, str):
             return False
+        family_lineage = family.get("prepare_lineage_fingerprint")
+        if lineage_id is not None:
+            if family_lineage != lineage_fingerprint:
+                return False
+        elif family_lineage is not None:
+            return False
         try:
             from personavoice.artifacts import verify_training_candidate
 
@@ -602,7 +729,7 @@ def _new_train_artifacts_valid(
                 return False
         try:
             relative_model = (
-                artifact.resolve().relative_to((persona_root / "models").resolve()).as_posix()
+                artifact.resolve().relative_to(models_root.resolve()).as_posix()
             )
         except ValueError:
             if require_published:
@@ -613,11 +740,18 @@ def _new_train_artifacts_valid(
         try:
             from personavoice.artifacts import verify_publication
 
-            verify_publication(
-                persona_root / "models",
+            publication = verify_publication(
+                models_root,
                 expected_plan_fingerprint=plan_fingerprint,
                 expected_families=published_families,
             )
+            if lineage_id is not None and (
+                publication.get("lineage_id") != lineage_id
+                or publication.get("prepare_lineage_fingerprint") != lineage_fingerprint
+            ):
+                return False
+            if lineage_id is None and "lineage_id" in publication:
+                return False
         except (OSError, RuntimeError, TypeError, ValueError):
             return False
     return True
@@ -724,8 +858,8 @@ class StateStore:
             stage["finished_at"] = _now()
         self.save(state)
 
-    def _invalidate_prepare_derived(self) -> None:
-        persona_root = self.path.parent
+    def _invalidate_prepare_derived(self, root: Path | None = None) -> None:
+        persona_root = root or self.path.parent
         for relative in (
             Path("cache/audio"),
             Path("cache/asr"),
@@ -744,6 +878,8 @@ class StateStore:
         *,
         force: bool = False,
         success_status: str = "complete",
+        lineage: bool = False,
+        lineage_cache_root: Path | None = None,
     ) -> Iterator[dict[str, Any]]:
         # The OS lock is the source of truth for liveness. It is released by the
         # kernel on normal exit, exceptions, crashes, and forced process death,
@@ -769,8 +905,14 @@ class StateStore:
                     or (old_fingerprint is not None and old_fingerprint != fingerprint)
                 )
                 if must_invalidate:
-                    self._invalidate_prepare_derived()
-                purge_invalid_prepare_caches(self.path.parent)
+                    if lineage and lineage_cache_root is not None:
+                        self._invalidate_prepare_derived(lineage_cache_root.parent)
+                    elif not lineage:
+                        self._invalidate_prepare_derived()
+                purge_invalid_prepare_caches(
+                    self.path.parent,
+                    cache_root=lineage_cache_root if lineage else None,
+                )
 
             try:
                 hostname = socket.gethostname()
