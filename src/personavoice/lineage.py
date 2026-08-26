@@ -59,6 +59,7 @@ ALIGNMENT_CONTRACT_VERSION = "alignment-v1"
 SEPARATION_CONTRACT_VERSION = "separation-v1"
 ACTIVE_GENERATION_SCHEMA_VERSION = 1
 _LINEAGE_ID_RE = re.compile(r"^pl-[0-9a-f]{32}$")
+_GENERATION_ID_RE = re.compile(r"^gen-[0-9a-f]{32}$")
 
 
 class DomainBackendDisabledError(RuntimeError):

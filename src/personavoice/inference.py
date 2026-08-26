@@ -26,6 +26,7 @@ from personavoice.irodori import (
     speaker_embedding_complete,
     vendor_dir,
 )
+from personavoice.lineage import effective_paths
 from personavoice.lfm_contract import (
     LFM_CONTRACT_FINGERPRINT,
     LFM_CONTRACT_SCHEMA_VERSION,
@@ -302,6 +303,7 @@ def synthesize(
     capture_logs: bool = False,
 ) -> list[Path]:
     _ensure_authorized(cfg)
+    paths = effective_paths(paths)
     if not text.strip():
         text = annotate_text("", events)
     if not text.strip():
@@ -471,6 +473,7 @@ def reenact(
     transfer_style: bool = True,
 ) -> Path:
     _ensure_authorized(cfg)
+    paths = effective_paths(paths)
     if not _nonempty_file(source):
         raise FileNotFoundError(f"Source audio is missing or empty: {source}")
     output_dir = paths.outputs / "reenact" / _stamp()
@@ -502,6 +505,7 @@ def reenact(
 
 def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Path) -> list[Path]:
     _ensure_authorized(cfg)
+    paths = effective_paths(paths)
     if not _nonempty_file(source):
         raise FileNotFoundError(f"Source audio is missing or empty: {source}")
     asr = worker(repo_root, "asr").call(
@@ -593,6 +597,7 @@ def chat_turn(
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     _ensure_authorized(cfg)
+    paths = effective_paths(paths)
     profile = load_core_profile(paths.core_profile, persona_name=cfg.name)
     messages, message_diagnostics = build_lfm_messages(profile, history, prompt)
     adapter = paths.models / "lfm" / "adapter"
