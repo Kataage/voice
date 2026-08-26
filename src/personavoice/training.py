@@ -92,6 +92,9 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "lfm_lock_sha256": _file_contract(repo_root / "workers" / "lfm" / "uv.lock"),
         "seed_vc_lock_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "uv.lock"),
         "training_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "training.py"),
+        "training_inputs_code_sha256": _file_contract(
+            repo_root / "src" / "personavoice" / "training_inputs.py"
+        ),
         "irodori_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "irodori.py"),
         "lfm_train_code_sha256": _file_contract(repo_root / "workers" / "lfm" / "train.py"),
         "lfm_checkpoint_contract_code_sha256": _file_contract(
@@ -974,7 +977,8 @@ def train_persona(
             _adapter_files(candidate.models / "lfm" / "adapter")
             if cfg.training.lfm_lora
             else []
-        )        if cfg.training.lfm_lora:
+        )
+        if cfg.training.lfm_lora:
             lfm_files.append(candidate.models / "lfm" / "adapter" / _LFM_ADAPTER_REVISION_MARKER)
         seed_files = [Path(seed)] if seed is not None else []
         family_records = {
