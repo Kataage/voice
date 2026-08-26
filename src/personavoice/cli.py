@@ -13,7 +13,7 @@ from personavoice.config import PersonaConfig
 from personavoice.doctor import report as doctor_report
 from personavoice.environment import load_root_environment
 from personavoice.evaluation import evaluate
-from personavoice.inference import chat_turn, synthesize
+from personavoice.inference import VC_BACKENDS, chat_turn, synthesize
 from personavoice.inference import reenact as reenact_audio
 from personavoice.inference import repeat as repeat_audio
 from personavoice.pipeline import prepare_persona
@@ -24,6 +24,10 @@ from personavoice.setup_lock import SetupLockError, setup_lock
 from personavoice.stage_lock import StageLockError
 from personavoice.status import persona_status
 from personavoice.training import train_persona
+from personavoice.vc_evaluation import (
+    build_vc_evaluation_manifest,
+    evaluate_vc,
+)
 
 app = typer.Typer(no_args_is_help=True, help="PersonaVoice local-first voice persona toolkit")
 console = Console()
@@ -79,9 +83,23 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _download_models_or_explain(root: Path, *, include_seed_vc: bool) -> dict:
+def _download_models_or_explain(
+    root: Path,
+    *,
+    include_seed_vc: bool,
+    include_vevo2: bool = True,
+) -> dict:
     try:
-        return download_models(root, include_seed_vc=include_seed_vc)
+        # Keep the helper compatible with integrations that monkeypatch the
+        # pre-v0.4 two-argument downloader; only an explicit skip needs the
+        # new keyword because the production default is Vevo2-inclusive.
+        if include_vevo2:
+            return download_models(root, include_seed_vc=include_seed_vc)
+        return download_models(
+            root,
+            include_seed_vc=include_seed_vc,
+            include_vevo2=False,
+        )
     except GatedRepoError as exc:
         repo_id = getattr(exc, "repo_id", None) or "pyannote/speaker-diarization-community-1"
         console.print(f"[bold red]Hugging Face access was denied for {repo_id}.[/bold red]")
@@ -109,9 +127,9 @@ def doctor(
             "[dim](model loading can take several minutes)[/dim]",
             spinner="dots",
         ):
-            result = doctor_report(root, deep=True)
+            result = doctor_report(root, deep=True, require_vevo2=True)
     else:
-        result = doctor_report(root, deep=False)
+        result = doctor_report(root, deep=False, require_vevo2=True)
     _print(result)
     if not result["commands_ok"] or (deep and not result["ready_offline"]):
         raise typer.Exit(1)
@@ -122,6 +140,7 @@ def setup(
     backend: str = typer.Option("auto", help="Irodori backend: auto/cu126/cu128/cpu/rocm/xpu"),
     download: bool = typer.Option(True, "--download-models/--skip-models"),
     skip_seed_vc_models: bool = typer.Option(False),
+    skip_vevo2_models: bool = typer.Option(False),
     verify: bool = typer.Option(True, "--verify/--no-verify"),
 ) -> None:
     """Install pinned local uv environments and model snapshots."""
@@ -159,6 +178,7 @@ def setup(
                     result["models"] = _download_models_or_explain(
                         root,
                         include_seed_vc=not skip_seed_vc_models,
+                        include_vevo2=not skip_vevo2_models,
                     )
                 console.print("[green]✓[/green] Pinned model assets are materialized and verified.")
             else:
@@ -173,12 +193,14 @@ def setup(
                         root,
                         deep=True,
                         require_seed_vc=not skip_seed_vc_models,
+                        require_vevo2=not skip_vevo2_models,
                     )
                 if download and not verification["ready_offline"]:
                     repaired = repair_failed_model_materializations(
                         root,
                         verification,
                         include_seed_vc=not skip_seed_vc_models,
+                        include_vevo2=not skip_vevo2_models,
                     )
                     if repaired:
                         console.print(
@@ -194,12 +216,14 @@ def setup(
                                 "download": _download_models_or_explain(
                                     root,
                                     include_seed_vc=not skip_seed_vc_models,
+                                    include_vevo2=not skip_vevo2_models,
                                 ),
                             }
                             verification = doctor_report(
                                 root,
                                 deep=True,
                                 require_seed_vc=not skip_seed_vc_models,
+                                require_vevo2=not skip_vevo2_models,
                             )
                 result["verification"] = verification
                 if not verification["ready_offline"]:
@@ -438,7 +462,16 @@ def reenact(
     source: Path,
     ref: str | None = None,
     transfer_style: bool = typer.Option(True, "--transfer-style/--timbre-only"),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="VC backend override: seed-vc-v2 or vevo2-fm.",
+    ),
 ) -> None:
+    if backend is not None and backend not in VC_BACKENDS:
+        raise typer.BadParameter(
+            f"Unsupported VC backend {backend!r}; choose one of {', '.join(VC_BACKENDS)}"
+        )
     root, paths, cfg = _load(name)
     source = _existing_file(source)
     _print(
@@ -451,6 +484,7 @@ def reenact(
                     source,
                     ref=ref,
                     transfer_style=transfer_style,
+                    backend=backend,
                 )
             )
         }
@@ -458,10 +492,28 @@ def reenact(
 
 
 @app.command()
-def repeat(name: str, source: Path) -> None:
+def repeat(
+    name: str,
+    source: Path,
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="VC backend for non-verbal repeat fallback: seed-vc-v2 or vevo2-fm.",
+    ),
+) -> None:
+    if backend is not None and backend not in VC_BACKENDS:
+        raise typer.BadParameter(
+            f"Unsupported VC backend {backend!r}; choose one of {', '.join(VC_BACKENDS)}"
+        )
     root, paths, cfg = _load(name)
     source = _existing_file(source)
-    _print({"outputs": [str(path) for path in repeat_audio(root, paths, cfg, source)]})
+    _print(
+        {
+            "outputs": [
+                str(path) for path in repeat_audio(root, paths, cfg, source, backend=backend)
+            ]
+        }
+    )
 
 
 @app.command()
@@ -501,6 +553,59 @@ def chat(name: str, prompt: str | None = None) -> None:
 def eval_command(name: str) -> None:
     root, paths, cfg = _load(name)
     _print(evaluate(root, paths, cfg))
+
+
+@app.command("eval-vc-manifest")
+def eval_vc_manifest_command(
+    name: str,
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        help="Manifest path; defaults to dataset/vc_evaluation_manifest.jsonl.",
+    ),
+    reference: str | None = typer.Option(
+        None,
+        "--reference",
+        help="Persona-relative reference audio path; defaults to the first prepared reference.",
+    ),
+    limit: int | None = typer.Option(None, min=1, max=300),
+    seed: int | None = typer.Option(None),
+) -> None:
+    """Build a deterministic same-input manifest for Seed-VC vs Vevo2 FM."""
+
+    _, paths, cfg = _load(name)
+    result = build_vc_evaluation_manifest(
+        paths,
+        cfg,
+        output=output,
+        reference=reference,
+        limit=limit,
+        seed=seed,
+    )
+    _print(result)
+
+
+@app.command("eval-vc")
+def eval_vc_command(
+    name: str,
+    manifest: Path = typer.Option(..., "--manifest", help="Canonical VC evaluation JSONL."),
+    human_review: Path | None = typer.Option(
+        None,
+        "--human-review",
+        help="Completed human_review.json; omit to keep the gate pending.",
+    ),
+) -> None:
+    """Run canonical same-source/same-reference Seed-VC and Vevo2 A/B evaluation."""
+
+    root, paths, cfg = _load(name)
+    result = evaluate_vc(
+        root,
+        paths,
+        cfg,
+        _existing_file(manifest),
+        human_review=human_review,
+    )
+    _print(result)
 
 
 @app.command()

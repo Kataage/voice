@@ -122,6 +122,32 @@ def valid_lfm_infer_result(value: Any) -> bool:
     return isinstance(value, dict) and isinstance(value.get("text"), str)
 
 
+def valid_vevo2_convert_result(value: Any) -> bool:
+    """Validate the explicit FM worker response before publishing an output."""
+
+    if not isinstance(value, dict):
+        return False
+    output = value.get("output")
+    backend = value.get("backend")
+    device = value.get("device")
+    dtype = value.get("dtype")
+    steps = value.get("flow_matching_steps")
+    return (
+        isinstance(output, str)
+        and bool(output)
+        and isinstance(backend, str)
+        and backend in {"cpu", "cu124"}
+        and isinstance(device, str)
+        and device in {"cpu", "cuda"}
+        and ((backend == "cpu" and device == "cpu") or (backend == "cu124" and device == "cuda"))
+        and isinstance(dtype, str)
+        and dtype in {"fp32", "fp16"}
+        and (dtype == "fp32" or device == "cuda")
+        and type(steps) is int
+        and 1 <= steps <= 500
+    )
+
+
 def _valid_batch_rows(rows: Any, validator: ResultValidator) -> bool:
     if not isinstance(rows, list):
         return False
@@ -172,6 +198,12 @@ def validate_worker_response(worker_name: str, command: str, value: Any) -> None
         )
     elif worker_name == "lfm" and command == "infer":
         valid = valid_lfm_infer_result(value)
+    elif worker_name == "vevo2" and command == "convert":
+        valid = valid_vevo2_convert_result(value)
+    elif worker_name == "vevo2":
+        # Health/download responses are still required to be JSON objects. The
+        # convert path above applies the stricter FM output contract.
+        valid = isinstance(value, dict)
     elif worker_name in {"asr", "diarization", "sense", "lfm", "seed_vc"}:
         valid = isinstance(value, dict)
 

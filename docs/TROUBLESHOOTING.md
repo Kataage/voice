@@ -179,6 +179,86 @@ This prevents a requested conditioning method from silently falling back to a di
 
 Seed-VC is an archived upstream with an older dependency stack. It is deliberately isolated under `workers/seed_vc`. Delete only `workers/seed_vc/.venv` and rerun `persona setup --backend auto` to rebuild that environment without touching persona datasets or model assets.
 
+## Vevo2 setup, offline runtime, and license
+
+Vevo2 is the v0.4 selectable FM-only backend. Its source checkout is
+`open-mmlab/Amphion@26f6883110181f1dbfe95c70a7c7dbaf4de5f42a`; its released model is
+`RMSnow/Vevo2@2674843cbaa50aa89ee7ccaf5bb15d6ccf46c6c8`. The source is MIT, while the
+released weights are CC BY-NC-ND 4.0. These are separate terms; MIT source licensing is
+not a commercial-use grant for the weights.
+
+Only the explicit online setup path may materialize Vevo2:
+
+```bash
+uv run --locked persona setup --backend auto
+uv run --locked persona doctor --deep
+```
+
+The first command downloads and hashes the contract-declared FM files and official Whisper
+medium weights. The second command is offline and must not download. If it reports a
+missing/empty file, revision mismatch, checksum mismatch, dirty Amphion checkout, or
+missing `.runtime/vevo2-models-ready`, rerun explicit setup. Do not manually create the
+ready marker and do not allow the worker to use an unpinned mirror. To prepare a machine
+without the heavy Vevo2 view, use `persona setup --skip-vevo2-models`; that machine cannot
+run Vevo2 until setup is run again without the skip flag.
+
+Vevo2 uses its own Python 3.10/Torch 2.4 worker environment. A CUDA setup recorded as
+`cu124` with no visible CUDA device is an error and never falls back to CPU. A requested
+`fp16` CPU run is also an error. `fp32` is the default; do not infer Pascal VRAM fit or
+performance from dependency lock resolution alone.
+
+## Vevo2 vs Seed-VC evaluation is pending
+
+The canonical evaluator needs an authorized prepared persona, a target reference bank,
+and the target machine's materialized model/worker environments. Generate its immutable
+manifest and run both backends as follows:
+
+```bash
+uv run --locked persona eval-vc-manifest alice --limit 200 --seed 20260827
+uv run --locked persona eval-vc alice \
+  --manifest personas/alice/dataset/vc_evaluation_manifest.jsonl
+```
+
+If `dataset/master.json`, target clips, or references are absent, the command stops and
+does not fabricate rows. If a backend or metric fails, the per-sample error stays in
+`report.json`. `report.md` and `human_review.json` are written below
+`outputs/vc-evaluation/<run>/`. The report must contain Japanese CER, speaker similarity,
+duration/prosody/timing, voiced/unvoiced, pause, non-verbal event bucket metrics, and
+human review before a default decision is possible. Fewer than 100 clips, missing
+normal/mixed/nonverbal buckets, or an incomplete human review remains
+`pending target-machine validation`. Until Issue #30 records a completed gate, keep
+`vc_backend: seed-vc-v2`.
+
+## GTX 1080 Ti / Pascal smoke test
+
+Hosted CI does not prove this target-machine validation. On the target machine, from the
+fresh GitHub checkout:
+
+```bash
+nvidia-smi --query-gpu=name,uuid,compute_cap,memory.total,driver_version --format=csv
+echo "$CUDA_VISIBLE_DEVICES"
+uv run --locked persona setup --backend auto
+uv run --locked persona doctor --deep
+```
+
+Confirm `.runtime/setup.json` has the intended GPU UUID and `worker_backends.vevo2` value,
+then run one short authorized FP32 conversion and record peak VRAM, wall time, output
+validity, reported device, and dtype:
+
+```bash
+uv run --locked persona reenact alice \
+  personas/alice/dataset/clips/<short-clip>.flac \
+  --ref personas/alice/references/<target-reference>.flac \
+  --backend vevo2-fm
+```
+
+Repeat for speech, laughter/breath or mixed speech, and nonverbal-only samples before
+running the full A/B manifest. Only after measured FP32 success should `fp16` be tried;
+an OOM, unsupported kernel, or dtype error is recorded as failed validation. No silent
+dtype or device fallback is permitted. GPU replacement, driver update, or a
+`CUDA_VISIBLE_DEVICES` change selecting another physical device requires setup/preflight
+again.
+
 ## API refuses non-loopback binding
 
 PersonaVoice has no network authentication and refuses non-loopback binding by default. For a trusted network only:

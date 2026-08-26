@@ -21,9 +21,11 @@ workers/diarization  pyannote.audio Community-1
 workers/sense        SenseVoiceSmall
 workers/lfm          Transformers + TRL + PEFT
 workers/seed_vc      Seed-VC compatible Python 3.10 stack
+workers/vevo2        Vevo2 FM-only / Python 3.10 / isolated Torch 2.4 stack
 
 vendor/Irodori-TTS   pinned upstream, own uv env
 vendor/seed-vc       pinned archived upstream source
+vendor/Amphion       pinned upstream Vevo2 source
 ```
 
 Worker calls use JSON files in `.runtime/requests/`. Root launches them via `uv run --project ... --no-sync`, so a worker can pin a different Torch version without affecting the others. Setup時に選択したIrodori/worker backendは`.runtime/setup.json`へ記録され、`doctor --deep`が期待backendと実際のCUDA可視性を照合します。
@@ -43,6 +45,11 @@ Irodori/Seed-VCのgit revisionはコード上で固定されます。`doctor`は
 - `lfm_train.jsonl`
 - `seed_vc/audio/`
 - `references/`
+
+`vc_evaluation_manifest.jsonl` is a separate, immutable evaluation view over the prepared
+master data. It contains only target clips, one target reference per row, source/reference
+SHA256 values, Japanese text, and normalized non-verbal bucket/event labels. It never
+re-runs or modifies Prepare.
 
 ## Prepare cache policy
 
@@ -69,6 +76,9 @@ SenseVoiceSmall is used acoustically, not from transcript sentiment. It provides
 - Irodori: 新規personaは`method: full`。portable full artifactはmodel、tokenizer、configとprovenance/checksumを含む。`lora`はPEFT adapter、`speaker-inversion`はspeaker embeddingを生成し、LoRA/fullへ`auxiliary_speaker_inversion`を併用できる。
 - LFM: 新規personaは`method: full`。TRL SFTのfull artifactはmodel/tokenizer/config、`lora`はq/k/v/output attention projectionのPEFT adapterを生成する。CPUはfp32、CUDAはbf16対応時bf16/それ以外fp16でロードする。
 - Seed-VC: zero-shot V2 is default; CFM fine-tuning is opt-in because upstream is archived and FT can trade WER for similarity. Fine-tuning is blocked when the isolated Seed-VC worker cannot see CUDA.
+- Vevo2: zero-shot FM-only style-preserved VC is selectable in v0.4. The worker uses
+  source audio plus target reference and does not expose AR+FM, TTS, SVS, editing, or
+  fine-tuning routes.
 
 学習はまずexecutor非依存・machine path非依存のimmutable `TrainingPlan`を作ります。dataset/model revision/family trainer hash、family methodとoptimization設定、checkpoint policyに加え、local/Modalが共有するrunner/bundle/Modal appの`executor_contract` hashを含みます。remote deploymentが古いshared runnerなら実行前に拒否します。一方、`executor_contract`、`executor`、remote consent、credential、local hardware、quality thresholdはfamily optimization fingerprintへ含めないため、runnerの安全修正やrouting/公開policyだけの変更では、family markerを新planへ再attestして実checkpointを再利用できます。同じplanのcanonical JSON bytesをlocal/Modalへ渡すため、routing変更でprepare、Irodori latent、または互換checkpointを無効化しません。quality threshold変更もoptimizer checkpointを捨てず、candidateの再評価・公開判断だけを更新します。
 
@@ -97,16 +107,32 @@ LFM publication gateは固定promptをcandidate full/LoRAと監査済みbase mod
 ## Inference modes
 
 - `say`: text -> Irodori
-- `reenact`: source audio -> Seed-VC style conversion -> target voice
+- `reenact`: source audio -> selected Seed-VC or Vevo2 FM conversion -> target voice
 - `repeat`: source audio -> ASR/SenseVoice -> Irodori
 - `chat`: user text -> LFM structured voice plan -> Irodori
 
 公開済みIrodori full checkpointでは、`reference_mode: auto`は外部referenceを自動付加せず`--no-ref`を選びます。明示的なaudio referenceまたは`reference_mode: audio|speaker-embed`は引き続き利用でき、LoRA/Speaker Inversionの既存conditioning規則も維持します。
 
-Irodori/Seed-VCはsubprocess終了コードだけでなく生成WAVの実在と最低限のサイズも検証します。LFM structured outputがJSONとして壊れた場合はplain-text + neutral voice metadataへ安全にフォールバックします。
+Irodori/Seed-VC/Vevo2はsubprocess終了コードだけでなく生成WAVの実在と最低限のサイズも検証します。LFM structured outputがJSONとして壊れた場合はplain-text + neutral voice metadataへ安全にフォールバックします。Vevo2のbackend、dtype、CUDA可視性はsetup stateに固定され、unsupported device/dtypeは別経路へ黙ってretryしません。
 
 ## Offline behavior
 
-After `persona setup`, root passes `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` to workers. Model snapshots are materialized under `models/`. Seed-VC keeps its upstream-downloaded checkpoints inside ignored local vendor storage.
+After `persona setup`, root passes `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` to workers. Model snapshots are materialized under `models/`. Seed-VC keeps its upstream-downloaded checkpoints inside ignored local vendor storage; Vevo2 uses the explicit contract under `models/vevo2/assets/` and a contract-digest readiness marker.
 
-`persona doctor --deep`はASR、diarization、SenseVoice、LFM、Seed-VCのlocal model loadに加え、Irodoriをofflineで短時間synthesisして実際のdecode pathまで検証します。さらにlockfile、setup state、vendor revision/cleanlinessをready条件に含めます。
+`persona doctor --deep`はASR、diarization、SenseVoice、LFM、Seed-VC、Vevo2のlocal model loadに加え、Irodoriをofflineで短時間synthesisして実際のdecode pathまで検証します。さらにlockfile、setup state、vendor revision/cleanlinessをready条件に含めます。Vevo2の実VRAM/performanceや日本語音質はdoctorの代替ではなく、target-machine A/B gateで検証します。
+
+## Canonical VC A/B evaluation
+
+`personavoice.vc_evaluation` is a root-only, dependency-light runner. It materializes a
+deterministic manifest from `dataset/master.json`, then calls the same `reenact()` API
+for `seed-vc-v2` and `vevo2-fm` with identical source/reference paths per sample. Signal
+metrics are computed locally; Japanese CER/WER, speaker embeddings, and non-verbal event
+labels come from the already pinned worker contracts. Each backend gets its own output
+directory and every input/output is hashed in the JSON report.
+
+The report is deliberately fail-closed. Missing audio, worker errors, failed samples,
+missing metric values, absent event buckets, fewer than 100 clips, and incomplete human
+listening keep the status at `pending target-machine validation` or `failed`. The report
+does not edit `persona.yaml`; only a separately reviewed result can justify changing the
+default, and no result generated in hosted CI is treated as target-machine acoustic
+evidence.

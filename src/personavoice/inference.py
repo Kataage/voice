@@ -43,6 +43,8 @@ STYLE_PRESETS = {
     "surprised": "驚いて一瞬息を呑むように",
 }
 
+VC_BACKENDS = ("seed-vc-v2", "vevo2-fm")
+
 
 def _ensure_authorized(cfg: PersonaConfig) -> None:
     if not cfg.consent.authorized:
@@ -582,38 +584,76 @@ def reenact(
     *,
     ref: str | Path | None = None,
     transfer_style: bool = True,
+    backend: str | None = None,
+    output_dir: Path | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Path:
     _ensure_authorized(cfg)
     if not _nonempty_file(source):
         raise FileNotFoundError(f"Source audio is missing or empty: {source}")
-    output_dir = paths.outputs / "reenact" / _stamp()
-    cfm = paths.models / "seed_vc" / "cfm.pth"
+    selected_backend = cfg.vc_backend if backend is None else backend
+    if selected_backend not in VC_BACKENDS:
+        raise ValueError(
+            f"Unsupported VC backend {selected_backend!r}; choose one of {', '.join(VC_BACKENDS)}"
+        )
+    output_dir = output_dir or (paths.outputs / "reenact" / _stamp())
     target = resolve_reference(paths, ref)[0] if ref is not None else _best_reference(paths)
-    result = worker(repo_root, "seed_vc").call(
-        repo_root,
-        "convert",
-        {
-            "source": str(source.resolve()),
-            "target": str(target.resolve()),
-            "output_dir": str(output_dir.resolve()),
-            "diffusion_steps": cfg.inference.seed_vc_diffusion_steps,
-            "similarity_cfg_rate": cfg.inference.seed_vc_similarity_cfg,
-            "intelligibility_cfg_rate": cfg.inference.seed_vc_intelligibility_cfg,
-            "convert_style": transfer_style,
-            "cfm_checkpoint": str(cfm.resolve()) if _nonempty_file(cfm) else None,
-        },
-    )
+    if selected_backend == "seed-vc-v2":
+        cfm = paths.models / "seed_vc" / "cfm.pth"
+        result = worker(repo_root, "seed_vc").call(
+            repo_root,
+            "convert",
+            {
+                "source": str(source.resolve()),
+                "target": str(target.resolve()),
+                "output_dir": str(output_dir.resolve()),
+                "diffusion_steps": cfg.inference.seed_vc_diffusion_steps,
+                "similarity_cfg_rate": cfg.inference.seed_vc_similarity_cfg,
+                "intelligibility_cfg_rate": cfg.inference.seed_vc_intelligibility_cfg,
+                "convert_style": transfer_style,
+                "cfm_checkpoint": str(cfm.resolve()) if _nonempty_file(cfm) else None,
+            },
+        )
+    else:
+        result = worker(repo_root, "vevo2").call(
+            repo_root,
+            "convert",
+            {
+                "source": str(source.resolve()),
+                "target": str(target.resolve()),
+                "output_dir": str(output_dir.resolve()),
+                "flow_matching_steps": cfg.inference.vevo2_flow_matching_steps,
+                "use_pitch_shift": cfg.inference.vevo2_use_pitch_shift,
+                "dtype": cfg.inference.vevo2_dtype,
+            },
+        )
     output = Path(result["output"])
     try:
         valid = output.is_file() and output.stat().st_size > 44
     except OSError:
         valid = False
     if not valid:
-        raise RuntimeError(f"Seed-VC returned an invalid output: {output}")
+        raise RuntimeError(f"{selected_backend} returned an invalid output: {output}")
+    if metadata is not None:
+        metadata.update(
+            {
+                "backend": selected_backend,
+                "source": str(source.resolve()),
+                "reference": str(target.resolve()),
+                "worker_result": result,
+            }
+        )
     return output
 
 
-def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Path) -> list[Path]:
+def repeat(
+    repo_root: Path,
+    paths: PersonaPaths,
+    cfg: PersonaConfig,
+    source: Path,
+    *,
+    backend: str | None = None,
+) -> list[Path]:
     _ensure_authorized(cfg)
     if not _nonempty_file(source):
         raise FileNotFoundError(f"Source audio is missing or empty: {source}")
@@ -637,7 +677,16 @@ def repeat(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig, source: Pat
     )
     if not text:
         if sense.get("events"):
-            return [reenact(repo_root, paths, cfg, source, transfer_style=True)]
+            return [
+                reenact(
+                    repo_root,
+                    paths,
+                    cfg,
+                    source,
+                    transfer_style=True,
+                    backend=backend,
+                )
+            ]
         raise RuntimeError(
             "No speech or supported non-verbal event could be detected in the source audio"
         )

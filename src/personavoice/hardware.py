@@ -223,6 +223,17 @@ def seed_vc_cuda_supported(gpu: GpuInfo) -> bool:
     )
 
 
+def vevo2_cuda_supported(gpu: GpuInfo) -> bool:
+    """Whether the isolated Vevo2 Torch 2.4/cu124 worker may expose CUDA.
+
+    This is intentionally an architecture/runtime-wheel policy only. It does
+    not certify that the Vevo2 FM weights fit in a particular amount of VRAM;
+    the real model load and conversion remain explicit target-machine gates.
+    """
+
+    return seed_vc_cuda_supported(gpu)
+
+
 def cuda_backend_for_gpu(gpu: GpuInfo) -> str:
     """Return the safest audited PyTorch CUDA wheel family for one NVIDIA GPU."""
 

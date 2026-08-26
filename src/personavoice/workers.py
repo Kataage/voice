@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from personavoice.environment_contract import require_current_environment
-from personavoice.model_assets import SEED_VC_SOURCE_REVISION
+from personavoice.model_assets import SEED_VC_SOURCE_REVISION, VEVO2_SOURCE_REVISION
 from personavoice.process import run, run_json
 from personavoice.runtime_dependencies import ffmpeg_environment
 from personavoice.worker_contracts import validate_worker_response
@@ -39,6 +39,31 @@ def _require_seed_vc_vendor_integrity(repo_root: Path) -> Path:
     return path
 
 
+def _require_vevo2_vendor_integrity(repo_root: Path) -> Path:
+    """Fail closed before a Vevo2 worker can import mutable upstream code."""
+
+    path = repo_root / "vendor" / "Amphion"
+    entrypoint = path / "models" / "svc" / "vevo2" / "vevo2_utils.py"
+    if not entrypoint.is_file() or not (path / ".git").exists():
+        raise FileNotFoundError("Amphion/Vevo2 is not installed. Run `persona setup` first.")
+    try:
+        head = run(["git", "rev-parse", "HEAD"], cwd=path, capture=True).stdout.strip()
+        status = run(["git", "status", "--porcelain"], cwd=path, capture=True).stdout.strip()
+    except Exception as exc:
+        raise RuntimeError("Vevo2 source checkout integrity could not be verified") from exc
+    if head != VEVO2_SOURCE_REVISION:
+        raise RuntimeError(
+            f"Vevo2 source HEAD mismatch: expected {VEVO2_SOURCE_REVISION}, got {head}. "
+            "Run `persona setup` to restore the audited checkout."
+        )
+    if status:
+        raise RuntimeError(
+            "Vevo2 source checkout has local modifications or untracked files. "
+            "Restore the audited checkout and run `persona setup` before model work."
+        )
+    return path
+
+
 def _asr_device_environment(setup: dict[str, Any]) -> dict[str, str]:
     """Keep ASR on CPU when setup selected a non-NVIDIA backend.
 
@@ -50,6 +75,21 @@ def _asr_device_environment(setup: dict[str, Any]) -> dict[str, str]:
     if setup.get("irodori_backend") in {"cu126", "cu128"}:
         return {}
     return {"CUDA_VISIBLE_DEVICES": ""}
+
+
+def _vevo2_device_environment(setup: dict[str, Any]) -> dict[str, str]:
+    """Honor the setup-recorded Vevo2 device without implicit CUDA fallback."""
+
+    backends = setup.get("worker_backends")
+    backend = backends.get("vevo2") if isinstance(backends, dict) else None
+    if backend == "cpu":
+        return {"CUDA_VISIBLE_DEVICES": ""}
+    if backend == "cu124":
+        return {}
+    raise RuntimeError(
+        f"Vevo2 worker backend is not explicitly configured as cpu/cu124: {backend!r}. "
+        "Run `persona setup --backend auto`."
+    )
 
 
 @dataclass(frozen=True)
@@ -72,6 +112,8 @@ class Worker:
         setup = require_current_environment(repo_root, worker_name=self.name)
         if self.name == "seed_vc":
             _require_seed_vc_vendor_integrity(repo_root)
+        elif self.name == "vevo2":
+            _require_vevo2_vendor_integrity(repo_root)
 
         request_dir = repo_root / ".runtime" / "requests"
         request_dir.mkdir(parents=True, exist_ok=True)
@@ -81,6 +123,8 @@ class Worker:
             env = local_model_env(repo_root, offline=offline)
             if self.name == "asr":
                 env.update(_asr_device_environment(setup))
+            elif self.name == "vevo2":
+                env.update(_vevo2_device_environment(setup))
             result = run_json(
                 [
                     "uv",

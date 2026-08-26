@@ -37,15 +37,21 @@ from personavoice.model_assets import (
     SENSE_MODEL_CMVN_SHA256,
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
+    VEVO2_MODEL_ID,
+    VEVO2_MODEL_LICENSE,
+    VEVO2_MODEL_REVISION,
+    VEVO2_SOURCE_LICENSE,
+    VEVO2_SOURCE_REVISION,
 )
 from personavoice.process import run
 from personavoice.runtime_dependencies import ffmpeg_runtime
 from personavoice.seed_vc_assets import materialization_status as seed_vc_materialization_status
 from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_REVISION
 from personavoice.training_plan import FamilyPlan, TrainingPlan
+from personavoice.vevo2_assets import materialization_status as vevo2_materialization_status
 from personavoice.workers import local_model_env, worker
 
-WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
+WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc", "vevo2")
 _LFM_REQUIRED_FILES = LFM_MODEL_REQUIRED_FILES
 _ASR_REQUIRED_FILES = (
     "config.json",
@@ -301,6 +307,8 @@ def _model_asset_integrity(
     deep: bool,
     require_seed_vc: bool,
     seed_vc_status: dict,
+    require_vevo2: bool,
+    vevo2_status: dict,
 ) -> dict:
     expected_setup = {
         "irodori_model_sha256": IRODORI_MODEL_SHA256,
@@ -312,6 +320,12 @@ def _model_asset_integrity(
         "asr_revision": ASR_MODEL_REVISION,
         "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
         "seed_vc_asset_contract_sha256": seed_vc_status.get("contract_sha256"),
+        "vevo2_source_revision": VEVO2_SOURCE_REVISION,
+        "vevo2_model_id": VEVO2_MODEL_ID,
+        "vevo2_model_revision": VEVO2_MODEL_REVISION,
+        "vevo2_asset_contract_sha256": vevo2_status.get("contract_sha256"),
+        "vevo2_source_license": VEVO2_SOURCE_LICENSE,
+        "vevo2_model_license": VEVO2_MODEL_LICENSE,
     }
     expected_prepare = {
         "pyannote_revision": PYANNOTE_MODEL_REVISION,
@@ -346,6 +360,7 @@ def _model_asset_integrity(
         "pyannote_revision": pyannote_revision,
         "sense_verified_marker": sense_marker,
         "seed_vc": seed_vc_status,
+        "vevo2": vevo2_status,
         "irodori_sha256": None,
         "dacvae_sha256": None,
         "lfm_asset_sha256": None,
@@ -371,6 +386,12 @@ def _model_asset_integrity(
             errors.extend(f"Seed-VC: {value}" for value in seed_errors)
         else:
             errors.append("Seed-VC pinned assets are incomplete or stale")
+    if require_vevo2 and not bool(vevo2_status.get("ok")):
+        vevo_errors = vevo2_status.get("errors")
+        if isinstance(vevo_errors, list) and vevo_errors:
+            errors.extend(f"Vevo2: {value}" for value in vevo_errors)
+        else:
+            errors.append("Vevo2 pinned assets are incomplete or stale")
 
     if deep and _nonempty_file(irodori) and _nonempty_file(dacvae):
         try:
@@ -474,6 +495,7 @@ def report(
     *,
     deep: bool = False,
     require_seed_vc: bool = True,
+    require_vevo2: bool = False,
 ) -> dict:
     ffmpeg_status = ffmpeg_runtime()
     required = {
@@ -489,6 +511,7 @@ def report(
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
     sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
     seed_vc_status = seed_vc_materialization_status(repo_root, verify_hashes=deep)
+    vevo2_status = vevo2_materialization_status(repo_root, verify_hashes=deep)
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
@@ -498,11 +521,20 @@ def report(
         "sense": all(_nonempty_file(sense_dir / name) for name in _SENSE_REQUIRED_FILES)
         and _read_revision(runtime / "sense-model-ready") == "verified",
         "seed_vc_models": bool(seed_vc_status.get("ok")),
+        "vevo2_models": bool(vevo2_status.get("ok")),
         "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
+        "vevo2_vendor": _nonempty_file(
+            repo_root / "vendor/Amphion/models/svc/vevo2/vevo2_utils.py"
+        ),
         "irodori_vendor": _nonempty_file(repo_root / "vendor/Irodori-TTS/infer.py"),
     }
     workers = {name: (repo_root / "workers" / name / ".venv").is_dir() for name in WORKER_NAMES}
-    active_workers = tuple(name for name in WORKER_NAMES if require_seed_vc or name != "seed_vc")
+    active_workers = tuple(
+        name
+        for name in WORKER_NAMES
+        if (require_seed_vc or name != "seed_vc")
+        and (require_vevo2 or name != "vevo2")
+    )
     setup = _setup_state(repo_root)
     environment = environment_contract_status(repo_root, setup.get("environment_contract"))
     runtime_hardware = runtime_hardware_status(setup)
@@ -511,16 +543,24 @@ def report(
         if require_seed_vc
         else {"ok": True, "skipped": True, "reason": "Seed-VC is not required"}
     )
+    vevo2_runtime_hardware = (
+        runtime_hardware_status(setup, worker_name="vevo2")
+        if require_vevo2
+        else {"ok": True, "skipped": True, "reason": "Vevo2 is not required"}
+    )
     model_assets = _model_asset_integrity(
         repo_root,
         setup,
         deep=deep,
         require_seed_vc=require_seed_vc,
         seed_vc_status=seed_vc_status,
+        require_vevo2=require_vevo2,
+        vevo2_status=vevo2_status,
     )
     vendor_integrity = {
         "irodori": _vendor_integrity(repo_root, "Irodori-TTS", IRODORI_REVISION),
         "seed_vc": _vendor_integrity(repo_root, "seed-vc", SEED_VC_REVISION),
+        "vevo2": _vendor_integrity(repo_root, "Amphion", VEVO2_SOURCE_REVISION),
     }
     worker_health: dict[str, dict] = {}
     if deep:
@@ -584,6 +624,10 @@ def report(
         required_model_keys.update({"seed_vc_models", "seed_vc_vendor"})
         required_vendor_keys.add("seed_vc")
         required_lock_keys.add("seed_vc")
+    if require_vevo2:
+        required_model_keys.update({"vevo2_models", "vevo2_vendor"})
+        required_vendor_keys.add("vevo2")
+        required_lock_keys.add("vevo2")
 
     locks_ready = all(lockfiles[key] for key in required_lock_keys)
     vendors_ready = all(vendor_integrity[key].get("ok") for key in required_vendor_keys)
@@ -593,6 +637,7 @@ def report(
         and bool(environment.get("ok"))
         and bool(runtime_hardware.get("ok"))
         and bool(seed_vc_runtime_hardware.get("ok"))
+        and bool(vevo2_runtime_hardware.get("ok"))
     )
     base_ready = (
         commands_ok
@@ -615,6 +660,7 @@ def report(
         "environment_contract": environment,
         "runtime_hardware": runtime_hardware,
         "seed_vc_runtime_hardware": seed_vc_runtime_hardware,
+        "vevo2_runtime_hardware": vevo2_runtime_hardware,
         "models": models,
         "model_asset_integrity": model_assets,
         "workers": workers,
@@ -624,6 +670,7 @@ def report(
         "reproducible_environment": reproducible,
         "ready_offline": base_ready and deep_ready,
         "seed_vc_required": require_seed_vc,
+        "vevo2_required": require_vevo2,
         "local_training_preflight": local_training_preflight,
         "modal": modal,
     }

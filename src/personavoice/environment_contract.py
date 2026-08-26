@@ -10,11 +10,12 @@ from personavoice.hardware import (
     cuda_backend_for_gpu,
     seed_vc_cuda_supported,
     selected_nvidia_gpu,
+    vevo2_cuda_supported,
 )
 from personavoice.runtime_dependencies import ffmpeg_provenance_status
 
-WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc")
-ENVIRONMENT_CONTRACT_SCHEMA = 6
+WORKER_NAMES = ("asr", "diarization", "sense", "lfm", "seed_vc", "vevo2")
+ENVIRONMENT_CONTRACT_SCHEMA = 7
 SETUP_TRANSACTION_MARKER = "setup-in-progress.json"
 
 
@@ -62,6 +63,9 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
         "seed_vc": {
             "asset_contract_sha256": _sha256(repo_root / "config" / "seed_vc_assets.json"),
         },
+        "vevo2": {
+            "asset_contract_sha256": _sha256(repo_root / "config" / "vevo2_assets.json"),
+        },
         "runtime_policy": {
             "environment_contract_sha256": _sha256(
                 repo_root / "src" / "personavoice" / "environment_contract.py"
@@ -84,6 +88,10 @@ def environment_contract(repo_root: Path) -> dict[str, Any]:
                 repo_root / "src" / "personavoice" / "cuda_preflight.py"
             ),
             "workers_sha256": _sha256(repo_root / "src" / "personavoice" / "workers.py"),
+            "vevo2_assets_sha256": _sha256(
+                repo_root / "src" / "personavoice" / "vevo2_assets.py"
+            ),
+            "vevo2_worker_sha256": _sha256(repo_root / "workers" / "vevo2" / "worker.py"),
             "asr_runtime_policy_sha256": _sha256(
                 repo_root / "workers" / "asr" / "runtime_policy.py"
             ),
@@ -146,10 +154,10 @@ def runtime_hardware_status(
     `persona setup --backend auto` reuses/rebuilds the appropriate environments
     and repeats that preflight.
 
-    Seed-VC is checked separately because its audited Torch 2.4/cu124 stack has
-    a different architecture envelope from the Torch 2.10 cu126/cu128 workers.
-    This matters on hardware such as Blackwell: the main cu128 workers can remain
-    valid while Seed-VC is intentionally synchronized as CPU.
+    Seed-VC and Vevo2 are checked separately because their audited Torch
+    2.4/cu124 stacks have a different architecture envelope from the Torch 2.10
+    cu126/cu128 workers. This matters on hardware such as Blackwell: the main
+    cu128 workers can remain valid while either isolated worker is CPU-only.
     """
 
     value = setup if isinstance(setup, dict) else {}
@@ -158,17 +166,21 @@ def runtime_hardware_status(
     if not isinstance(worker_backends, dict):
         worker_backends = {}
     seed_vc_backend = worker_backends.get("seed_vc")
+    vevo2_backend = worker_backends.get("vevo2")
 
     main_cuda = backend in {"cu126", "cu128"}
     seed_cuda = worker_name == "seed_vc" and seed_vc_backend == "cu124"
-    if not main_cuda and not seed_cuda:
+    vevo2_cuda = worker_name == "vevo2" and vevo2_backend == "cu124"
+    if not main_cuda and not seed_cuda and not vevo2_cuda:
         return {
             "ok": True,
             "backend": backend,
             "seed_vc_backend": seed_vc_backend,
+            "vevo2_backend": vevo2_backend,
             "selected_gpu": None,
             "preferred_backend": None,
             "preferred_seed_vc_backend": "cpu",
+            "preferred_vevo2_backend": "cpu",
             "error": None,
         }
 
@@ -179,6 +191,7 @@ def runtime_hardware_status(
             for item in (
                 backend if main_cuda else None,
                 seed_vc_backend if seed_cuda else None,
+                vevo2_backend if vevo2_cuda else None,
             )
             if item
         ]
@@ -186,9 +199,11 @@ def runtime_hardware_status(
             "ok": False,
             "backend": backend,
             "seed_vc_backend": seed_vc_backend,
+            "vevo2_backend": vevo2_backend,
             "selected_gpu": None,
             "preferred_backend": "cpu",
             "preferred_seed_vc_backend": "cpu",
+            "preferred_vevo2_backend": "cpu",
             "error": (
                 "PersonaVoice has CUDA environments recorded "
                 f"({', '.join(requested)}), but no NVIDIA GPU is currently exposed as CUDA "
@@ -212,10 +227,14 @@ def runtime_hardware_status(
                 "ok": False,
                 "backend": backend,
                 "seed_vc_backend": seed_vc_backend,
+                "vevo2_backend": vevo2_backend,
                 "selected_gpu": selected,
                 "preferred_backend": cuda_backend_for_gpu(gpu),
                 "preferred_seed_vc_backend": (
                     "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "preferred_vevo2_backend": (
+                    "cu124" if vevo2_cuda_supported(gpu) else "cpu"
                 ),
                 "error": (
                     "The current CUDA setup state has no audited GPU provenance. "
@@ -235,10 +254,14 @@ def runtime_hardware_status(
                 "ok": False,
                 "backend": backend,
                 "seed_vc_backend": seed_vc_backend,
+                "vevo2_backend": vevo2_backend,
                 "selected_gpu": selected,
                 "preferred_backend": cuda_backend_for_gpu(gpu),
                 "preferred_seed_vc_backend": (
                     "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "preferred_vevo2_backend": (
+                    "cu124" if vevo2_cuda_supported(gpu) else "cpu"
                 ),
                 "error": (
                     "The physical CUDA GPU selected as device 0 changed after setup. "
@@ -259,10 +282,14 @@ def runtime_hardware_status(
                 "ok": False,
                 "backend": backend,
                 "seed_vc_backend": seed_vc_backend,
+                "vevo2_backend": vevo2_backend,
                 "selected_gpu": selected,
                 "preferred_backend": cuda_backend_for_gpu(gpu),
                 "preferred_seed_vc_backend": (
                     "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "preferred_vevo2_backend": (
+                    "cu124" if vevo2_cuda_supported(gpu) else "cpu"
                 ),
                 "error": (
                     "The selected NVIDIA GPU compute capability changed after the CUDA "
@@ -283,10 +310,14 @@ def runtime_hardware_status(
                 "ok": False,
                 "backend": backend,
                 "seed_vc_backend": seed_vc_backend,
+                "vevo2_backend": vevo2_backend,
                 "selected_gpu": selected,
                 "preferred_backend": cuda_backend_for_gpu(gpu),
                 "preferred_seed_vc_backend": (
                     "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+                ),
+                "preferred_vevo2_backend": (
+                    "cu124" if vevo2_cuda_supported(gpu) else "cpu"
                 ),
                 "error": (
                     "The NVIDIA driver version changed after the CUDA environments were "
@@ -297,15 +328,18 @@ def runtime_hardware_status(
 
     preferred = cuda_backend_for_gpu(gpu)
     preferred_seed = "cu124" if seed_vc_cuda_supported(gpu) else "cpu"
+    preferred_vevo2 = "cu124" if vevo2_cuda_supported(gpu) else "cpu"
 
     if main_cuda and not backend_supports_gpu(str(backend), gpu):
         return {
             "ok": False,
             "backend": backend,
             "seed_vc_backend": seed_vc_backend,
+            "vevo2_backend": vevo2_backend,
             "selected_gpu": selected,
             "preferred_backend": preferred,
             "preferred_seed_vc_backend": preferred_seed,
+            "preferred_vevo2_backend": preferred_vevo2,
             "error": (
                 f"PersonaVoice was set up for {backend}, but the current CUDA-visible GPU "
                 f"{gpu.name} (compute capability {gpu.compute_capability or 'unknown'}) is not "
@@ -319,9 +353,11 @@ def runtime_hardware_status(
             "ok": False,
             "backend": backend,
             "seed_vc_backend": seed_vc_backend,
+            "vevo2_backend": vevo2_backend,
             "selected_gpu": selected,
             "preferred_backend": preferred,
             "preferred_seed_vc_backend": preferred_seed,
+            "preferred_vevo2_backend": preferred_vevo2,
             "error": (
                 f"Seed-VC was set up for {seed_vc_backend}, but the current CUDA-visible GPU "
                 f"{gpu.name} (compute capability {gpu.compute_capability or 'unknown'}) is not "
@@ -331,13 +367,33 @@ def runtime_hardware_status(
             ),
         }
 
+    if vevo2_cuda and not vevo2_cuda_supported(gpu):
+        return {
+            "ok": False,
+            "backend": backend,
+            "seed_vc_backend": seed_vc_backend,
+            "vevo2_backend": vevo2_backend,
+            "selected_gpu": selected,
+            "preferred_backend": preferred,
+            "preferred_seed_vc_backend": preferred_seed,
+            "preferred_vevo2_backend": preferred_vevo2,
+            "error": (
+                f"Vevo2 was set up for {vevo2_backend}, but the current CUDA-visible GPU "
+                f"{gpu.name} (compute capability {gpu.compute_capability or 'unknown'}) is not "
+                "supported by the audited Torch 2.4/cu124 Vevo2 worker. Run `persona setup "
+                "--backend auto` to rebuild the required worker environment safely."
+            ),
+        }
+
     return {
         "ok": True,
         "backend": backend,
         "seed_vc_backend": seed_vc_backend,
+        "vevo2_backend": vevo2_backend,
         "selected_gpu": selected,
         "preferred_backend": preferred,
         "preferred_seed_vc_backend": preferred_seed,
+        "preferred_vevo2_backend": preferred_vevo2,
         "error": None,
     }
 

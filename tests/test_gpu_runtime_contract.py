@@ -154,6 +154,7 @@ def test_setup_state_records_gpu_provenance(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr(setup_env, "ensure_ffmpeg_runtime", lambda _root: None)
     monkeypatch.setattr(setup_env, "_validate_cuda_backend", lambda _backend: gpu)
     monkeypatch.setattr(setup_env, "seed_vc_contract_digest", lambda _root: "0" * 64)
+    monkeypatch.setattr(setup_env, "vevo2_contract_digest", lambda _root: "1" * 64)
     monkeypatch.setattr(
         setup_env,
         "run_cuda_preflight",

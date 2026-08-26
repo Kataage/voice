@@ -24,6 +24,8 @@ uv run --locked persona ui
 - Irodori-TTS v4.1 Small: full fine-tuning（既定）+ LoRA + Speaker Inversion
 - LFM2.5-1.2B-JP-202606: full fine-tuning（既定）+ LoRA + 発話スタイル計画
 - Seed-VC v2: 入力音声の間・抑揚・演技を使ったVoice Conversion
+- Vevo2 FM-only: v0.4の選択可能なstyle-preserved VC backend（既定はSeed-VC）
+- Seed-VC/Vevo2の同一source・同一reference canonical Japanese/non-verbal A/B評価
 - `say`, `reenact`, `repeat`, `chat`, Web UI, localhost REST API
 - Irodori境界診断（duration / tail A/B、leading artifactのseed・reference・caption比較）
 - canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidation
@@ -51,7 +53,7 @@ export HF_TOKEN=hf_...
 uv run --locked persona setup --backend auto
 ```
 
-`--backend auto`を推奨します。PersonaVoiceは`CUDA_DEVICE_ORDER=PCI_BUS_ID`と`CUDA_VISIBLE_DEVICES`を考慮して実際のlogical CUDA device 0を特定し、そのGPUのcompute capabilityを監査済みwheel matrixへ照合します。x86_64の現在の固定stackではPascal 6.x / Volta 7.0は`cu126`、Turing以降の監査済み世代は`cu128`、未知・未監査世代や安全に識別できないGPUはCPUへfail-closedします。環境sync後にはIrodori・diarization・Sense・LFM・必要ならSeed-VCの各独立PyTorch環境で**実CUDA tensor/kernel**を実行し、`nvidia-smi`で選択したGPUとworkerが見るdevice 0のcompute capabilityが一致することを、大容量モデル取得前に検証します。ASRはCTranslate2が実際に返すsupported compute typesからCUDA型を選び、実行不能ならauto時だけCPUへ安全にfallbackします。
+`--backend auto`を推奨します。PersonaVoiceは`CUDA_DEVICE_ORDER=PCI_BUS_ID`と`CUDA_VISIBLE_DEVICES`を考慮して実際のlogical CUDA device 0を特定し、そのGPUのcompute capabilityを監査済みwheel matrixへ照合します。x86_64の現在の固定stackではPascal 6.x / Volta 7.0は`cu126`、Turing以降の監査済み世代は`cu128`、未知・未監査世代や安全に識別できないGPUはCPUへfail-closedします。環境sync後にはIrodori・diarization・Sense・LFM・Seed-VC・Vevo2の各独立PyTorch環境で**実CUDA tensor/kernel**を実行し、`nvidia-smi`で選択したGPUとworkerが見るdevice 0のcompute capabilityが一致することを、大容量モデル取得前に検証します。ASRはCTranslate2が実際に返すsupported compute typesからCUDA型を選び、実行不能ならauto時だけCPUへ安全にfallbackします。
 
 CUDA setupでは、setup時にlogical CUDA device 0のGPU UUID・compute capability・NVIDIA driver versionを記録します。GPU交換、`CUDA_VISIBLE_DEVICES`変更によるdevice 0の物理GPU変更、またはdriver更新を検出した場合は、互換wheelであってもdirect runtimeを開始せず`persona setup --backend auto`による**実CUDA kernel preflightの再実行**を要求します。同じlock/backendが引き続き適合する場合は既存環境と検証済みmodel assetを再利用するため、再setupは全モデルの再取得を意味しません。Seed-VCは古いPyTorch 2.4/cu124 stackを隔離しているため、Blackwellなどmain cu128 stackは使えるがSeed-VC cu124だけ非互換な場合は、次回setupでSeed-VCだけCPUへ安全にfallbackします。詳細は`docs/TROUBLESHOOTING.md`を参照してください。
 
@@ -63,6 +65,8 @@ uv run --locked persona doctor --deep
 ```
 
 `doctor --deep`はworkerのモデルロードだけでなく、Irodoriのoffline smoke synthesis、選択したGPU backend、現在GPUとのruntime compatibility、FFmpeg shared runtime、lockfile、Irodori/Seed-VC vendorの固定revisionとclean状態も検証します。通常の推論・`doctor --deep`はローカルにmaterialize済みの固定assetだけを使用します。モデル取得を許可する経路は明示的な`persona setup`です。
+
+Vevo2のsource/model pin、FM-only範囲、ソースコードMITと重みCC BY-NC-ND 4.0のlicense区別、offline runtime、A/B評価、GTX 1080 Ti/Pascal向け実機手順は[`docs/VEVO2.md`](docs/VEVO2.md)を参照してください。Vevo2追加は既存Prepare/ASR/diarization/SenseVoice/Irodori/LFM/Seed-VCの学習成果やoptimizer/checkpointを削除・書換えしません。
 
 ## 人物作成 / 学習
 
@@ -216,10 +220,23 @@ Issue #26のschema-v2 trainingでは、Irodori LoRAもvalidation-loss best check
 ```bash
 uv run --locked persona reenact alice acting.wav
 uv run --locked persona reenact alice acting.wav --timbre-only
+uv run --locked persona reenact alice acting.wav --backend seed-vc-v2
+uv run --locked persona reenact alice acting.wav --backend vevo2-fm
 uv run --locked persona repeat alice input.wav
 ```
 
-`reenact`はsourceの演技/間/抑揚をVoice Conversionで維持し、`repeat`は内容・感情を解析してIrodoriで本人として再演します。文字起こし不能な非言語音だけの場合、`repeat`は`reenact`へフォールバックします。Seed-VC出力はrequestごとの独立directoryに保存され、再実行や同時requestでupstreamの決定的な出力名が衝突しないようにしています。
+`reenact`はsourceの演技/間/抑揚をVoice Conversionで維持し、`repeat`は内容・感情を解析してIrodoriで本人として再演します。VC backendはconfigまたはCLI/API/UIから明示選択できます。文字起こし不能な非言語音だけの場合、`repeat`は選択されたbackendの`reenact`へフォールバックします。Seed-VC/Vevo2出力はrequestごとの独立directoryに保存され、再実行や同時requestでupstreamの決定的な出力名が衝突しないようにしています。
+
+### Vevo2 vs Seed-VC A/B
+
+Prepare済み`dataset/master.json`を使って、同一source・同一target referenceのmanifest、per-sample provenance、機械可読JSON、人間可読Markdownを作成できます。100〜300 clipを推奨し、normal speech、laughter/breath等のmixed speech event、nonverbal-onlyを含めます。データや対象GPUが無い場合は実評価を行ったことにせず、runnerは不足・失敗・未確認をpendingとして記録します。
+
+```bash
+uv run --locked persona eval-vc-manifest alice --limit 200 --seed 20260827
+uv run --locked persona eval-vc alice --manifest personas/alice/dataset/vc_evaluation_manifest.jsonl
+```
+
+Japanese CER、speaker similarity、duration/prosody/timing、voiced/unvoiced、pause、非言語イベント保持、人手試聴をgateに使います。gateが未完了または不合格の間は`vc_backend`をSeed-VCから変更せず、reportの`pending target-machine validation`とIssue #30の記録を根拠にします。
 
 ## 会話
 
@@ -259,6 +276,7 @@ workers/diarization/.venv  pyannote.audio
 workers/sense/.venv        SenseVoiceSmall
 workers/lfm/.venv          Transformers / TRL / PEFT
 workers/seed_vc/.venv      Seed-VC compatible Python 3.10
+workers/vevo2/.venv        Vevo2 FM-only / isolated Python 3.10 Torch 2.4
 vendor/Irodori-TTS/.venv   pinned official Irodori environment
 ```
 

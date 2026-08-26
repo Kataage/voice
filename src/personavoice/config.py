@@ -357,6 +357,34 @@ class InferenceConfig(StrictConfigModel):
     seed_vc_diffusion_steps: int = Field(default=30, ge=1, le=500)
     seed_vc_similarity_cfg: float = Field(default=0.7, ge=0)
     seed_vc_intelligibility_cfg: float = Field(default=0.7, ge=0)
+    # Vevo2's initial supported path is the upstream FM-only,
+    # style-preserved VC pipeline.  The worker selects CPU/CUDA from the
+    # audited setup state; it never silently changes the requested dtype.
+    vevo2_flow_matching_steps: int = Field(default=32, ge=1, le=500)
+    vevo2_use_pitch_shift: bool = False
+    vevo2_dtype: Literal["fp32", "fp16"] = "fp32"
+
+
+class VCEvaluationConfig(StrictConfigModel):
+    """Canonical Seed-VC/Vevo2 comparison policy.
+
+    ``sample_count`` is intentionally allowed below the recommended 100 clip
+    target so a small prepared persona can produce a useful dry report. The
+    report marks that run as underpowered; it never turns a small run into a
+    quality acceptance.
+    """
+
+    schema_version: Literal[1] = 1
+    sample_count: int = Field(default=200, ge=1, le=300)
+    seed: int = 20260827
+    max_cer_regression: float = Field(default=0.05, ge=0, le=1)
+    max_speaker_similarity_regression: float = Field(default=0.03, ge=0, le=1)
+    max_duration_ratio_error_regression: float = Field(default=0.05, ge=0, le=1)
+    max_f0_correlation_regression: float = Field(default=0.10, ge=0, le=1)
+    max_voiced_unvoiced_f1_regression: float = Field(default=0.05, ge=0, le=1)
+    max_pause_ratio_error_regression: float = Field(default=0.05, ge=0, le=1)
+    max_nonverbal_event_regression: float = Field(default=0.05, ge=0, le=1)
+    require_human_review: bool = True
 
 
 class PersonaConfig(StrictConfigModel):
@@ -366,8 +394,11 @@ class PersonaConfig(StrictConfigModel):
     prepare: PrepareConfig = Field(default_factory=PrepareConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
+    vc_evaluation: VCEvaluationConfig = Field(default_factory=VCEvaluationConfig)
     tts_backend: Literal["irodori-v4.1-small"] = "irodori-v4.1-small"
-    vc_backend: Literal["seed-vc-v2"] = "seed-vc-v2"
+    # Seed-VC remains the default until a completed Japanese/non-verbal gate
+    # proves that Vevo2 is at least as safe for this persona.
+    vc_backend: Literal["seed-vc-v2", "vevo2-fm"] = "seed-vc-v2"
     brain_backend: Literal["lfm2.5-1.2b-jp-202606"] = "lfm2.5-1.2b-jp-202606"
 
     @model_validator(mode="after")

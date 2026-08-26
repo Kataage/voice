@@ -14,6 +14,7 @@ from personavoice.worker_contracts import (
     valid_diarization_result,
     valid_embedding_result,
     valid_sense_result,
+    valid_vevo2_convert_result,
     validate_worker_response,
 )
 
@@ -97,6 +98,29 @@ def test_worker_batch_contract_rejects_invalid_success_payload():
         "batch_transcribe",
         {"results": [{"id": "source", "ok": True, "result": _valid_asr()}]},
     )
+
+
+def test_vevo2_convert_contract_is_explicit_and_fail_closed():
+    valid = {
+        "ok": True,
+        "output": "outputs/vc-evaluation/vevo2-fm/result.wav",
+        "backend": "cu124",
+        "device": "cuda",
+        "dtype": "fp32",
+        "flow_matching_steps": 32,
+    }
+    assert valid_vevo2_convert_result(valid)
+    validate_worker_response("vevo2", "convert", valid)
+    assert not valid_vevo2_convert_result({**valid, "flow_matching_steps": 0})
+    assert not valid_vevo2_convert_result({**valid, "backend": "cpu", "device": "cuda"})
+    with pytest.raises(RuntimeError, match="invalid response schema"):
+        validate_worker_response("vevo2", "convert", {"output": "fake.wav"})
+
+
+def test_vevo2_non_convert_responses_must_remain_objects():
+    validate_worker_response("vevo2", "health", {"ok": True})
+    with pytest.raises(RuntimeError, match="invalid response schema"):
+        validate_worker_response("vevo2", "health", [])
 
 
 def test_worker_batch_contract_rejects_duplicate_ids_and_invalid_error_rows():
