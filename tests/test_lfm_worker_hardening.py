@@ -109,6 +109,69 @@ def test_lfm_adapter_requires_nonempty_config_weight_and_revision(tmp_path: Path
     worker.verify_adapter(adapter)
 
 
+def test_lfm_infer_passes_batch_encoding_as_keyword_inputs(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    calls: dict[str, object] = {}
+
+    class FakeTensor:
+        shape = (1, 3)
+
+    class FakeBatchEncoding(dict):
+        def to(self, device):
+            assert device == "cpu"
+            return self
+
+    class FakeOutput:
+        def __getitem__(self, key):
+            assert key == (0, slice(3, None))
+            return [99]
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            assert messages == [{"role": "user", "content": "test"}]
+            assert kwargs == {
+                "add_generation_prompt": True,
+                "tokenize": True,
+                "return_tensors": "pt",
+                "return_dict": True,
+            }
+            return FakeBatchEncoding(
+                input_ids=FakeTensor(),
+                attention_mask=FakeTensor(),
+            )
+
+        def decode(self, generated, *, skip_special_tokens):
+            assert generated == [99]
+            assert skip_special_tokens is True
+            return "ok"
+
+    class FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            calls.update(kwargs)
+            assert isinstance(kwargs["input_ids"], FakeTensor)
+            assert isinstance(kwargs["attention_mask"], FakeTensor)
+            return FakeOutput()
+
+    monkeypatch.setattr(worker, "load_base", lambda: (FakeTokenizer(), FakeModel()))
+    result = worker.infer(
+        {
+            "messages": [{"role": "user", "content": "test"}],
+            "adapter": None,
+            "temperature": 0.1,
+            "max_new_tokens": 32,
+        }
+    )
+
+    assert result == {"text": "ok"}
+    assert calls["do_sample"] is True
+    assert calls["temperature"] == pytest.approx(0.1)
+    assert calls["top_k"] == 50
+    assert calls["repetition_penalty"] == pytest.approx(1.05)
+    assert calls["max_new_tokens"] == 32
+
+
 def test_lfm_download_refuses_incomplete_materialization(tmp_path: Path, monkeypatch):
     worker = _load_worker(monkeypatch)
     monkeypatch.setenv("PERSONAVOICE_ROOT", str(tmp_path))
