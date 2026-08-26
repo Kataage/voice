@@ -505,6 +505,15 @@ def _lineage_metadata(paths: PersonaPaths) -> dict[str, str]:
     }
 
 
+def _manifest_contract_path(manifest: Path) -> Path:
+    """Locate the companion contract for either the legacy or cached view."""
+
+    legacy = manifest.with_name("irodori_manifest.contract.json")
+    if legacy.is_file():
+        return legacy
+    return manifest.parent / "contract.json"
+
+
 def _relative_to_persona(paths: PersonaPaths, value: Path) -> str:
     try:
         return value.resolve().relative_to(paths.root.resolve()).as_posix()
@@ -755,6 +764,27 @@ def validate_generation(
         irodori_report.get("quality_gate") if isinstance(irodori_report, dict) else None
     )
     lfm_qgate = lfm_report.get("quality_gate") if isinstance(lfm_report, dict) else None
+    contract_path = None
+    manifest_provenance = manifest.get("provenance") if isinstance(manifest, dict) else None
+    if isinstance(manifest_provenance, dict):
+        raw_contract = manifest_provenance.get("irodori_training_manifest_contract")
+        if isinstance(raw_contract, str):
+            contract_path = (paths.root / raw_contract).resolve()
+    pair_contract = _read_json_file(contract_path) if contract_path is not None else None
+    pair_lineage = pair_contract.get("prepare_lineage") if isinstance(pair_contract, dict) else None
+    pair_ok = (
+        isinstance(pair_contract, dict)
+        and isinstance(pair_lineage, dict)
+        and pair_lineage.get("lineage_id") == lineage_id
+        and pair_lineage.get("lineage_fingerprint") == result.get("prepare_lineage_fingerprint")
+        and pair_lineage.get("master_fingerprint") == result.get("master_fingerprint")
+    )
+    _validation_check(
+        checks,
+        "irodori_training_pair_provenance",
+        pair_ok,
+        {"contract": str(contract_path) if contract_path is not None else None},
+    )
     _validation_check(
         checks,
         "irodori_quality_gate",
@@ -994,7 +1024,7 @@ def train_persona(
                 ),
                 "irodori_training_manifest": _relative_to_persona(paths, manifest),
                 "irodori_training_manifest_contract": _relative_to_persona(
-                    paths, manifest.with_name("irodori_manifest.contract.json")
+                    paths, _manifest_contract_path(manifest)
                 ),
                 "seed_manifest": _relative_to_persona(
                     paths, prepared.dataset / "seed_vc" / "manifest.jsonl"
