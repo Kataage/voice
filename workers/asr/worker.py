@@ -31,7 +31,7 @@ QWEN_LEGACY_MODEL_ALIASES = frozenset({
     "openai/whisper-large-v3",
 })
 
-REQUIRED_MODEL_FILES = (
+QWEN_REQUIRED_MODEL_FILES = (
     "chat_template.json",
     "config.json",
     "generation_config.json",
@@ -316,9 +316,9 @@ def _qwen_aligner_path() -> str:
 def model_path(model: str) -> str:
     if _is_qwen_model(model):
         return _qwen_model_path(model)
-    if model != PINNED_MODEL_NAME:
+    if str(model or "").strip().lower() not in QWEN_LEGACY_MODEL_ALIASES:
         raise ValueError(
-            f"This audited ASR worker supports only {PINNED_MODEL_NAME!r}; got {model!r}."
+            f"This audited ASR worker supports only the pinned legacy Whisper aliases; got {model!r}."
         )
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "asr" / PINNED_MODEL_NAME
@@ -1212,9 +1212,9 @@ def download(payload: dict) -> dict:
             incoming.replace(local)
             downloaded.append({"model": model_id, "revision": revision, "reused": False})
         return {"backend": QWEN_MODEL_NAME, "models": downloaded}
-    if requested != PINNED_MODEL_NAME:
+    if str(requested or "").strip().lower() not in QWEN_LEGACY_MODEL_ALIASES:
         raise ValueError(
-            f"This audited ASR worker can download only {PINNED_MODEL_NAME!r}; got {requested!r}."
+            f"This audited ASR worker can download only the pinned legacy Whisper aliases; got {requested!r}."
         )
     root = Path(os.environ["PERSONAVOICE_ROOT"])
     local = root / "models" / "asr" / PINNED_MODEL_NAME
