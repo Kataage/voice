@@ -874,15 +874,8 @@ def train_persona(
         latents = prepared.cache / "irodori_latents"
         if not _nonempty_file(manifest):
             prepare_manifest(repo_root, source, manifest, latents)
-        if lfm_only_change and previous_candidate is not None:
-            irodori_output = {
-                "speaker_embedding": str(
-                    candidate.models / "irodori" / "speaker" / "checkpoint_final.speaker.safetensors"
-                ),
-                "lora_adapter": str(candidate.models / "irodori" / "lora" / "checkpoint_final"),
-            }
-        else:
-            irodori_output = train_irodori(
+        if not (lfm_only_change and previous_candidate is not None):
+            train_irodori(
                 repo_root,
                 manifest,
                 candidate.models,
@@ -892,7 +885,8 @@ def train_persona(
                 do_speaker=cfg.training.irodori_speaker_inversion,
                 do_lora=cfg.training.irodori_lora,
             )
-        lfm = train_lfm(repo_root, candidate, cfg) if cfg.training.lfm_lora else None
+        if cfg.training.lfm_lora:
+            train_lfm(repo_root, candidate, cfg)
         seed = (
             train_seed_vc(
                 repo_root,
@@ -921,7 +915,8 @@ def train_persona(
             _adapter_files(candidate.models / "lfm" / "adapter")
             if cfg.training.lfm_lora
             else []
-        )
+        )        if cfg.training.lfm_lora:
+            lfm_files.append(candidate.models / "lfm" / "adapter" / _LFM_ADAPTER_REVISION_MARKER)
         seed_files = [Path(seed)] if seed is not None else []
         family_records = {
             "irodori": _family_record(
