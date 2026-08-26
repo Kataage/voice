@@ -30,10 +30,113 @@ IRODORI_TEXT_ENCODER_REVISION = "77675fc96a7e445e982e2ba90246b816efc74ec6"
 LFM_MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"
 LFM_MODEL_REVISION = "b31023f2d69b95fbd7876898f8de9fae90e8afbd"
 LFM_MODEL_WEIGHT_SHA256 = "abf38960d3f37c2be7c946a9b6b06d23ed04a1afb8ac192aa3b491e3dcdcf325"
+# Complete Transformers architecture/tokenizer contract downloaded from the
+# exact revision above.  The non-weight files influence module construction,
+# token IDs, and chat-template rendering just as directly as the weights do;
+# binding only model.safetensors would allow local and Modal training to run
+# different algorithms under one family fingerprint.
+LFM_MODEL_ASSET_SHA256 = {
+    "chat_template.jinja": "89e790f027916b5a2bca145a6a8454e06ffc7a5043bf3b6d97829aff86bb543f",
+    "config.json": "df8dac1ebef28c06a010be6353e7dd2d0a3ff9c2ca23591bb8ced252d74510a1",
+    "model.safetensors": LFM_MODEL_WEIGHT_SHA256,
+    "special_tokens_map.json": "742aefe2b7dec496e8caffdba03a75d0c1a9925d53bd3f3e0d388c96b591b6f4",
+    "tokenizer.json": "d7a0ab0fc22e41ec8c6d7450a9ff9ce40e196ec5e5a2fa6a2105e064e0514ed7",
+    "tokenizer_config.json": "8cba5b0c7acab23a0d4cc9ac587346c9220a1b6d288fc5346fe118202fd6f43e",
+}
+LFM_MODEL_REQUIRED_FILES = tuple(sorted(LFM_MODEL_ASSET_SHA256))
 
 ASR_MODEL_ID = "Systran/faster-whisper-large-v3"
 ASR_MODEL_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
 ASR_MODEL_WEIGHT_SHA256 = "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1"
+
+# Modern ASR assets are kept next to the legacy Whisper pins so every layer
+# (config, worker, Prepare lineage, setup and doctor) can consume one audited
+# registry.  Hugging Face LFS object IDs are recorded as integrity evidence;
+# they are not mislabeled as SHA256 checksums of the local files.
+QWEN_ASR_MODEL_ID = "Qwen/Qwen3-ASR-1.7B"
+QWEN_ASR_MODEL_REVISION = "7278e1e70fe206f11671096ffdd38061171dd6e5"
+QWEN_ASR_MODEL_LICENSE = "Apache-2.0"
+QWEN_ASR_MODEL_REQUIRED_FILES = (
+    "chat_template.json",
+    "config.json",
+    "generation_config.json",
+    "merges.txt",
+    "model-00001-of-00002.safetensors",
+    "model-00002-of-00002.safetensors",
+    "model.safetensors.index.json",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+QWEN_ASR_MODEL_LFS_OIDS = {
+    "model-00001-of-00002.safetensors":
+        "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6",
+    "model-00002-of-00002.safetensors":
+        "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc",
+}
+
+QWEN_DOMAIN_ASR_MODEL_ID = "jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame-hf"
+QWEN_DOMAIN_ASR_MODEL_REVISION = "5a6a789ceb2f22d2b8606743b13a8159af218362"
+QWEN_DOMAIN_ASR_MODEL_PAGE_LICENSE = "Apache-2.0"
+QWEN_DOMAIN_ASR_DATASET_ID = "litagin/Galgame_Speech_ASR_16kHz"
+QWEN_DOMAIN_ASR_DATASET_REVISION = "3fb86654222b3f0af0f7c332ae6a0ef9752a9451"
+QWEN_DOMAIN_ASR_DATASET_LICENSE = "GPL-3.0"
+QWEN_DOMAIN_ASR_EFFECTIVE_RESTRICTIONS = (
+    "commercial-use-prohibition",
+    "models-trained-on-dataset-must-be-open-sourced",
+)
+QWEN_DOMAIN_ASR_MODEL_REQUIRED_FILES = (
+    "chat_template.jinja",
+    "config.json",
+    "conversion_report.json",
+    "generation_config.json",
+    "model-00001-of-00006.safetensors",
+    "model-00002-of-00006.safetensors",
+    "model-00003-of-00006.safetensors",
+    "model-00004-of-00006.safetensors",
+    "model-00005-of-00006.safetensors",
+    "model-00006-of-00006.safetensors",
+    "model.safetensors.index.json",
+    "processor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "ctc_aligner.pt",
+)
+QWEN_DOMAIN_ASR_CTC_HEAD_FILE = "ctc_aligner.pt"
+QWEN_DOMAIN_ASR_CTC_HEAD_LFS_OID = (
+    "61ef0ccd0e18f26adbf3bccc58165e4534bf727a793f02b363d24c556257b911"
+)
+
+QWEN_FORCED_ALIGNER_MODEL_ID = "Qwen/Qwen3-ForcedAligner-0.6B"
+QWEN_FORCED_ALIGNER_MODEL_REVISION = "c7cbfc2048c462b0d63a45797104fc9db3ad62b7"
+QWEN_FORCED_ALIGNER_MODEL_LICENSE = "Apache-2.0"
+QWEN_FORCED_ALIGNER_MODEL_REQUIRED_FILES = (
+    "chat_template.json",
+    "config.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+QWEN_FORCED_ALIGNER_MODEL_LFS_OIDS = {
+    "model.safetensors":
+        "47831d0e82f96b20e9034dba01a075ee06436654719f6a68289e49f1b65ce0e7",
+}
+
+# BGM-aware analysis uses the actively maintained audio-separator wrapper at a
+# fixed release.  The UVR model is downloaded/materialized separately and is
+# never bundled or redistributed by PersonaVoice.  Its local manifest records
+# the actual model digest before an offline run is admitted.
+SEPARATOR_PACKAGE = "audio-separator"
+SEPARATOR_VERSION = "0.44.2"
+SEPARATOR_SOURCE_REPOSITORY = "https://github.com/nomadkaraoke/python-audio-separator"
+SEPARATOR_SOURCE_REVISION = "fca0cf76d52b545cedbc75e1d3aea626d513c036"
+SEPARATOR_SOURCE_LICENSE = "MIT"
+SEPARATOR_MODEL_FILENAME = "UVR_MDXNET_KARA_2.onnx"
+SEPARATOR_MODEL_LINEAGE = "UVR-MDXNET-KARA-2"
+SEPARATOR_MODEL_LICENSE = "UVR model-specific terms; local materialization only"
 
 PYANNOTE_MODEL_ID = "pyannote/speaker-diarization-community-1"
 PYANNOTE_MODEL_REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"

@@ -63,6 +63,9 @@ def valid_asr_result(value: Any) -> bool:
         no_speech_prob = segment.get("no_speech_prob")
         if no_speech_prob is not None and not _finite_number(no_speech_prob):
             return False
+        confidence = segment.get("confidence")
+        if confidence is not None and not _finite_number(confidence):
+            return False
         words = segment.get("words")
         if not isinstance(words, list):
             return False
@@ -74,6 +77,34 @@ def valid_asr_result(value: Any) -> bool:
             probability = word.get("probability")
             if probability is not None and not _finite_number(probability):
                 return False
+    for key in ("backend", "model_id", "model_revision"):
+        if key in value and (not isinstance(value[key], str) or not value[key]):
+            return False
+    provenance = value.get("provenance")
+    if provenance is not None and not isinstance(provenance, dict):
+        return False
+    alignment = value.get("alignment")
+    return alignment is None or valid_alignment_result(alignment)
+
+
+def valid_alignment_result(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not isinstance(value.get("units"), list):
+        return False
+    for unit in value["units"]:
+        if not isinstance(unit, dict):
+            return False
+        if not isinstance(unit.get("unit"), str) or not unit["unit"]:
+            return False
+        if not _timed_row(unit, require_speaker=False):
+            return False
+        confidence = unit.get("confidence")
+        if confidence is not None and not _finite_number(confidence):
+            return False
+    for key in ("contract_version", "backend", "model_id", "model_revision"):
+        if key in value and value[key] is not None and not isinstance(value[key], str):
+            return False
     return True
 
 
@@ -154,6 +185,12 @@ def validate_worker_response(worker_name: str, command: str, value: Any) -> None
         valid = isinstance(value, dict) and _valid_batch_rows(
             value.get("results"), valid_asr_result
         )
+    elif worker_name == "asr" and command == "align":
+        valid = valid_alignment_result(value)
+    elif worker_name == "asr" and command == "batch_align":
+        valid = isinstance(value, dict) and _valid_batch_rows(
+            value.get("results"), valid_alignment_result
+        )
     elif worker_name == "diarization" and command == "diarize":
         valid = valid_diarization_result(value)
     elif worker_name == "diarization" and command == "embed":
@@ -172,6 +209,7 @@ def validate_worker_response(worker_name: str, command: str, value: Any) -> None
         )
     elif worker_name == "lfm" and command == "infer":
         valid = valid_lfm_infer_result(value)
+
     elif worker_name in {"asr", "diarization", "sense", "lfm", "seed_vc"}:
         valid = isinstance(value, dict)
 
@@ -189,7 +227,11 @@ PREPARE_CACHE_VALIDATORS: dict[str, ResultValidator] = {
 }
 
 
-def purge_invalid_prepare_caches(persona_root: Path) -> list[str]:
+def purge_invalid_prepare_caches(
+    persona_root: Path,
+    *,
+    cache_root: Path | None = None,
+) -> list[str]:
     """Delete parseable prepare caches that fail semantic worker contracts.
 
     Syntax-corrupt/truncated JSON remains the responsibility of the pipeline's
@@ -199,7 +241,7 @@ def purge_invalid_prepare_caches(persona_root: Path) -> list[str]:
     """
 
     removed: list[str] = []
-    cache_root = persona_root / "cache"
+    cache_root = cache_root or persona_root / "cache"
     for directory, validator in PREPARE_CACHE_VALIDATORS.items():
         target = cache_root / directory
         if not target.is_dir():
