@@ -18,14 +18,6 @@ from uuid import uuid4
 
 from personavoice.atomic import atomic_write_json
 from personavoice.dataset import SCHEMA_VERSION as DATASET_SCHEMA_VERSION
-SECRET_ENV_KEYS = (
-    "HF_TOKEN",
-    "HUGGINGFACE_TOKEN",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "OPENAI_API_KEY",
-    "PERSONAVOICE_SECRET",
-)
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     LFM_MODEL_REVISION,
@@ -40,6 +32,15 @@ from personavoice.model_assets import (
 )
 from personavoice.stage_lock import stage_lock
 from personavoice.worker_contracts import purge_invalid_prepare_caches
+
+SECRET_ENV_KEYS = (
+    "HF_TOKEN",
+    "HUGGINGFACE_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "OPENAI_API_KEY",
+    "PERSONAVOICE_SECRET",
+)
 
 PREPARE_RESULT_SCHEMA = 4
 TRAIN_RESULT_SCHEMA = 9
@@ -118,13 +119,13 @@ def _prepare_cache_policy() -> str:
     return f"14-{hashlib.sha256(encoded).hexdigest()[:20]}"
 
 
-# Keep the v0.4 root-cache migration marker stable for already materialized
+# Keep the historical root-cache migration marker stable for already materialized
 # Whisper personas.  New upstream semantics are scoped by the independent
 # Prepare-lineage fingerprint (which includes the dynamic implementation
 # contract) and therefore never reuse this legacy root cache accidentally.
 PREPARE_CACHE_POLICY_VERSION = "14-8fa7f248e19dab94265c"
 PREPARE_CACHE_POLICY_COMPATIBILITY = {
-    # The v0.4 LFM export contract is a training-only change.  Keep the
+    # The LFM export contract is a training-only change.  Keep the
     # previous Prepare generation reusable; profile/runtime and LFM export
     # updates must not force ASR, diarization, or SenseVoice work.
     "14-8fa7f248e19dab94265c": frozenset(
@@ -412,7 +413,7 @@ def _prepare_artifacts_complete(persona_root: Path, result: Any) -> bool:
         ):
             return False
     else:
-        # Backward-compatible v0.3/v0.4 root layout.
+        # Backward-compatible historical root layout.
         dataset = persona_root / "dataset"
         references = persona_root / "references"
         if result.get("lineage_fingerprint") is not None or result.get("master_fingerprint") is not None:
@@ -647,11 +648,17 @@ def _v03_generation_valid(
     if result.get("fingerprint") != expected_fingerprint:
         return False
     lineage_id = result.get("lineage_id")
+    generation_id = result.get("generation_id")
+    generation_fingerprint = result.get("generation_fingerprint")
     lineage_fingerprint = result.get("prepare_lineage_fingerprint")
     master = result.get("master_fingerprint")
     if (
         not isinstance(lineage_id, str)
         or re.fullmatch(r"pl-[0-9a-f]{32}", lineage_id) is None
+        or not isinstance(generation_id, str)
+        or re.fullmatch(r"gen-[0-9a-f]{32}", generation_id) is None
+        or not isinstance(generation_fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{64}", generation_fingerprint) is None
         or not isinstance(lineage_fingerprint, str)
         or re.fullmatch(r"[0-9a-f]{64}", lineage_fingerprint) is None
         or not isinstance(master, str)
@@ -672,9 +679,12 @@ def _v03_generation_valid(
         return False
     if (
         manifest.get("kind") != "personavoice-v03-generation"
+        or manifest.get("architecture") != "v0.3-pre-full-fine-tuning"
         or manifest.get("lineage_id") != lineage_id
         or manifest.get("lineage_fingerprint") != lineage_fingerprint
         or manifest.get("master_fingerprint") != master
+        or manifest.get("generation_id") != generation_id
+        or manifest.get("generation_fingerprint") != generation_fingerprint
     ):
         return False
     if require_validated:
