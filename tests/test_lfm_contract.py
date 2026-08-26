@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from personavoice import dataset, training
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.model_assets import LFM_MODEL_REVISION
 
 
@@ -76,6 +77,11 @@ def test_lfm_export_uses_conversational_prompt_completion(tmp_path: Path):
     assert "messages" not in example
     assert [message["role"] for message in example["prompt"]] == ["system", "user"]
     assert [message["role"] for message in example["completion"]] == ["assistant"]
+    assert example["lfm_contract"] == {
+        "schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+        "fingerprint": LFM_CONTRACT_FINGERPRINT,
+    }
+    assert "Core Profile" in example["prompt"][0]["content"]
     answer = json.loads(example["completion"][0]["content"])
     assert answer["text"] == "めっちゃ楽しかったよ！"
     assert answer["voice"]["emotion"] == "HAPPY"

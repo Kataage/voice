@@ -97,8 +97,12 @@ def _prepare_cache_policy() -> str:
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
 PREPARE_CACHE_POLICY_COMPATIBILITY = {
-    "14-5632a9a5a5b360e5430a": frozenset(
+    # The v0.4 LFM export contract is a training-only change.  Keep the
+    # previous Prepare generation reusable; profile/runtime and LFM export
+    # updates must not force ASR, diarization, or SenseVoice work.
+    "14-8fa7f248e19dab94265c": frozenset(
         {
+            "14-5632a9a5a5b360e5430a",
             "14-89127e1d568497e01210",
             "14-b19d85f2c6e8eac470cf",
             "14-9b93893d6b990319b60e",

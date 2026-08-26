@@ -28,7 +28,17 @@ from personavoice.irodori import (
     speaker_embedding_complete,
     vendor_dir,
 )
+from personavoice.lfm_contract import (
+    LFM_CONTRACT_FINGERPRINT,
+    LFM_CONTRACT_SCHEMA_VERSION,
+    LFM_MAX_NEW_TOKENS,
+    LFM_RETRY_MAX_NEW_TOKENS,
+    LFMContractError,
+    build_lfm_messages,
+    normalize_lfm_output,
+)
 from personavoice.process import run
+from personavoice.profile import load_core_profile
 from personavoice.project import PersonaPaths
 from personavoice.workers import local_model_env, worker
 
@@ -89,6 +99,10 @@ def _caption(style: str | None, emotion: str | None, events: list[str] | None) -
     if style:
         style_value = STYLE_PRESETS.get(style.strip().lower(), style.strip())
         pieces.append(style_value.rstrip("。"))
+    # Irodori's pinned CLI accepts one caption string.  Keep the LFM caption as
+    # the primary acting guidance, then append canonical emotion/event cues so
+    # the normalized plan is acoustically representable without inventing any
+    # event that was not present in ``voice.events``.
     if emotion or events:
         pieces.append(
             build_caption(
@@ -757,15 +771,8 @@ def chat_turn(
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     _ensure_authorized(cfg)
-    system = (
-        f"あなたは{cfg.name}として自然に会話します。"
-        "返答はJSONのみ。形式は "
-        '{"text":"...","voice":{"caption":"...",'
-        '"emotion":"NEUTRAL","events":[]}}。'
-    )
-    messages = [{"role": "system", "content": system}]
-    messages.extend(history or [])
-    messages.append({"role": "user", "content": prompt})
+    profile = load_core_profile(paths.core_profile, persona_name=cfg.name)
+    messages, message_diagnostics = build_lfm_messages(profile, history, prompt)
     publication_present = _publication_contract_present(paths)
     published = _published_primary_artifact(paths, "lfm")
     full_model = published[1] if published is not None and published[0] == "full" else None
@@ -773,40 +780,96 @@ def chat_turn(
         published[1] if published is not None and published[0] == "lora" else None
     )
     legacy_adapter = paths.models / "lfm" / "adapter"
-    result = worker(repo_root, "lfm").call(
-        repo_root,
-        "infer",
-        {
-            "messages": messages,
-            "full_model": (
-                str(full_model) if full_model is not None and full_model.is_dir() else None
-            ),
-            "adapter": (
-                str(published_adapter)
-                if published_adapter is not None
-                else (
-                    str(legacy_adapter)
-                    if (
-                        full_model is None
-                        and not publication_present
-                        and legacy_adapter.is_dir()
-                    )
-                    else None
-                )
-            ),
-        },
-    )
-    plan = _normalize_chat_plan(_extract_json(str(result.get("text") or "")))
-    voice = plan["voice"]
+    worker_client = worker(repo_root, "lfm")
+    model_payload = {
+        "full_model": (
+            str(full_model) if full_model is not None and full_model.is_dir() else None
+        ),
+        "adapter": (
+            str(published_adapter)
+            if published_adapter is not None
+            else (
+                str(legacy_adapter)
+                if full_model is None and not publication_present and legacy_adapter.is_dir()
+                else None
+            )
+        ),
+    }
+    attempts = 0
+    failures: list[dict[str, str]] = []
+    plan = None
+    active_messages = messages
+    for attempt in range(2):
+        attempts += 1
+        result = worker_client.call(
+            repo_root,
+            "infer",
+            {
+                "messages": active_messages,
+                **model_payload,
+                "temperature": 0.1,
+                "max_new_tokens": (
+                    LFM_MAX_NEW_TOKENS if attempt == 0 else LFM_RETRY_MAX_NEW_TOKENS
+                ),
+            },
+        )
+        raw = result.get("text") if isinstance(result, dict) else None
+        try:
+            plan = normalize_lfm_output(raw)
+            break
+        except LFMContractError as exc:
+            failures.append({"code": exc.code, "message": str(exc)})
+            if attempt == 1:
+                raise RuntimeError(
+                    "LFM output contract failed after two bounded attempts: "
+                    + ", ".join(item["code"] for item in failures)
+                ) from exc
+            active_messages, retry_diagnostics = build_lfm_messages(
+                profile,
+                history,
+                prompt,
+                repair_notice=(
+                    f"前回の違反コードは{exc.code}。空出力、繰り返し文字、malformed JSONを返さず、"
+                    "spoken textまたはsupported non-verbal-only planを、指定schemaで返す。"
+                ),
+            )
+            message_diagnostics = tuple(
+                list(message_diagnostics) + list(retry_diagnostics) + ["bounded_retry"]
+            )
+    if plan is None:  # pragma: no cover - the loop either returns or raises
+        raise RuntimeError("LFM did not produce a normalized plan")
+    voice = plan.as_voice()
     audio = synthesize(
         repo_root,
         paths,
         cfg,
-        plan["text"],
-        style=voice["caption"],
-        emotion=voice["emotion"],
-        events=voice["events"],
+        plan.text,
+        style=plan.caption,
+        emotion=plan.emotion,
+        events=list(plan.events),
         candidates=1,
     )[0]
-    plan["audio"] = str(audio)
-    return plan
+    normalized = plan.as_dict()
+    normalized["audio"] = str(audio)
+    normalized["provenance"] = {
+        "profile": {
+            "schema_version": profile.schema_version,
+            "fingerprint": profile.fingerprint,
+        },
+        "lfm": {
+            "contract_schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+            "contract_fingerprint": LFM_CONTRACT_FINGERPRINT,
+            "attempts": attempts,
+            "recovered": plan.recovered,
+            "source": plan.source,
+            "diagnostics": list(plan.diagnostics),
+            "bounded_failures": failures,
+        },
+        "message_diagnostics": list(message_diagnostics),
+        "irodori_handoff": {
+            "text": plan.text,
+            "voice": voice,
+            "non_verbal_only": plan.non_verbal_only,
+        },
+    }
+    return normalized

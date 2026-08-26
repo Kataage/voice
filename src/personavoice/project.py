@@ -7,6 +7,7 @@ from pathlib import Path
 
 from personavoice.atomic import atomic_write_json
 from personavoice.config import ConsentConfig, PersonaConfig
+from personavoice.profile import PROFILE_FILENAME, CoreProfile
 
 PERSONA_DIRS = (
     "raw",
@@ -38,6 +39,10 @@ class PersonaPaths:
     @property
     def config(self) -> Path:
         return self.root / "persona.yaml"
+
+    @property
+    def core_profile(self) -> Path:
+        return self.root / PROFILE_FILENAME
 
     @property
     def state(self) -> Path:
@@ -88,6 +93,9 @@ def init_persona(repo_root: Path, name: str, *, authorized: bool = False) -> Per
     config = PersonaConfig(name=name, consent=ConsentConfig(authorized=authorized))
     if not (root / "persona.yaml").exists():
         config.save(root / "persona.yaml")
+    profile_path = root / PROFILE_FILENAME
+    if not profile_path.exists():
+        CoreProfile.default(name).save(profile_path)
 
     if not (root / "state.json").exists():
         state = {

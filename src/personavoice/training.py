@@ -39,6 +39,7 @@ from personavoice.irodori import (
     speaker_embedding_complete,
     train_irodori_method,
 )
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.modal_transport import (
     CHECKPOINT_COMPLETION_NAME,
     CHECKPOINT_FAMILY_NAME,
@@ -193,6 +194,8 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
         "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
         "lfm_revision": LFM_MODEL_REVISION,
+        "lfm_runtime_contract_schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+        "lfm_runtime_contract_fingerprint": LFM_CONTRACT_FINGERPRINT,
         "seed_vc_source_revision": SEED_VC_REVISION,
         "irodori_lock_sha256": _file_contract(repo_root / "locks" / "Irodori-TTS.uv.lock"),
         "lfm_lock_sha256": _file_contract(repo_root / "workers" / "lfm" / "uv.lock"),

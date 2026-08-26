@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any
 
 from personavoice.config import PersonaConfig
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.model_assets import (
     IRODORI_DACVAE_REVISION,
     IRODORI_DACVAE_SHA256,
@@ -631,6 +632,8 @@ def build_training_plan(
             "base_revision": LFM_MODEL_REVISION,
             "base_sha256": LFM_MODEL_WEIGHT_SHA256,
             "base_assets_sha256": LFM_MODEL_ASSET_SHA256,
+            "runtime_contract_schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+            "runtime_contract_fingerprint": LFM_CONTRACT_FINGERPRINT,
         },
         implementation_contract=_implementation_contract(
             repo_root,

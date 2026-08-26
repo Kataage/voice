@@ -20,7 +20,9 @@ from personavoice.evaluation_metrics import (
     word_error_rate,
 )
 from personavoice.inference import synthesize
+from personavoice.lfm_contract import build_lfm_system_prompt, normalize_lfm_output
 from personavoice.pipeline import _prepare_fingerprint
+from personavoice.profile import CoreProfile, load_core_profile
 from personavoice.project import PersonaPaths
 from personavoice.quality import evaluate_quality_gate
 from personavoice.speaker import cosine_similarity, mean_embedding
@@ -664,31 +666,16 @@ def _analyze_voice_sets(
 
 
 def _parse_lfm_output(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
     try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
+        plan = normalize_lfm_output(
+            value,
+            allow_plain_text_recovery=False,
+            allow_field_recovery=False,
+            require_spoken=True,
+        )
+    except (TypeError, ValueError):
         return None
-    if not isinstance(parsed, dict):
-        return None
-    text = parsed.get("text")
-    voice = parsed.get("voice")
-    if not isinstance(text, str) or not text.strip() or not isinstance(voice, dict):
-        return None
-    caption = voice.get("caption")
-    emotion = voice.get("emotion")
-    events = voice.get("events")
-    if (
-        not isinstance(caption, str)
-        or not caption.strip()
-        or not isinstance(emotion, str)
-        or not emotion.strip()
-        or not isinstance(events, list)
-        or any(not isinstance(event, str) for event in events)
-    ):
-        return None
-    return {"text": text.strip(), "voice": voice}
+    return plan.as_dict()
 
 
 def _lfm_contract_output(value: Any) -> bool:
@@ -732,14 +719,14 @@ def _evaluate_lfm(
     cfg: PersonaConfig,
     family: dict[str, Any],
     artifact: Path,
+    profile: CoreProfile | None = None,
 ) -> dict[str, Any]:
     method = family.get("method")
     if method not in {"full", "lora"}:
         raise RuntimeError("LFM training result contains an unsupported method")
-    system = (
-        f"あなたは{cfg.name}として自然に会話します。返答はJSONのみ。"
-        '{"text":"...","voice":{"caption":"...","emotion":"NEUTRAL","events":[]}}。'
-    )
+    if profile is None:
+        profile = CoreProfile.default(cfg.name)
+    system = build_lfm_system_prompt(profile)
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     candidate_contracts: list[bool] = []
@@ -1052,7 +1039,13 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict[s
     lfm = families.get("lfm")
     lfm_report: dict[str, Any] = {"enabled": False, "contract_passed": True, "cases": []}
     if isinstance(lfm, dict) and lfm.get("enabled") is True:
-        lfm_report = _evaluate_lfm(repo_root, cfg, lfm, _family_artifact(paths, lfm))
+        lfm_report = _evaluate_lfm(
+            repo_root,
+            cfg,
+            lfm,
+            _family_artifact(paths, lfm),
+            load_core_profile(paths.core_profile, persona_name=cfg.name),
+        )
     validation = _validation_summary(families)
     gate = evaluate_quality_gate(
         {"summary": voice_report["summary"], "lfm": lfm_report},
