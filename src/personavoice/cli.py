@@ -451,7 +451,14 @@ def build(
             f"[bold cyan]3/3 Evaluating persona {name}...[/bold cyan]",
             spinner="dots",
         ):
-            result["evaluation"] = evaluate(root, paths, cfg)["summary"]
+            evaluation_paths = paths
+            train_result = result.get("train")
+            if isinstance(train_result, dict):
+                candidate_lineage = train_result.get("lineage_id")
+                candidate_generation = train_result.get("generation_id")
+                if isinstance(candidate_lineage, str) and isinstance(candidate_generation, str):
+                    evaluation_paths = paths.for_generation(candidate_lineage, candidate_generation)
+            result["evaluation"] = evaluate(root, evaluation_paths, cfg)["summary"]
     else:
         console.print("[yellow]3/3[/yellow] Evaluation skipped by request.")
     _print(result)
