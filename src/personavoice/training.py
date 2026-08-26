@@ -10,7 +10,7 @@ from pathlib import Path
 
 from personavoice.atomic import atomic_write_json
 from personavoice.config import PersonaConfig
-from personavoice.irodori import base_checkpoint, prepare_manifest, train_irodori
+from personavoice.irodori import base_checkpoint, train_irodori
 from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.lineage import active_generation_id, active_lineage_id, load_lineage
 from personavoice.model_assets import (
@@ -24,6 +24,7 @@ from personavoice.process import run
 from personavoice.project import PersonaPaths
 from personavoice.setup_env import IRODORI_REVISION, SEED_VC_REVISION
 from personavoice.state import StateStore
+from personavoice.training_inputs import ensure_irodori_manifest
 from personavoice.workers import local_model_env, worker
 
 TRAIN_SCHEMA_VERSION = 9
@@ -892,10 +893,11 @@ def train_persona(
             _copy_candidate_family(previous_candidate, candidate, "irodori")
             _copy_candidate_family(previous_candidate, candidate, "seed_vc")
         base_checkpoint(repo_root)
-        manifest = prepared.dataset / "irodori_manifest.jsonl"
-        latents = prepared.cache / "irodori_latents"
-        if not _nonempty_file(manifest):
-            prepare_manifest(repo_root, source, manifest, latents)
+        manifest = ensure_irodori_manifest(
+            repo_root,
+            prepared,
+            conditioning="speaker" if cfg.training.irodori_speaker_inversion else "none",
+        )
         if not (lfm_only_change and previous_candidate is not None):
             train_irodori(
                 repo_root,
@@ -989,6 +991,10 @@ def train_persona(
                 ),
                 "lfm_quality_report": _relative_to_persona(
                     paths, prepared.dataset / "lfm_quality_report.json"
+                ),
+                "irodori_training_manifest": _relative_to_persona(paths, manifest),
+                "irodori_training_manifest_contract": _relative_to_persona(
+                    paths, manifest.with_name("irodori_manifest.contract.json")
                 ),
                 "seed_manifest": _relative_to_persona(
                     paths, prepared.dataset / "seed_vc" / "manifest.jsonl"
