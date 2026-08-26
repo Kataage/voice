@@ -11,6 +11,7 @@ from typing import Any
 
 from personavoice.config import PersonaConfig
 from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
+from personavoice.lineage import load_lineage
 from personavoice.model_assets import (
     IRODORI_DACVAE_REVISION,
     IRODORI_DACVAE_SHA256,
@@ -144,6 +145,7 @@ class FamilyPlan:
     implementation_contract: Mapping[str, str]
     checkpoint_policy: Mapping[str, Any]
     evaluation_policy: Mapping[str, Any]
+    prepare_lineage_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "training", _freeze(self.training))
@@ -163,6 +165,11 @@ class FamilyPlan:
             "implementation_contract": _thaw(self.implementation_contract),
             "checkpoint_policy": _thaw(self.checkpoint_policy),
             "evaluation_policy": _thaw(self.evaluation_policy),
+            **(
+                {"prepare_lineage_fingerprint": self.prepare_lineage_fingerprint}
+                if self.prepare_lineage_fingerprint is not None
+                else {}
+            ),
         }
 
     def _effective_training(self) -> dict[str, Any]:
@@ -216,6 +223,7 @@ class FamilyPlan:
             "enabled": self.enabled,
             "method": self.method,
             "dataset_fingerprint": self.dataset_fingerprint,
+            "prepare_lineage_fingerprint": self.prepare_lineage_fingerprint,
             "training": self._effective_training(),
             "model_contract": _thaw(self.model_contract),
             "implementation_contract": _thaw(self.implementation_contract),
@@ -258,6 +266,7 @@ class FamilyPlan:
             implementation_contract=_thaw(self.implementation_contract),
             checkpoint_policy=_thaw(self.checkpoint_policy),
             evaluation_policy=_thaw(self.evaluation_policy),
+            prepare_lineage_fingerprint=self.prepare_lineage_fingerprint,
         )
 
     @property
@@ -273,18 +282,24 @@ class TrainingPlan:
     families: tuple[FamilyPlan, ...]
     executor_contract: Mapping[str, str] = field(default_factory=dict)
     schema_version: int = TRAINING_PLAN_SCHEMA
+    prepare_lineage: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "executor_contract", _freeze(self.executor_contract))
+        if self.prepare_lineage is not None:
+            object.__setattr__(self, "prepare_lineage", _freeze(self.prepare_lineage))
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "schema_version": self.schema_version,
             "persona": self.persona,
             "files": [item.as_dict() for item in self.files],
             "families": [item.as_dict() for item in self.families],
             "executor_contract": _thaw(self.executor_contract),
         }
+        if self.prepare_lineage is not None:
+            value["prepare_lineage"] = _thaw(self.prepare_lineage)
+        return value
 
     @property
     def fingerprint(self) -> str:
@@ -304,19 +319,41 @@ class TrainingPlan:
     def from_dict(cls, value: Any) -> TrainingPlan:
         """Strictly reconstruct a plan received across an executor boundary."""
 
-        if not isinstance(value, Mapping) or set(value) != {
+        if not isinstance(value, Mapping) or set(value) not in ({
             "schema_version",
             "persona",
             "files",
             "families",
             "executor_contract",
-        }:
+        }, {
+            "schema_version",
+            "persona",
+            "files",
+            "families",
+            "executor_contract",
+            "prepare_lineage",
+        }):
             raise ValueError("TrainingPlan root schema is invalid")
         if value.get("schema_version") != TRAINING_PLAN_SCHEMA:
             raise ValueError("TrainingPlan schema_version is unsupported")
         persona = value.get("persona")
         if not isinstance(persona, str) or _PERSONA_RE.fullmatch(persona) is None:
             raise ValueError("TrainingPlan persona is invalid")
+        raw_prepare_lineage = value.get("prepare_lineage")
+        prepare_lineage: dict[str, Any] | None = None
+        if raw_prepare_lineage is not None:
+            if not isinstance(raw_prepare_lineage, Mapping):
+                raise ValueError("TrainingPlan prepare lineage is invalid")
+            lineage_id = raw_prepare_lineage.get("lineage_id")
+            lineage_fingerprint = raw_prepare_lineage.get("lineage_fingerprint")
+            if (
+                not isinstance(lineage_id, str)
+                or not re.fullmatch(r"pl-[0-9a-f]{32}", lineage_id)
+                or not isinstance(lineage_fingerprint, str)
+                or _SHA256_RE.fullmatch(lineage_fingerprint) is None
+            ):
+                raise ValueError("TrainingPlan prepare lineage identity is invalid")
+            prepare_lineage = dict(raw_prepare_lineage)
 
         raw_files = value.get("files")
         if not isinstance(raw_files, list):
@@ -413,7 +450,10 @@ class TrainingPlan:
             "evaluation_policy",
         }
         for raw in raw_families:
-            if not isinstance(raw, Mapping) or set(raw) != family_keys:
+            if not isinstance(raw, Mapping) or set(raw) not in (
+                family_keys,
+                family_keys | {"prepare_lineage_fingerprint"},
+            ):
                 raise ValueError("TrainingPlan family contract is invalid")
             family = raw.get("family")
             method = raw.get("method")
@@ -434,6 +474,12 @@ class TrainingPlan:
                 or _SHA256_RE.fullmatch(dataset_fingerprint) is None
             ):
                 raise ValueError(f"TrainingPlan dataset fingerprint is invalid for {family}")
+            lineage_fingerprint = raw.get("prepare_lineage_fingerprint")
+            if lineage_fingerprint is not None and (
+                not isinstance(lineage_fingerprint, str)
+                or _SHA256_RE.fullmatch(lineage_fingerprint) is None
+            ):
+                raise ValueError(f"TrainingPlan prepare lineage is invalid for {family}")
             mappings = (
                 "training",
                 "model_contract",
@@ -455,6 +501,7 @@ class TrainingPlan:
                     implementation_contract=dict(raw["implementation_contract"]),
                     checkpoint_policy=dict(raw["checkpoint_policy"]),
                     evaluation_policy=dict(raw["evaluation_policy"]),
+                    prepare_lineage_fingerprint=lineage_fingerprint,
                 )
             )
         if seen_families != set(allowed_methods):
@@ -464,6 +511,7 @@ class TrainingPlan:
             files=tuple(files),
             families=tuple(families),
             executor_contract=executor_contract,
+            prepare_lineage=prepare_lineage,
         )
         if rebuilt.as_dict() != value:
             raise ValueError("TrainingPlan is not in canonical form")
@@ -547,6 +595,18 @@ def build_training_plan(
     checkpoints.
     """
 
+    lineage = load_lineage(paths)
+    prepare_lineage = None
+    prepare_lineage_fingerprint = None
+    if lineage is not None:
+        prepare_lineage = dict(lineage)
+        raw_lineage_fingerprint = lineage.get("lineage_fingerprint")
+        if not isinstance(raw_lineage_fingerprint, str) or _SHA256_RE.fullmatch(
+            raw_lineage_fingerprint
+        ) is None:
+            raise RuntimeError("Prepare lineage record has no valid fingerprint")
+        prepare_lineage_fingerprint = raw_lineage_fingerprint
+
     file_items: list[FileContract] = []
     if cfg.training.irodori.enabled:
         file_items.extend(
@@ -621,6 +681,7 @@ def build_training_plan(
             "portable_format": "safetensors",
         },
         evaluation_policy=quality_policy,
+        prepare_lineage_fingerprint=prepare_lineage_fingerprint,
     )
     lfm = FamilyPlan(
         family="lfm",
@@ -652,6 +713,7 @@ def build_training_plan(
             "portable_format": "safetensors",
         },
         evaluation_policy=quality_policy,
+        prepare_lineage_fingerprint=prepare_lineage_fingerprint,
     )
     seed_vc = FamilyPlan(
         family="seed-vc",
@@ -675,6 +737,7 @@ def build_training_plan(
             "portable_format": "pth",
         },
         evaluation_policy={},
+        prepare_lineage_fingerprint=prepare_lineage_fingerprint,
     )
     return TrainingPlan(
         persona=cfg.name,
@@ -684,6 +747,7 @@ def build_training_plan(
             repo_root,
             EXECUTOR_CONTRACT_FILES,
         ),
+        prepare_lineage=prepare_lineage,
     )
 
 

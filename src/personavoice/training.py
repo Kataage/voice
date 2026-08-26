@@ -40,6 +40,7 @@ from personavoice.irodori import (
     train_irodori_method,
 )
 from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
+from personavoice.lineage import load_lineage
 from personavoice.modal_transport import (
     CHECKPOINT_COMPLETION_NAME,
     CHECKPOINT_FAMILY_NAME,
@@ -236,6 +237,13 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
             for relative in EVALUATION_CONTRACT_FILES
         },
     }
+    lineage = load_lineage(paths)
+    if lineage is not None:
+        model_contract["prepare_lineage"] = {
+            "lineage_id": lineage.get("lineage_id"),
+            "lineage_fingerprint": lineage.get("lineage_fingerprint"),
+            "master_fingerprint": lineage.get("master_fingerprint"),
+        }
     digest.update(json.dumps(model_contract, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     for path in (
         paths.dataset / "irodori_source.jsonl",
@@ -953,6 +961,8 @@ def _family_result(
             external_candidate_root=external_candidate_root,
         )
         value["auxiliary_family_fingerprint"] = auxiliary_fingerprint
+    if family.prepare_lineage_fingerprint is not None:
+        value["prepare_lineage_fingerprint"] = family.prepare_lineage_fingerprint
     return value
 
 
@@ -2819,6 +2829,16 @@ def train_persona(
             "Run `persona prepare` before training."
         )
 
+    prepare_result = store.stage("prepare").get("result")
+    lineage_id = prepare_result.get("lineage_id") if isinstance(prepare_result, dict) else None
+    if lineage_id is not None:
+        try:
+            paths = paths.for_lineage(str(lineage_id))
+        except ValueError as exc:
+            raise RuntimeError("Prepared result contains an invalid Prepare lineage") from exc
+        if load_lineage(paths) is None:
+            raise RuntimeError("Prepared result points to a missing Prepare lineage record")
+
     source = paths.dataset / "irodori_source.jsonl"
     if cfg.training.irodori.enabled and _line_count(source) < 2:
         raise RuntimeError(
@@ -3026,6 +3046,18 @@ def train_persona(
             "train_schema": TRAIN_SCHEMA_VERSION,
             "fingerprint": fingerprint,
             "plan_fingerprint": plan.fingerprint,
+            "lineage_id": (
+                plan.prepare_lineage.get("lineage_id")
+                if plan.prepare_lineage is not None
+                else None
+            ),
+            "prepare_lineage_fingerprint": (
+                plan.prepare_lineage.get("lineage_fingerprint")
+                if plan.prepare_lineage is not None
+                else None
+            ),
+            "dataset_root": _persona_relative(paths, paths.dataset),
+            "models_root": _persona_relative(paths, paths.models),
             "executor": {
                 "kind": decision.executor,
                 "reason": decision.reason,

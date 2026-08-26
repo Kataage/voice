@@ -75,13 +75,34 @@ Setup reuses the local pyannote snapshot only when the required files, exact rev
 
 ## ASR
 
-- Model: `Systran/faster-whisper-large-v3`
-- Pinned snapshot revision: `edaa852ec7e145841d8ffdb056a99866b5f0a478`
-- `model.bin` SHA256: `69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1`
-- Word timestamps enabled; built-in Silero VAD filter enabled.
-- The local snapshot carries the same `.personavoice-revision` contract as LFM.
-- Setup reuses the snapshot only when required files, the exact revision marker, and the audited model-weight hash agree.
-- The isolated ASR worker re-hashes `model.bin` before loading faster-whisper, so post-setup replacement or corruption is rejected before transcription.
+- Legacy/reference: `openai/whisper-large-v3`, materialized through the audited
+  `Systran/faster-whisper-large-v3` snapshot at
+  `edaa852ec7e145841d8ffdb056a99866b5f0a478`.
+  `model.bin` SHA256: `69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1`
+  It remains
+  available for explicit legacy configurations and is not the new-persona default.
+- General modern backend: `Qwen/Qwen3-ASR-1.7B` at
+  `7278e1e70fe206f11671096ffdd38061171dd6e5` (Apache-2.0). Setup records the complete
+  required-file inventory and Hugging Face LFS object IDs in `integrity_ids.json`; those
+  IDs are provenance evidence, not mislabeled local SHA256 values.
+- General alignment: `Qwen/Qwen3-ForcedAligner-0.6B` at
+  `c7cbfc2048c462b0d63a45797104fc9db3ad62b7`, an independent versioned `alignment-v1`
+  contract. Whisper native word timestamps and Qwen forced alignment cannot be swapped
+  across backends.
+- Domain backend: `jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame-hf` at
+  `5a6a789ceb2f22d2b8606743b13a8159af218362` is disabled. Its Apache page badge does not
+  override the GPL-3.0 `litagin/Galgame_Speech_ASR_16kHz` provenance, commercial-use
+  prohibition, open-source-model requirement, or uncleared `ctc_aligner.pt` terms. The
+  exact reason and coupled encoder are returned by `persona doctor`.
+- BGM-aware analysis: `audio-separator==0.44.2` at source revision
+  `fca0cf76d52b545cedbc75e1d3aea626d513c036`, with `UVR_MDXNET_KARA_2.onnx`. The MIT
+  wrapper license and model-specific terms are tracked separately. A user must register
+  the local weight and its source/terms before offline use; the model is never bundled or
+  redistributed. Output is a derived analysis stem only, never a replacement for the
+  canonical original audio.
+
+See [`ASR_LINEAGE.md`](ASR_LINEAGE.md) for the immutable generation layout, exact setup
+sequence, quality reports, and GTX 1080 Ti/Pascal limitations.
 
 ## Acoustic emotion / events
 

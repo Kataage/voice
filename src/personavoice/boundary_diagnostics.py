@@ -475,6 +475,8 @@ def _run_asr(
                 "audio": str(output.resolve()),
                 "model": cfg.prepare.asr_model,
                 "compute_type": cfg.prepare.asr_compute_type,
+                "device": cfg.prepare.asr_device,
+                "dtype": cfg.prepare.asr_dtype,
                 "language": cfg.language,
             },
         )
@@ -532,6 +534,8 @@ def _run_batch_worker(
             {
                 "model": cfg.prepare.asr_model,
                 "compute_type": cfg.prepare.asr_compute_type,
+                "device": cfg.prepare.asr_device,
+                "dtype": cfg.prepare.asr_dtype,
             }
         )
     results: dict[str, dict[str, Any]] = {}

@@ -571,6 +571,22 @@ def _publication_payload(
         "quality_gate": quality,
         "artifacts": artifacts,
     }
+    if plan.prepare_lineage is not None:
+        lineage_id = plan.prepare_lineage.get("lineage_id")
+        lineage_fingerprint = plan.prepare_lineage.get("lineage_fingerprint")
+        master_fingerprint = plan.prepare_lineage.get("master_fingerprint")
+        if not all(
+            isinstance(value, str) and value
+            for value in (lineage_id, lineage_fingerprint, master_fingerprint)
+        ):
+            raise ValueError("Lineage-bound publication is missing its Prepare identity")
+        payload.update(
+            {
+                "lineage_id": lineage_id,
+                "prepare_lineage_fingerprint": lineage_fingerprint,
+                "master_fingerprint": master_fingerprint,
+            }
+        )
     _assert_no_absolute_paths(payload)
     return payload
 
@@ -588,14 +604,34 @@ def verify_publication(
         value = json.loads((models_root / PUBLICATION_NAME).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError("Model publication contract is unreadable") from exc
-    if not isinstance(value, dict) or set(value) != {
+    base_keys = {
         "schema_version",
         "plan_fingerprint",
         "published_at",
         "quality_gate",
         "artifacts",
-    }:
+    }
+    lineage_keys = {
+        "lineage_id",
+        "prepare_lineage_fingerprint",
+        "master_fingerprint",
+    }
+    allowed_keys = (base_keys, base_keys | lineage_keys)
+    if not isinstance(value, dict) or set(value) not in allowed_keys:
         raise RuntimeError("Model publication contract schema is invalid")
+    if set(value) == base_keys | lineage_keys:
+        lineage_id = value.get("lineage_id")
+        lineage_fingerprint = value.get("prepare_lineage_fingerprint")
+        master_fingerprint = value.get("master_fingerprint")
+        if (
+            not isinstance(lineage_id, str)
+            or re.fullmatch(r"pl-[0-9a-f]{32}", lineage_id) is None
+            or not isinstance(lineage_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{64}", lineage_fingerprint) is None
+            or not isinstance(master_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{64}", master_fingerprint) is None
+        ):
+            raise RuntimeError("Model publication Prepare lineage identity is invalid")
     if (
         value.get("schema_version") != PUBLICATION_SCHEMA_VERSION
         or value.get("plan_fingerprint") != expected_plan_fingerprint

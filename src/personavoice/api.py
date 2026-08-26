@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from personavoice.config import PersonaConfig
 from personavoice.inference import chat_turn, reenact, repeat, synthesize
+from personavoice.lineage import effective_paths
 from personavoice.project import find_repo_root, get_persona
 
 app = FastAPI(title="PersonaVoice", version="0.4.0")
@@ -61,6 +62,7 @@ def _source_file(value: str) -> Path:
 
 
 def _output_item(persona: str, paths, path: Path) -> dict:
+    paths = effective_paths(paths)
     resolved = path.resolve()
     relative = resolved.relative_to(paths.outputs.resolve()).as_posix()
     return {
@@ -89,6 +91,7 @@ def personas() -> dict:
 def output_audio(persona: str, relative_path: str):
     try:
         _, paths, _ = _load(persona)
+        paths = effective_paths(paths)
         base = paths.outputs.resolve()
         output = (base / relative_path).resolve()
         output.relative_to(base)

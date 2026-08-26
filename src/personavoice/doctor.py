@@ -18,6 +18,7 @@ from personavoice.environment_contract import (
 )
 from personavoice.executors import inspect_local_resources, preflight_local_full
 from personavoice.hardware import hardware_report
+from personavoice.lineage import backend_status, domain_backend_audit
 from personavoice.media import sha256_file
 from personavoice.modal_transport import detect_modal_auth
 from personavoice.model_assets import (
@@ -34,6 +35,12 @@ from personavoice.model_assets import (
     LFM_MODEL_WEIGHT_SHA256,
     PYANNOTE_MODEL_ASSET_SHA256,
     PYANNOTE_MODEL_REVISION,
+    QWEN_ASR_MODEL_LFS_OIDS,
+    QWEN_ASR_MODEL_REQUIRED_FILES,
+    QWEN_ASR_MODEL_REVISION,
+    QWEN_FORCED_ALIGNER_MODEL_LFS_OIDS,
+    QWEN_FORCED_ALIGNER_MODEL_REQUIRED_FILES,
+    QWEN_FORCED_ALIGNER_MODEL_REVISION,
     SENSE_MODEL_CMVN_SHA256,
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
@@ -46,6 +53,7 @@ from personavoice.model_assets import (
 from personavoice.process import run
 from personavoice.runtime_dependencies import ffmpeg_runtime
 from personavoice.seed_vc_assets import materialization_status as seed_vc_materialization_status
+from personavoice.separation import separator_model_audit
 from personavoice.setup_env import IRODORI_REVISION, REVISION_MARKER, SEED_VC_REVISION
 from personavoice.training_plan import FamilyPlan, TrainingPlan
 from personavoice.vevo2_assets import materialization_status as vevo2_materialization_status
@@ -293,6 +301,19 @@ def _read_revision(path: Path) -> str | None:
         return None
 
 
+def _read_integrity_ids(path: Path) -> dict[str, str] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str)
+        for key, item in value.items()
+    ):
+        return None
+    return value
+
+
 def _nonempty_file(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > 0
@@ -319,6 +340,8 @@ def _model_asset_integrity(
         "lfm_asset_sha256": LFM_MODEL_ASSET_SHA256,
         "asr_revision": ASR_MODEL_REVISION,
         "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
+        "qwen_asr_revision": QWEN_ASR_MODEL_REVISION,
+        "qwen_forced_aligner_revision": QWEN_FORCED_ALIGNER_MODEL_REVISION,
         "seed_vc_asset_contract_sha256": seed_vc_status.get("contract_sha256"),
         "vevo2_source_revision": VEVO2_SOURCE_REVISION,
         "vevo2_model_id": VEVO2_MODEL_ID,
@@ -342,6 +365,14 @@ def _model_asset_integrity(
     dacvae = repo_root / "models" / "irodori" / "dacvae" / IRODORI_DACVAE_FILENAME
     lfm_revision = _read_revision(repo_root / "models" / "lfm" / "base" / REVISION_MARKER)
     asr_revision = _read_revision(repo_root / "models" / "asr" / "large-v3" / REVISION_MARKER)
+    qwen_dir = repo_root / "models" / "asr" / "qwen3-asr-1.7b"
+    qwen_aligner_dir = repo_root / "models" / "asr" / "qwen3-forced-aligner-0.6b"
+    qwen_revision = _read_revision(qwen_dir / REVISION_MARKER)
+    qwen_aligner_revision = _read_revision(qwen_aligner_dir / REVISION_MARKER)
+    qwen_integrity_ids = _read_integrity_ids(qwen_dir / "integrity_ids.json")
+    qwen_aligner_integrity_ids = _read_integrity_ids(
+        qwen_aligner_dir / "integrity_ids.json"
+    )
     pyannote_revision = _read_revision(
         repo_root / "models" / "pyannote" / "community-1" / REVISION_MARKER
     )
@@ -357,6 +388,10 @@ def _model_asset_integrity(
         "recorded_prepare": recorded_prepare,
         "lfm_revision": lfm_revision,
         "asr_revision": asr_revision,
+        "qwen_asr_revision": qwen_revision,
+        "qwen_forced_aligner_revision": qwen_aligner_revision,
+        "qwen_asr_integrity_ids": qwen_integrity_ids,
+        "qwen_forced_aligner_integrity_ids": qwen_aligner_integrity_ids,
         "pyannote_revision": pyannote_revision,
         "sense_verified_marker": sense_marker,
         "seed_vc": seed_vc_status,
@@ -364,6 +399,11 @@ def _model_asset_integrity(
         "irodori_sha256": None,
         "dacvae_sha256": None,
         "lfm_asset_sha256": None,
+        "asr_backend": str(setup.get("asr_backend") or "whisper-large-v3"),
+        "asr_backend_status": backend_status(
+            str(setup.get("asr_backend") or "whisper-large-v3")
+        ),
+        "domain_backend_audit": domain_backend_audit(),
     }
     errors = []
     if recorded != expected_setup:
@@ -374,7 +414,25 @@ def _model_asset_integrity(
         errors.append("Irodori base checkpoint or DACVAE checkpoint is missing/empty")
     if lfm_revision != LFM_MODEL_REVISION:
         errors.append("LFM materialized revision does not match the audited revision")
-    if asr_revision != ASR_MODEL_REVISION:
+    selected_asr = str(setup.get("asr_backend") or "whisper-large-v3")
+    selected_asr_status = backend_status(selected_asr)
+    if selected_asr_status.get("enabled") is not True:
+        errors.append(
+            "configured ASR backend is disabled: "
+            + str(selected_asr_status.get("reason") or selected_asr)
+        )
+    elif selected_asr == "qwen3-asr-1.7b":
+        if qwen_revision != QWEN_ASR_MODEL_REVISION:
+            errors.append("Qwen ASR materialized revision does not match the audited revision")
+        if qwen_aligner_revision != QWEN_FORCED_ALIGNER_MODEL_REVISION:
+            errors.append(
+                "Qwen forced aligner materialized revision does not match the audited revision"
+            )
+        if qwen_integrity_ids != QWEN_ASR_MODEL_LFS_OIDS:
+            errors.append("Qwen ASR LFS integrity evidence is missing or stale")
+        if qwen_aligner_integrity_ids != QWEN_FORCED_ALIGNER_MODEL_LFS_OIDS:
+            errors.append("Qwen forced aligner LFS integrity evidence is missing or stale")
+    elif asr_revision != ASR_MODEL_REVISION:
         errors.append("ASR materialized revision does not match the audited revision")
     if pyannote_revision != PYANNOTE_MODEL_REVISION:
         errors.append("pyannote materialized revision does not match the audited revision")
@@ -506,22 +564,46 @@ def report(
     }
     commands_ok = bool(required["uv"] and required["git"] and ffmpeg_status.torchcodec_compatible)
     runtime = repo_root / ".runtime"
+    setup = _setup_state(repo_root)
+    selected_asr = str(setup.get("asr_backend") or "whisper-large-v3")
     lfm_dir = repo_root / "models" / "lfm" / "base"
     asr_dir = repo_root / "models" / "asr" / "large-v3"
+    qwen_dir = repo_root / "models" / "asr" / "qwen3-asr-1.7b"
+    qwen_aligner_dir = repo_root / "models" / "asr" / "qwen3-forced-aligner-0.6b"
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
     sense_dir = repo_root / "models" / "sense" / "SenseVoiceSmall"
     seed_vc_status = seed_vc_materialization_status(repo_root, verify_hashes=deep)
     vevo2_status = vevo2_materialization_status(repo_root, verify_hashes=deep)
+    separator_status = separator_model_audit(repo_root)
     models = {
         "irodori": _nonempty_file(repo_root / "models/irodori/v4.1-small/model.safetensors"),
         "irodori_dacvae": _nonempty_file(repo_root / "models/irodori/dacvae/weights.pth"),
         "lfm": all(_nonempty_file(lfm_dir / name) for name in LFM_MODEL_REQUIRED_FILES),
         "asr": all(_nonempty_file(asr_dir / name) for name in _ASR_REQUIRED_FILES),
+        "asr_qwen": (
+            all(_nonempty_file(qwen_dir / name) for name in QWEN_ASR_MODEL_REQUIRED_FILES)
+            and _read_revision(qwen_dir / REVISION_MARKER) == QWEN_ASR_MODEL_REVISION
+            and _read_integrity_ids(qwen_dir / "integrity_ids.json") == QWEN_ASR_MODEL_LFS_OIDS
+        ),
+        "asr_forced_aligner": (
+            all(
+                _nonempty_file(qwen_aligner_dir / name)
+                for name in QWEN_FORCED_ALIGNER_MODEL_REQUIRED_FILES
+            )
+            and _read_revision(qwen_aligner_dir / REVISION_MARKER)
+            == QWEN_FORCED_ALIGNER_MODEL_REVISION
+            and _read_integrity_ids(qwen_aligner_dir / "integrity_ids.json")
+            == QWEN_FORCED_ALIGNER_MODEL_LFS_OIDS
+        ),
         "pyannote": all(_nonempty_file(pyannote_dir / name) for name in _PYANNOTE_REQUIRED_FILES),
         "sense": all(_nonempty_file(sense_dir / name) for name in _SENSE_REQUIRED_FILES)
         and _read_revision(runtime / "sense-model-ready") == "verified",
         "seed_vc_models": bool(seed_vc_status.get("ok")),
         "vevo2_models": bool(vevo2_status.get("ok")),
+        # Separator weights are optional analysis assets.  Their absence does
+        # not make a normal speech-only setup unusable, but the audit remains
+        # visible so `auto`/`always` failures are never silent.
+        "separator_model": bool(separator_status.get("materialized")),
         "seed_vc_vendor": _nonempty_file(repo_root / "vendor/seed-vc/inference_v2.py"),
         "vevo2_vendor": _nonempty_file(
             repo_root / "vendor/Amphion/models/svc/vevo2/vevo2_utils.py"
@@ -535,7 +617,6 @@ def report(
         if (require_seed_vc or name != "seed_vc")
         and (require_vevo2 or name != "vevo2")
     )
-    setup = _setup_state(repo_root)
     environment = environment_contract_status(repo_root, setup.get("environment_contract"))
     runtime_hardware = runtime_hardware_status(setup)
     seed_vc_runtime_hardware = (
@@ -565,6 +646,13 @@ def report(
     worker_health: dict[str, dict] = {}
     if deep:
         for name in active_workers:
+            if name == "asr" and backend_status(selected_asr).get("enabled") is not True:
+                worker_health[name] = {
+                    "ok": False,
+                    "error": "configured ASR backend is disabled; no fallback is allowed",
+                    "backend": selected_asr,
+                }
+                continue
             if not workers[name]:
                 worker_health[name] = {"ok": False, "error": "worker .venv is missing"}
                 continue
@@ -572,7 +660,16 @@ def report(
                 health = worker(repo_root, name).call(
                     repo_root,
                     "health",
-                    {"deep": True, "model": "large-v3", "compute_type": "auto"},
+                    (
+                        {
+                            "deep": True,
+                            "model": "qwen3-asr-1.7b",
+                            "device": "auto",
+                            "dtype": "auto",
+                        }
+                        if name == "asr" and selected_asr == "qwen3-asr-1.7b"
+                        else {"deep": True, "model": "large-v3", "compute_type": "auto"}
+                    ),
                 )
                 expected = _expected_worker_backend(name, setup)
                 health["expected_backend"] = expected
@@ -612,11 +709,14 @@ def report(
         "irodori",
         "irodori_dacvae",
         "lfm",
-        "asr",
         "pyannote",
         "sense",
         "irodori_vendor",
     }
+    if selected_asr == "qwen3-asr-1.7b":
+        required_model_keys.update({"asr_qwen", "asr_forced_aligner"})
+    else:
+        required_model_keys.add("asr")
     required_vendor_keys = {"irodori"}
     required_worker_keys = set(active_workers)
     required_lock_keys = {"root", "asr", "diarization", "sense", "lfm", "irodori_managed"}
@@ -662,6 +762,10 @@ def report(
         "seed_vc_runtime_hardware": seed_vc_runtime_hardware,
         "vevo2_runtime_hardware": vevo2_runtime_hardware,
         "models": models,
+        "asr_backend": selected_asr,
+        "asr_backend_status": backend_status(selected_asr),
+        "domain_backend_audit": domain_backend_audit(),
+        "separator_model_audit": separator_status,
         "model_asset_integrity": model_assets,
         "workers": workers,
         "worker_health": worker_health if deep else None,

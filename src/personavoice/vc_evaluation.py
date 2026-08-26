@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from personavoice.config import PersonaConfig, VCEvaluationConfig
 from personavoice.dataset import write_jsonl
 from personavoice.evaluation_metrics import character_error_rate, word_error_rate
 from personavoice.inference import VC_BACKENDS, reenact
+from personavoice.lineage import load_lineage, prepared_paths
 from personavoice.project import PersonaPaths
 from personavoice.speaker import cosine_similarity
 from personavoice.workers import worker
@@ -222,12 +224,28 @@ def _canonical_sample(
         "source_sha256": _sha256(source),
         "reference_sha256": _sha256(reference),
         "text": text,
+        "text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "language": str(row.get("language") or "ja"),
         "bucket": _bucket(text, events),
         "events": events,
         "selection_seed": seed,
         "source_start": row.get("start"),
         "source_end": row.get("end"),
+        "duration": (
+            float(row.get("end")) - float(row.get("start"))
+            if isinstance(row.get("start"), (int, float))
+            and isinstance(row.get("end"), (int, float))
+            else None
+        ),
+        "transcript_hash": row.get("transcript_hash"),
+        "alignment_provenance": {
+            "asr_backend": row.get("asr_backend"),
+            "asr_model_revision": row.get("asr_model_revision"),
+            "alignment_backend": row.get("alignment_backend"),
+            "alignment_model_revision": row.get("alignment_model_revision"),
+            "alignment_hash": row.get("alignment_hash"),
+        },
+        "boundary_evidence": row.get("boundary_evidence"),
         "quality": float(row.get("quality", 1.0) or 0.0),
     }
 
@@ -262,6 +280,10 @@ def build_vc_evaluation_manifest(
     seed: int | None = None,
 ) -> dict[str, Any]:
     """Build the immutable same-source/same-reference VC A/B input manifest."""
+
+    # The manifest is a validation view over the newest candidate lineage.  It
+    # must not accidentally read an old root-level master before activation.
+    paths = prepared_paths(paths)
 
     language = cfg.language.strip().casefold()
     if language not in {"ja", "jpn", "japanese"}:
@@ -311,6 +333,16 @@ def build_vc_evaluation_manifest(
     ids = [row["id"] for row in selected]
     if len(ids) != len(set(ids)):
         raise RuntimeError("Prepared master.json contains duplicate evaluation clip IDs")
+    lineage = load_lineage(paths)
+    if lineage is not None:
+        for row in selected:
+            row.update(
+                {
+                    "lineage_id": lineage.get("lineage_id"),
+                    "lineage_fingerprint": lineage.get("lineage_fingerprint"),
+                    "master_fingerprint": lineage.get("master_fingerprint"),
+                }
+            )
     destination = output or paths.dataset / VC_MANIFEST_FILENAME
     destination = destination.expanduser().resolve()
     # Reject a non-portable destination before writing any manifest bytes.
@@ -394,8 +426,38 @@ def load_vc_manifest(
                 )
         if not isinstance(row.get("text"), str) or not isinstance(row.get("language"), str):
             raise RuntimeError(f"VC evaluation manifest line {line_number} has invalid text/language")
+        text_hash = row.get("text_hash")
+        if text_hash is not None and (
+            not isinstance(text_hash, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", text_hash)
+            or hashlib.sha256(row["text"].encode("utf-8")).hexdigest() != text_hash
+        ):
+            raise RuntimeError(f"VC evaluation manifest line {line_number} has an invalid text hash")
+        duration = row.get("duration")
+        if duration is not None and (
+            not isinstance(duration, (int, float))
+            or isinstance(duration, bool)
+            or not math.isfinite(float(duration))
+            or float(duration) <= 0
+        ):
+            raise RuntimeError(f"VC evaluation manifest line {line_number} has an invalid duration")
         if not isinstance(row.get("source_id"), str) or not row["source_id"]:
             raise RuntimeError(f"VC evaluation manifest line {line_number} has no source_id")
+        lineage_fields = tuple(
+            row.get(key)
+            for key in ("lineage_id", "lineage_fingerprint", "master_fingerprint")
+        )
+        if any(value is not None for value in lineage_fields) and (
+            not isinstance(lineage_fields[0], str)
+            or not re.fullmatch(r"pl-[0-9a-f]{32}", lineage_fields[0])
+            or not isinstance(lineage_fields[1], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", lineage_fields[1])
+            or not isinstance(lineage_fields[2], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", lineage_fields[2])
+        ):
+            raise RuntimeError(
+                f"VC evaluation manifest line {line_number} has invalid Prepare lineage metadata"
+            )
         seen.add(item_id)
         row["source_path"] = source
         row["reference_path"] = reference
@@ -873,7 +935,24 @@ def evaluate_vc(
 ) -> dict[str, Any]:
     """Run both VC backends against exactly the same immutable inputs."""
 
+    # Evaluation happens before explicit activation, so select the candidate
+    # recorded by Prepare while preserving the base persona root for portable
+    # manifest paths and rollback-safe runtime selection.
+    paths = prepared_paths(paths)
+
     rows = load_vc_manifest(paths, manifest, verify_hashes=True)
+    lineage_ids = {row.get("lineage_id") for row in rows if row.get("lineage_id") is not None}
+    if len(lineage_ids) > 1:
+        raise RuntimeError("VC evaluation manifest mixes multiple Prepare lineages")
+    if lineage_ids:
+        manifest_lineage = next(iter(lineage_ids))
+        if paths.lineage_id is not None and paths.lineage_id != manifest_lineage:
+            raise RuntimeError(
+                "VC evaluation manifest belongs to a different Prepare lineage; regenerate it"
+            )
+        if paths.lineage_id is None:
+            paths = paths.for_lineage(str(manifest_lineage))
+            rows = load_vc_manifest(paths, manifest, verify_hashes=True)
     manifest_path = manifest.expanduser().resolve()
     manifest_relative = _persona_relative(paths, manifest_path)
     evaluation_root = (
@@ -941,6 +1020,8 @@ def evaluate_vc(
                             "audio": str(output_path),
                             "model": cfg.prepare.asr_model,
                             "compute_type": cfg.prepare.asr_compute_type,
+                            "device": cfg.prepare.asr_device,
+                            "dtype": cfg.prepare.asr_dtype,
                             "language": row["language"],
                         },
                     )

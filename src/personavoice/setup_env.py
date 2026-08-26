@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -19,6 +20,7 @@ from personavoice.hardware import (
     seed_vc_cuda_supported,
     selected_nvidia_gpu,
 )
+from personavoice.lineage import resolve_backend
 from personavoice.media import sha256_file
 from personavoice.model_assets import (
     ASR_MODEL_ID,
@@ -43,11 +45,24 @@ from personavoice.model_assets import (
     PYANNOTE_MODEL_ASSET_SHA256,
     PYANNOTE_MODEL_ID,
     PYANNOTE_MODEL_REVISION,
+    QWEN_ASR_MODEL_ID,
+    QWEN_ASR_MODEL_LFS_OIDS,
+    QWEN_ASR_MODEL_REQUIRED_FILES,
+    QWEN_ASR_MODEL_REVISION,
+    QWEN_FORCED_ALIGNER_MODEL_ID,
+    QWEN_FORCED_ALIGNER_MODEL_LFS_OIDS,
+    QWEN_FORCED_ALIGNER_MODEL_REQUIRED_FILES,
+    QWEN_FORCED_ALIGNER_MODEL_REVISION,
     SEED_VC_SOURCE_REVISION,
     SENSE_MODEL_CMVN_SHA256,
     SENSE_MODEL_ID,
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
+    SEPARATOR_MODEL_FILENAME,
+    SEPARATOR_MODEL_LINEAGE,
+    SEPARATOR_PACKAGE,
+    SEPARATOR_SOURCE_REVISION,
+    SEPARATOR_VERSION,
     VEVO2_MODEL_ID,
     VEVO2_MODEL_LICENSE,
     VEVO2_MODEL_REVISION,
@@ -334,7 +349,12 @@ def _validate_cuda_backend(backend: str | None):
     )
 
 
-def install_environments(repo_root: Path, *, backend: str | None = None) -> dict:
+def install_environments(
+    repo_root: Path,
+    *,
+    backend: str | None = None,
+    asr_backend: str | None = None,
+) -> dict:
     if not shutil.which("uv"):
         raise RuntimeError("uv was not found in PATH")
     if not shutil.which("git"):
@@ -346,20 +366,46 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
 
     selected_gpu = _validate_cuda_backend(selected_backend)
     ensure_ffmpeg_runtime(repo_root)
+    from personavoice.separation import separator_model_audit
+
+    separator_audit = separator_model_audit(repo_root)
+    separator_state = {
+        "package": SEPARATOR_PACKAGE,
+        "version": SEPARATOR_VERSION,
+        "source_revision": SEPARATOR_SOURCE_REVISION,
+        "model_lineage": SEPARATOR_MODEL_LINEAGE,
+        "model_filename": SEPARATOR_MODEL_FILENAME,
+        "materialized": bool(separator_audit.get("materialized")),
+        "sha256": separator_audit.get("sha256"),
+        "reason": separator_audit.get("reason"),
+    }
     selected_gpu_state = gpu_record(selected_gpu)
     worker_extras = _worker_extras(selected_backend, gpu=selected_gpu)
+    selected_asr_backend = "whisper-large-v3"
+    if asr_backend is not None:
+        selected_asr_backend = resolve_backend(asr_backend).key
+        if selected_asr_backend == "qwen3-asr-1.7b":
+            qwen_backend = selected_backend if selected_backend in {"cpu", "cu126", "cu128"} else "cpu"
+            worker_extras["asr"] = f"qwen-{qwen_backend}"
+        else:
+            # Explicit legacy setup also gets the pinned separator CLI.  The
+            # direct helper default remains None for old library integrations;
+            # the public CLI always passes an explicit backend.
+            worker_extras["asr"] = "legacy"
     runtime = repo_root / ".runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     transaction_marker = runtime / SETUP_TRANSACTION_MARKER
     transaction_state = {
         "schema_version": 1,
         "irodori_backend": selected_backend,
+        "asr_backend": selected_asr_backend,
         "worker_backends": worker_extras,
         "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
         "vevo2_revision": VEVO2_REVISION,
         "environment_contract": environment_contract(repo_root),
+        "separator_contract": separator_state,
     }
     # This marker is written before the first environment mutation. It is
     # deliberately kept on any failure so an old setup.json can never authorize
@@ -397,6 +443,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
 
     setup_state = {
         "irodori_backend": selected_backend,
+        "asr_backend": selected_asr_backend,
         "worker_backends": worker_extras,
         "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
@@ -413,6 +460,8 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "lfm_asset_sha256": LFM_MODEL_ASSET_SHA256,
             "asr_revision": ASR_MODEL_REVISION,
             "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
+            "qwen_asr_revision": QWEN_ASR_MODEL_REVISION,
+            "qwen_forced_aligner_revision": QWEN_FORCED_ALIGNER_MODEL_REVISION,
             "seed_vc_asset_contract_sha256": seed_vc_contract_digest(repo_root),
             "vevo2_source_revision": VEVO2_SOURCE_REVISION,
             "vevo2_model_id": VEVO2_MODEL_ID,
@@ -428,6 +477,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "sense_cmvn_sha256": SENSE_MODEL_CMVN_SHA256,
             "sense_tokenizer_sha256": SENSE_MODEL_TOKENIZER_SHA256,
         },
+        "separator_contract": separator_state,
     }
     atomic_write_json(runtime / "setup.json", setup_state)
     transaction_marker.unlink(missing_ok=True)
@@ -562,12 +612,82 @@ def _snapshot_pinned(
     return True
 
 
+def _snapshot_revision(
+    *,
+    model_id: str,
+    revision: str,
+    local_dir: Path,
+    required_files: tuple[str, ...],
+    cache_dir: Path,
+    integrity_ids: dict[str, str] | None = None,
+    token: str | None = None,
+) -> bool:
+    """Materialize a revision-pinned snapshot when upstream exposes LFS IDs.
+
+    LFS object IDs are recorded as provenance but are intentionally not called
+    SHA256 file checksums.  The revision and complete required-file inventory
+    remain the admission contract for these large Qwen snapshots.
+    """
+
+    revision_path = local_dir / REVISION_MARKER
+    current_revision = (
+        revision_path.read_text(encoding="utf-8").strip()
+        if revision_path.is_file()
+        else None
+    )
+    complete = all(_nonempty_file(local_dir / relative) for relative in required_files)
+    integrity_path = local_dir / "integrity_ids.json"
+    try:
+        recorded_ids = json.loads(integrity_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        recorded_ids = None
+    expected_ids = integrity_ids or {}
+    if complete and current_revision == revision and recorded_ids == expected_ids:
+        return False
+
+    incoming = local_dir.with_name(f".{local_dir.name}.{uuid4().hex}.incoming")
+    shutil.rmtree(incoming, ignore_errors=True)
+    incoming.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id=model_id,
+        revision=revision,
+        local_dir=incoming,
+        cache_dir=cache_dir,
+        token=token,
+    )
+    missing = [
+        relative for relative in required_files if not _nonempty_file(incoming / relative)
+    ]
+    if missing:
+        shutil.rmtree(incoming, ignore_errors=True)
+        raise FileNotFoundError(
+            f"Pinned model download for {model_id}@{revision} completed but required "
+            f"files are missing or empty: {', '.join(missing)}"
+        )
+    atomic_write_json(incoming / "integrity_ids.json", expected_ids)
+    atomic_write_text(incoming / REVISION_MARKER, revision + "\n")
+    backup = local_dir.with_name(f".{local_dir.name}.{uuid4().hex}.backup")
+    try:
+        if local_dir.exists():
+            local_dir.replace(backup)
+        incoming.replace(local_dir)
+    except Exception:
+        if not local_dir.exists() and backup.exists():
+            backup.replace(local_dir)
+        raise
+    finally:
+        shutil.rmtree(incoming, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors=True)
+    return True
+
+
 def download_models(
     repo_root: Path,
     *,
     hf_token: str | None = None,
     include_seed_vc: bool = True,
     include_vevo2: bool = True,
+    asr_backends: tuple[str, ...] | None = None,
 ) -> dict:
     env = local_model_env(repo_root, offline=False)
     hf_home = Path(env["HF_HOME"])
@@ -575,6 +695,11 @@ def download_models(
     hf_home.mkdir(parents=True, exist_ok=True)
     hub_cache.mkdir(parents=True, exist_ok=True)
     token = hf_token or os.getenv("HF_TOKEN")
+    selected_asr = tuple(asr_backends or ("large-v3",))
+    # Resolve every requested backend before mutating any model directory.  A
+    # restricted domain request must fail closed and cannot leave a partially
+    # materialized candidate behind.
+    selected_specs = [resolve_backend(value) for value in selected_asr]
     downloaded: list[str] = []
     reused: list[str] = []
 
@@ -636,6 +761,38 @@ def download_models(
         downloaded.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
     else:
         reused.append(f"{ASR_MODEL_ID}@{ASR_MODEL_REVISION}")
+
+    if any(spec.key == "qwen3-asr-1.7b" for spec in selected_specs):
+        qwen_dir = repo_root / "models" / "asr" / "qwen3-asr-1.7b"
+        if _snapshot_revision(
+            model_id=QWEN_ASR_MODEL_ID,
+            revision=QWEN_ASR_MODEL_REVISION,
+            local_dir=qwen_dir,
+            required_files=QWEN_ASR_MODEL_REQUIRED_FILES,
+            cache_dir=hub_cache,
+            integrity_ids=QWEN_ASR_MODEL_LFS_OIDS,
+            token=token,
+        ):
+            downloaded.append(f"{QWEN_ASR_MODEL_ID}@{QWEN_ASR_MODEL_REVISION}")
+        else:
+            reused.append(f"{QWEN_ASR_MODEL_ID}@{QWEN_ASR_MODEL_REVISION}")
+        aligner_dir = repo_root / "models" / "asr" / "qwen3-forced-aligner-0.6b"
+        if _snapshot_revision(
+            model_id=QWEN_FORCED_ALIGNER_MODEL_ID,
+            revision=QWEN_FORCED_ALIGNER_MODEL_REVISION,
+            local_dir=aligner_dir,
+            required_files=QWEN_FORCED_ALIGNER_MODEL_REQUIRED_FILES,
+            cache_dir=hub_cache,
+            integrity_ids=QWEN_FORCED_ALIGNER_MODEL_LFS_OIDS,
+            token=token,
+        ):
+            downloaded.append(
+                f"{QWEN_FORCED_ALIGNER_MODEL_ID}@{QWEN_FORCED_ALIGNER_MODEL_REVISION}"
+            )
+        else:
+            reused.append(
+                f"{QWEN_FORCED_ALIGNER_MODEL_ID}@{QWEN_FORCED_ALIGNER_MODEL_REVISION}"
+            )
 
     pyannote_dir = repo_root / "models" / "pyannote" / "community-1"
     pyannote_revision_marker = pyannote_dir / REVISION_MARKER

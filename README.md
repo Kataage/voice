@@ -7,7 +7,7 @@
 ```powershell
 .\scripts\bootstrap.ps1
 $env:HF_TOKEN="hf_..."  # pyannote Community-1初回取得時のみ
-uv run --locked persona setup --backend auto
+uv run --locked persona setup --backend auto --asr-backend qwen3-asr-1.7b
 uv run --locked persona init alice --authorized
 # personas/alice/raw/ と personas/alice/identity/ に素材を配置
 uv run --locked persona doctor
@@ -17,7 +17,11 @@ uv run --locked persona ui
 
 ## 機能
 
-- faster-whisper `large-v3`: 日本語ASR + word timestamps
+- `Qwen/Qwen3-ASR-1.7B`: new-persona general Japanese ASR backend（固定revision）
+- `openai/whisper-large-v3` / faster-whisper `large-v3`: legacy/reference ASR + word timestamps
+- Qwen3 ForcedAligner: transcriptionから独立したversioned alignment contract
+- anime/domain Qwen checkpoint: GPL-3.0 provenance audit未完了のためfail-closed disabled
+- audio-separator `0.44.2`: optional BGM-aware analysis-only derived stem（canonical audioは保持）
 - pyannote Community-1: regular/exclusive diarization + speaker embeddings
 - `identity/`本人参照による対象話者自動選択
 - SenseVoiceSmall: 感情 + 笑い・泣き・息・咳・くしゃみ等のイベント解析
@@ -90,7 +94,9 @@ raw media
  -> SHA / ffprobe
  -> identical-content deduplication
  -> 48kHz mono FLAC
- -> faster-whisper word timestamps
+ -> Qwen3-ASR または明示したlegacy Whisper
+ -> 独立alignment contract
+ -> optional BGM separation（analysis-only derived audio）
  -> pyannote regular/exclusive diarization + embeddings
  -> identity照合
  -> 本人不在sourceは学習対象から除外して記録
@@ -108,6 +114,13 @@ raw media
  -> quality合格candidateだけをpublish
 ```
 
+ASR/alignment/separationの変更はroot cacheを上書きせず、新しいimmutable Prepare lineageを
+作ります。新masterからIrodori/LFM/VC依存artifactを再生成し、candidateのquality gateを
+通った後にだけ`persona activate alice --lineage pl-...`で明示的にatomic activationします。
+旧generationはrollback/referenceとして残ります。正確な対象マシン手順、license/provenance
+判定、LFM/Irodori quality report項目、Pascal/GTX 1080 Tiの制約は
+[`docs/ASR_LINEAGE.md`](docs/ASR_LINEAGE.md)を参照してください。
+
 同じ音源を別名で`raw/`へ複数置いてもfull SHA256で1素材として扱い、重複パスはprovenanceとして記録します。`identity/`参照がある状態で、ある動画のbest speaker similarityが`prepare.min_identity_similarity`を下回った場合、その動画は「本人不在の可能性が高い正常な入力」としてTTS/VC学習対象から外し、`dataset/skipped_sources.json`へ記録して他の動画処理を継続します。diarizationがspeaker embedding自体を返せない等の処理異常はskipせずエラーにします。全素材から利用可能な本人発話が1件も得られなければprepare自体を失敗させます。
 
 ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけロードします。各batchは1項目の成功ごとにatomic checkpointを残し、worker crash・PC再起動・強制終了後も、同じfingerprintで`--force`を付けずに再実行すれば中央semantic validatorを通過した完了項目を正式cacheへ昇格して再利用します。不正・truncated・wrong-id checkpointは捨てて再計算します。長時間処理中は別ターミナルから`uv run --locked persona status alice`を実行すると、`audit.prepare.batch_progress`でworker/phase、`completed / total`、現在のitem ID、失敗数、checkpoint済み成功数を確認できます。stage OS lockが実行中判定のsource-of-truthで、progressファイル自体をliveness判定には使いません。
@@ -118,6 +131,7 @@ ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけ�
 uv run --locked persona prepare alice
 uv run --locked persona train alice --executor auto
 uv run --locked persona eval alice
+uv run --locked persona activate alice --lineage pl-<32-hex>
 uv run --locked persona status alice
 uv run --locked persona build alice --force
 ```

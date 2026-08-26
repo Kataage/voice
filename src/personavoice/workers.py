@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from personavoice.environment_contract import require_current_environment
+from personavoice.lineage import resolve_backend
 from personavoice.model_assets import SEED_VC_SOURCE_REVISION, VEVO2_SOURCE_REVISION
 from personavoice.process import run, run_json
 from personavoice.runtime_dependencies import ffmpeg_environment
@@ -92,6 +93,25 @@ def _vevo2_device_environment(setup: dict[str, Any]) -> dict[str, str]:
     )
 
 
+def _require_selected_asr_backend(setup: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Prevent a config/backend change from silently using the wrong worker env."""
+
+    configured = str(setup.get("asr_backend") or "whisper-large-v3")
+    requested = payload.get("asr_backend") or payload.get("model")
+    if requested is None:
+        return
+    try:
+        configured_key = resolve_backend(configured).key
+        requested_key = resolve_backend(str(requested)).key
+    except (RuntimeError, TypeError, ValueError):
+        return
+    if configured_key != requested_key:
+        raise RuntimeError(
+            f"ASR request selects {requested_key!r}, but setup was materialized for "
+            f"{configured_key!r}; run `persona setup --asr-backend {requested_key}` first."
+        )
+
+
 @dataclass(frozen=True)
 class Worker:
     name: str
@@ -110,6 +130,8 @@ class Worker:
         # Refuse to run it unless setup.json proves that environment was synced
         # from the exact dependency declarations and audited locks in this checkout.
         setup = require_current_environment(repo_root, worker_name=self.name)
+        if self.name == "asr":
+            _require_selected_asr_backend(setup, payload)
         if self.name == "seed_vc":
             _require_seed_vc_vendor_integrity(repo_root)
         elif self.name == "vevo2":

@@ -10,7 +10,7 @@ from rich.console import Console
 
 from personavoice.boundary_diagnostics import run_boundary_diagnostics
 from personavoice.config import PersonaConfig
-from personavoice.dataset import export_lfm
+from personavoice.dataset import export_lfm, load_lfm_tokenizer
 from personavoice.doctor import report as doctor_report
 from personavoice.environment import load_root_environment
 from personavoice.evaluation import evaluate
@@ -18,13 +18,21 @@ from personavoice.inference import VC_BACKENDS, chat_turn, synthesize
 from personavoice.inference import reenact as reenact_audio
 from personavoice.inference import repeat as repeat_audio
 from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
+from personavoice.lineage import (
+    DomainBackendDisabledError,
+    activate_generation,
+    active_lineage_id,
+    resolve_backend,
+)
 from personavoice.pipeline import prepare_persona
 from personavoice.profile import load_core_profile
 from personavoice.project import find_repo_root, get_persona, init_persona
 from personavoice.repair import repair_failed_model_materializations
+from personavoice.separation import register_separator_model
 from personavoice.setup_env import download_models, install_environments
 from personavoice.setup_lock import SetupLockError, setup_lock
 from personavoice.stage_lock import StageLockError
+from personavoice.state import StateStore
 from personavoice.status import persona_status
 from personavoice.training import train_persona
 from personavoice.vc_evaluation import (
@@ -91,18 +99,18 @@ def _download_models_or_explain(
     *,
     include_seed_vc: bool,
     include_vevo2: bool = True,
+    asr_backend: str | None = None,
 ) -> dict:
     try:
+        kwargs = {"include_seed_vc": include_seed_vc}
+        if asr_backend is not None:
+            kwargs["asr_backends"] = (asr_backend,)
         # Keep the helper compatible with integrations that monkeypatch the
         # pre-v0.4 two-argument downloader; only an explicit skip needs the
         # new keyword because the production default is Vevo2-inclusive.
         if include_vevo2:
-            return download_models(root, include_seed_vc=include_seed_vc)
-        return download_models(
-            root,
-            include_seed_vc=include_seed_vc,
-            include_vevo2=False,
-        )
+            return download_models(root, **kwargs)
+        return download_models(root, include_vevo2=False, **kwargs)
     except GatedRepoError as exc:
         repo_id = getattr(exc, "repo_id", None) or "pyannote/speaker-diarization-community-1"
         console.print(f"[bold red]Hugging Face access was denied for {repo_id}.[/bold red]")
@@ -141,6 +149,11 @@ def doctor(
 @app.command()
 def setup(
     backend: str = typer.Option("auto", help="Irodori backend: auto/cu126/cu128/cpu/rocm/xpu"),
+    asr_backend: str = typer.Option(
+        "qwen3-asr-1.7b",
+        "--asr-backend",
+        help="ASR backend: qwen3-asr-1.7b or legacy whisper-large-v3.",
+    ),
     download: bool = typer.Option(True, "--download-models/--skip-models"),
     skip_seed_vc_models: bool = typer.Option(False),
     skip_vevo2_models: bool = typer.Option(False),
@@ -153,6 +166,10 @@ def setup(
             f"Unsupported Irodori backend {backend!r}; choose one of "
             f"{', '.join(sorted(SETUP_BACKENDS))}."
         )
+    try:
+        asr_backend = resolve_backend(asr_backend).key
+    except (ValueError, DomainBackendDisabledError) as exc:
+        raise typer.BadParameter(str(exc), param_hint="--asr-backend") from None
     root = _repo_root()
     console.print("[bold]PersonaVoice setup[/bold]")
     console.print(
@@ -166,7 +183,11 @@ def setup(
         # The OS lock is crash-safe and is released automatically on process exit.
         with setup_lock(root):
             console.print("[bold cyan]1/3[/bold cyan] Synchronizing audited environments...")
-            result = install_environments(root, backend=None if backend == "auto" else backend)
+            result = install_environments(
+                root,
+                backend=None if backend == "auto" else backend,
+                asr_backend=asr_backend,
+            )
             selected_backend = result.get("irodori_backend", backend)
             console.print(
                 f"[green]✓[/green] Environment synchronization complete "
@@ -182,6 +203,7 @@ def setup(
                         root,
                         include_seed_vc=not skip_seed_vc_models,
                         include_vevo2=not skip_vevo2_models,
+                        asr_backend=asr_backend,
                     )
                 console.print("[green]✓[/green] Pinned model assets are materialized and verified.")
             else:
@@ -220,6 +242,7 @@ def setup(
                                     root,
                                     include_seed_vc=not skip_seed_vc_models,
                                     include_vevo2=not skip_vevo2_models,
+                                    asr_backend=asr_backend,
                                 ),
                             }
                             verification = doctor_report(
@@ -318,6 +341,85 @@ def status(
 
 
 @app.command()
+def activate(
+    name: str,
+    lineage: str | None = typer.Option(
+        None,
+        "--lineage",
+        help="Prepare lineage id to activate; omit to use the current trained candidate.",
+    ),
+) -> None:
+    """Atomically make one fully validated Prepare/model generation active."""
+
+    _, paths, _ = _load(name)
+    store = StateStore(paths.state)
+    train_stage = store.stage("train")
+    train_result = train_stage.get("result") if isinstance(train_stage, dict) else None
+    selected = lineage
+    if selected is None and isinstance(train_result, dict):
+        raw_lineage = train_result.get("lineage_id")
+        selected = raw_lineage if isinstance(raw_lineage, str) else None
+    if selected is None:
+        raise typer.BadParameter(
+            "No lineage-bound trained candidate is available; run prepare, train, and eval first, "
+            "then pass --lineage pl-... explicitly."
+        )
+    plan_fingerprint = (
+        train_result.get("plan_fingerprint")
+        if isinstance(train_result, dict)
+        else None
+    )
+    # An explicit older lineage is a rollback/reference operation.  Do not
+    # compare it with the currently recorded train plan; activate_generation
+    # will independently verify that lineage's own publication contract.
+    trained_lineage = (
+        train_result.get("lineage_id") if isinstance(train_result, dict) else None
+    )
+    if selected != trained_lineage:
+        plan_fingerprint = None
+    previous = active_lineage_id(paths)
+    try:
+        pointer = activate_generation(
+            paths,
+            selected,
+            plan_fingerprint=plan_fingerprint if isinstance(plan_fingerprint, str) else None,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        console.print(f"[bold red]Activation refused:[/bold red] {exc}")
+        raise typer.Exit(1) from None
+    _print({"activated": pointer, "previous_active_lineage_id": previous})
+
+
+@app.command("register-separator-model")
+def register_separator_model_command(
+    model: Path = typer.Argument(..., help="Local UVR_MDXNET_KARA_2.onnx file."),
+    source_url: str = typer.Option(
+        ...,
+        "--source-url",
+        help="Audited upstream/download URL recorded in the local manifest.",
+    ),
+    model_terms: str = typer.Option(
+        ...,
+        "--model-terms",
+        help="Model-weight license/usage terms accepted for this local copy.",
+    ),
+) -> None:
+    """Register a locally obtained separator weight for offline analysis only."""
+
+    root = _repo_root()
+    try:
+        result = register_separator_model(
+            root,
+            model,
+            source_url=source_url,
+            model_terms=model_terms,
+        )
+    except (FileExistsError, FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from None
+    _print(result)
+
+
+@app.command()
 def prepare(name: str, force: bool = False) -> None:
     root, paths, cfg = _load(name)
     try:
@@ -338,16 +440,31 @@ def export_lfm_command(name: str) -> None:
     """Regenerate only the LFM SFT export from an existing Prepare master."""
 
     root, paths, cfg = _load(name)
-    del root
+    prepare_result = StateStore(paths.state).stage("prepare").get("result")
+    lineage_id = prepare_result.get("lineage_id") if isinstance(prepare_result, dict) else None
+    if isinstance(lineage_id, str) and lineage_id:
+        paths = paths.for_lineage(lineage_id)
     master = paths.dataset / "master.sqlite3"
     if not master.is_file():
         raise typer.BadParameter("Prepare master.sqlite3 is missing; run persona prepare first")
     output = paths.dataset / "lfm_train.jsonl"
+    tokenizer = load_lfm_tokenizer(root / "models" / "lfm" / "base")
     count = export_lfm(
         master,
         output,
         cfg.name,
         profile=load_core_profile(paths.core_profile, persona_name=cfg.name),
+        report_path=paths.dataset / "lfm_quality_report.json",
+        lineage_metadata=(
+            {
+                "lineage_id": prepare_result.get("lineage_id"),
+                "lineage_fingerprint": prepare_result.get("lineage_fingerprint"),
+                "master_fingerprint": prepare_result.get("master_fingerprint"),
+            }
+            if isinstance(prepare_result, dict) and prepare_result.get("lineage_id")
+            else None
+        ),
+        tokenizer=tokenizer,
     )
     _print(
         {

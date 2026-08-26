@@ -12,6 +12,28 @@ watchdogによる終了はprepareの失敗として明示されますが、す�
 
 `raw/`・`identity/`・prepare設定・固定model/worker contractが変わった場合、または`--force`を指定した場合はcheckpointを含むprepare派生cacheを無効化します。
 
+## v0.4 ASR lineage
+
+Issue #41のPrepareでは、ASR/alignment/separationの意味論をroot-level cacheへ上書き
+しません。`prepare-lineage-v1` seedはraw/identity inventory、ASR backend/revision、
+独立alignment contract、separator policy/model audit、schema、implementation policyを
+hashし、`generations/prepare/pl-.../`へcandidate dataset/cache/referencesを作ります。
+新しいtranscript、timestamp、clip boundaryはIrodori/LFM export、reference bank、VC
+evaluation manifest、後続family fingerprintへ伝播します。旧generationとactive pointer
+は保持され、candidateが失敗してもactive personaは変わりません。
+
+`persona prepare`後のcandidateは、`persona train`、`persona eval`、quality report確認の
+対象ですが、暗黙にはactiveになりません。`persona activate NAME --lineage pl-...`だけが
+publication checksum、TrainingPlan/Prepare/master identity、quality gateを検証して
+`generations/active.json`をatomicに置換します。前のpointerは
+`generations/activation-history/`に残るため、検証済みの旧`pl-...`を明示すればrollback
+できます。
+
+ASR workerのQwen pathは実際のdevice/dtype/capabilityをprogressへ出し、BF16や
+FlashAttentionを仮定しません。Pascal/GTX 1080 Tiでは`persona setup --backend auto`を
+使い、unsupportedな明示値はエラーにします。hosted CIはQwen/Separatorのproduction
+weightを取得せず、fixture・lock・dry-run・schemaだけを検証します。
+
 Prepare cache policyのソース契約はUTF-8テキストの改行をLFへ正規化してからhashするため、同一checkoutのLF/CRLF差だけでWindowsとLinuxのcache policyが変わりません。互換migrationは認識結果の意味論を変えない運用・復旧変更についても、CIで実測した正確なcanonical policy世代だけを明示的な前身として許可します。未知の旧policyや将来の別実装世代を動的に許可せず、意味論が変わったcacheは引き続きfail-closedです。
 
 ## Training / Modal preemption resume

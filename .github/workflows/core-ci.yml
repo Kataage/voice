@@ -146,6 +146,15 @@ jobs:
         if: ${{ matrix.legacy_gpu_extra != '' }}
         shell: bash
         run: uv sync --project "workers/${{ matrix.worker }}" --locked --dry-run ${{ matrix.legacy_gpu_extra }}
+      - name: Validate ASR backend and separator lock matrix without model downloads
+        if: ${{ matrix.worker == 'asr' }}
+        shell: bash
+        run: |
+          project="workers/${{ matrix.worker }}"
+          uv sync --project "$project" --locked --dry-run --extra legacy
+          uv sync --project "$project" --locked --dry-run --extra qwen-cpu
+          uv sync --project "$project" --locked --dry-run --extra qwen-cu126
+          uv sync --project "$project" --locked --dry-run --extra qwen-cu128
 
   irodori-lock:
     timeout-minutes: 20
