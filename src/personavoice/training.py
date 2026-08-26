@@ -691,37 +691,96 @@ def validate_generation(
     paths: PersonaPaths,
     cfg: PersonaConfig,
     generation_id: str | None = None,
+    lineage_id: str | None = None,
 ) -> dict[str, object]:
     """Validate a v0.3 candidate without changing the active runtime pointer."""
 
     del repo_root, cfg
     store = StateStore(paths.state)
-    result = store.stage("train").get("result")
-    if not isinstance(result, dict):
-        raise RuntimeError("No candidate training result exists; run persona train first.")
-    lineage_id = result.get("lineage_id") or result.get("prepare_lineage_id")
-    selected_generation = generation_id or result.get("generation_id")
-    if not isinstance(lineage_id, str) or not isinstance(selected_generation, str):
-        raise RuntimeError("Training result has no candidate lineage/generation identity")
-    candidate = paths.for_generation(lineage_id, selected_generation)
-    manifest = _read_json_file(candidate.generation_manifest)
-    lineage = load_lineage(paths, lineage_id)
+    current_result = store.stage("train").get("result")
+    explicit_candidate = lineage_id is not None or generation_id is not None
+    if explicit_candidate and (lineage_id is None or generation_id is None):
+        raise RuntimeError("lineage_id and generation_id must be supplied together")
+
+    if explicit_candidate:
+        selected_lineage = lineage_id
+        selected_generation = generation_id
+        assert selected_lineage is not None and selected_generation is not None
+        try:
+            candidate = paths.for_generation(selected_lineage, selected_generation)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        manifest = _read_json_file(candidate.generation_manifest)
+        if not isinstance(manifest, dict):
+            raise RuntimeError("Candidate generation manifest is missing or invalid")
+        if (
+            manifest.get("kind") != "personavoice-v03-generation"
+            or manifest.get("architecture") != "v0.3-pre-full-fine-tuning"
+            or manifest.get("lineage_id") != selected_lineage
+            or manifest.get("generation_id") != selected_generation
+        ):
+            raise RuntimeError("Candidate generation manifest is not a matching v0.3 candidate")
+        provenance = manifest.get("provenance")
+        provenance = provenance if isinstance(provenance, dict) else {}
+        families = manifest.get("families")
+        families = families if isinstance(families, dict) else {}
+        lfm_family = families.get("lfm")
+        seed_family = families.get("seed_vc")
+        candidate_result: dict[str, object] = {
+            "lineage_id": selected_lineage,
+            "prepare_lineage_id": selected_lineage,
+            "prepare_lineage_fingerprint": manifest.get("lineage_fingerprint"),
+            "master_fingerprint": manifest.get("master_fingerprint"),
+            "generation_id": selected_generation,
+            "generation_fingerprint": manifest.get("generation_fingerprint"),
+            "generation_manifest": _relative_to_persona(paths, candidate.generation_manifest),
+            "irodori_quality_report": provenance.get("irodori_quality_report"),
+            "lfm_quality_report": provenance.get("lfm_quality_report"),
+            "lfm_requested": (
+                isinstance(lfm_family, dict) and lfm_family.get("status") == "complete"
+            ),
+            "seed_vc_finetune": (
+                isinstance(seed_family, dict) and seed_family.get("mode") == "finetuned-cfm"
+            ),
+        }
+    else:
+        if not isinstance(current_result, dict):
+            raise RuntimeError("No candidate training result exists; run persona train first.")
+        selected_lineage = current_result.get("lineage_id") or current_result.get(
+            "prepare_lineage_id"
+        )
+        selected_generation = current_result.get("generation_id")
+        if not isinstance(selected_lineage, str) or not isinstance(selected_generation, str):
+            raise RuntimeError("Training result has no candidate lineage/generation identity")
+        candidate = paths.for_generation(selected_lineage, selected_generation)
+        manifest = _read_json_file(candidate.generation_manifest)
+        if not isinstance(manifest, dict):
+            raise RuntimeError("Candidate generation manifest is missing or invalid")
+        candidate_result = current_result
+
+    lineage = load_lineage(paths, selected_lineage)
     checks: list[dict[str, object]] = []
     _validation_check(
         checks,
         "prepare_lineage_record",
         isinstance(lineage, dict)
-        and lineage.get("lineage_fingerprint") == result.get("prepare_lineage_fingerprint")
-        and lineage.get("master_fingerprint") == result.get("master_fingerprint"),
-        {"lineage_id": lineage_id},
+        and lineage.get("lineage_fingerprint")
+        == candidate_result.get("prepare_lineage_fingerprint")
+        and lineage.get("master_fingerprint") == candidate_result.get("master_fingerprint"),
+        {"lineage_id": selected_lineage},
     )
     _validation_check(
         checks,
         "candidate_generation_manifest",
         isinstance(manifest, dict)
-        and manifest.get("generation_fingerprint") == result.get("generation_fingerprint")
-        and manifest.get("lineage_id") == lineage_id
-        and manifest.get("master_fingerprint") == result.get("master_fingerprint"),
+        and manifest.get("kind") == "personavoice-v03-generation"
+        and manifest.get("architecture") == "v0.3-pre-full-fine-tuning"
+        and manifest.get("generation_fingerprint") == candidate_result.get("generation_fingerprint")
+        and manifest.get("lineage_id") == selected_lineage
+        and manifest.get("lineage_fingerprint")
+        == candidate_result.get("prepare_lineage_fingerprint")
+        and manifest.get("master_fingerprint") == candidate_result.get("master_fingerprint")
+        and manifest.get("generation_id") == selected_generation,
         {"generation_id": selected_generation},
     )
     families = manifest.get("families") if isinstance(manifest, dict) else None
@@ -763,9 +822,9 @@ def validate_generation(
         }
         _validation_check(checks, f"{family}_artifacts", family_ok, family_results[family])
 
-    prepared = paths.for_lineage(lineage_id)
-    irodori_report = _quality_report(prepared, result, "irodori_quality_report")
-    lfm_report = _quality_report(prepared, result, "lfm_quality_report")
+    prepared = paths.for_lineage(selected_lineage)
+    irodori_report = _quality_report(paths, candidate_result, "irodori_quality_report")
+    lfm_report = _quality_report(paths, candidate_result, "lfm_quality_report")
     irodori_qgate = (
         irodori_report.get("quality_gate") if isinstance(irodori_report, dict) else None
     )
@@ -786,9 +845,10 @@ def validate_generation(
     pair_ok = (
         isinstance(pair_contract, dict)
         and isinstance(pair_lineage, dict)
-        and pair_lineage.get("lineage_id") == lineage_id
-        and pair_lineage.get("lineage_fingerprint") == result.get("prepare_lineage_fingerprint")
-        and pair_lineage.get("master_fingerprint") == result.get("master_fingerprint")
+        and pair_lineage.get("lineage_id") == selected_lineage
+        and pair_lineage.get("lineage_fingerprint")
+        == candidate_result.get("prepare_lineage_fingerprint")
+        and pair_lineage.get("master_fingerprint") == candidate_result.get("master_fingerprint")
     )
     _validation_check(
         checks,
@@ -804,7 +864,7 @@ def validate_generation(
         and irodori_qgate.get("passed") is True,
         {"accepted_count": _safe_count(irodori_report, "accepted_count")},
     )
-    lfm_required = bool(result.get("lfm_requested"))
+    lfm_required = bool(candidate_result.get("lfm_requested"))
     _validation_check(
         checks,
         "lfm_quality_gate",
@@ -821,7 +881,7 @@ def validate_generation(
     reference_files = reference_bank.get("files") if isinstance(reference_bank, dict) else None
     seed_ok = (
         _line_count(seed_manifest) >= 2
-        if bool(result.get("seed_vc_finetune"))
+        if bool(candidate_result.get("seed_vc_finetune"))
         else isinstance(reference_files, list) and bool(reference_files)
     )
     _validation_check(
@@ -829,7 +889,7 @@ def validate_generation(
         "seed_vc_dependency_manifest",
         seed_ok,
         {
-            "fine_tune": bool(result.get("seed_vc_finetune")),
+            "fine_tune": bool(candidate_result.get("seed_vc_finetune")),
             "seed_examples": _line_count(seed_manifest),
             "references": len(reference_files) if isinstance(reference_files, list) else 0,
         },
@@ -850,9 +910,10 @@ def validate_generation(
         raise RuntimeError("Candidate generation manifest is missing or invalid")
     manifest["validation"] = validation
     atomic_write_json(candidate.generation_manifest, manifest)
-    result["validation"] = validation
-    store.set_result("train", result)
-    store.set_status("train", "complete" if passed else "trained")
+    if not explicit_candidate:
+        current_result["validation"] = validation
+        store.set_result("train", current_result)
+        store.set_status("train", "complete" if passed else "trained")
     return validation
 
 

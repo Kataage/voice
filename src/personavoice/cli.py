@@ -335,13 +335,22 @@ def export_lfm_command(name: str) -> None:
 @app.command()
 def validate(
     name: str,
+    lineage_id: str | None = typer.Option(None, "--lineage-id"),
     generation_id: str | None = typer.Option(None, "--generation-id"),
 ) -> None:
     """Validate a trained v0.3 candidate without activating it."""
 
+    if (lineage_id is None) != (generation_id is None):
+        raise typer.BadParameter("--lineage-id and --generation-id must be supplied together")
     root, paths, cfg = _load(name)
     try:
-        result = validate_generation(root, paths, cfg, generation_id=generation_id)
+        result = validate_generation(
+            root,
+            paths,
+            cfg,
+            generation_id=generation_id,
+            lineage_id=lineage_id,
+        )
     except (StageLockError, ValueError, RuntimeError) as exc:
         console.print(f"[bold red]{exc}[/bold red]")
         raise typer.Exit(1) from None
