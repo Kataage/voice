@@ -165,14 +165,18 @@ def infer(payload: dict) -> dict:
         model = PeftModel.from_pretrained(model, adapter_path)
         model.eval()
     messages = payload["messages"]
-    input_ids = tokenizer.apply_chat_template(
+    inputs = tokenizer.apply_chat_template(
         messages,
         add_generation_prompt=True,
         tokenize=True,
         return_tensors="pt",
+        return_dict=True,
     ).to(model.device)
+    input_ids = inputs.get("input_ids")
+    if input_ids is None or not hasattr(input_ids, "shape"):
+        raise RuntimeError("LFM chat template did not return tensor input_ids")
     output = model.generate(
-        input_ids,
+        **inputs,
         do_sample=True,
         temperature=float(payload.get("temperature", 0.1)),
         top_k=50,

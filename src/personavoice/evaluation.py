@@ -39,6 +39,40 @@ def _successful(rows: list[dict[str, Any]], *, label: str) -> dict[str, dict[str
     return output
 
 
+def _best_effort_embeddings(
+    repo_root: Path,
+    items: list[dict[str, str]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Extract independent embeddings without letting one short/bad clip abort evaluation.
+
+    pyannote can return an undefined speaker centroid for a short or effectively
+    non-speech generated sample. The worker contract correctly rejects such a
+    non-finite embedding, but evaluation should retain the other metrics and
+    report speaker similarity as unavailable for only that sample.
+    """
+
+    diarization = worker(repo_root, "diarization")
+    results: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for item in items:
+        item_id = str(item["id"])
+        try:
+            value = diarization.call(
+                repo_root,
+                "embed",
+                {"audio": str(item["audio"])},
+            )
+        except Exception as exc:
+            errors[item_id] = f"{type(exc).__name__}: {exc}"
+            continue
+        embedding = value.get("embedding") if isinstance(value, dict) else None
+        if embedding:
+            results[item_id] = value
+        else:
+            errors[item_id] = "speaker embedding was empty"
+    return results, errors
+
+
 def _identity(repo_root: Path, paths: PersonaPaths) -> list[float] | None:
     refs = [
         path
@@ -48,18 +82,13 @@ def _identity(repo_root: Path, paths: PersonaPaths) -> list[float] | None:
     ][:5]
     if not refs:
         return None
-    response = worker(repo_root, "diarization").call(
+    results, _ = _best_effort_embeddings(
         repo_root,
-        "batch",
-        {
-            "embeddings": [
-                {"id": str(index), "audio": str(path.resolve())}
-                for index, path in enumerate(refs)
-            ],
-            "diarizations": [],
-        },
+        [
+            {"id": str(index), "audio": str(path.resolve())}
+            for index, path in enumerate(refs)
+        ],
     )
-    results = _successful(response.get("embeddings") or [], label="identity embedding")
     embeddings = [
         result["embedding"]
         for result in results.values()
@@ -112,15 +141,7 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict:
         label="evaluation SenseVoice",
     )
 
-    diar_response = worker(repo_root, "diarization").call(
-        repo_root,
-        "batch",
-        {"embeddings": audio_items, "diarizations": []},
-    )
-    embedding_by_id = _successful(
-        diar_response.get("embeddings") or [],
-        label="evaluation speaker embedding",
-    )
+    embedding_by_id, embedding_errors = _best_effort_embeddings(repo_root, audio_items)
 
     rows = []
     for case in CASES:
@@ -137,10 +158,9 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict:
         ).ratio()
         acoustic = sense_by_id[case_id]
         speaker_score = None
-        if target_embedding is not None:
-            embedding = embedding_by_id[case_id].get("embedding")
-            if embedding:
-                speaker_score = cosine_similarity(target_embedding, embedding)
+        embedding = embedding_by_id.get(case_id, {}).get("embedding")
+        if target_embedding is not None and embedding:
+            speaker_score = cosine_similarity(target_embedding, embedding)
         rows.append(
             {
                 **case,
@@ -150,6 +170,7 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict:
                 "speaker_similarity": (
                     None if speaker_score is None else round(speaker_score, 4)
                 ),
+                "speaker_embedding_error": embedding_errors.get(case_id),
                 "detected_emotion": acoustic.get("emotion"),
                 "detected_events": acoustic.get("events", []),
             }
@@ -161,6 +182,7 @@ def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict:
             4,
         ),
         "speaker_similarity_mean": None,
+        "speaker_embedding_failures": len(embedding_errors),
         "emotion_accuracy": round(
             sum(row["detected_emotion"] == row["emotion"] for row in rows) / len(rows),
             4,
