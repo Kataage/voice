@@ -769,7 +769,12 @@ def validate_generation(
     if isinstance(manifest_provenance, dict):
         raw_contract = manifest_provenance.get("irodori_training_manifest_contract")
         if isinstance(raw_contract, str):
-            contract_path = (paths.root / raw_contract).resolve()
+            candidate_path = (paths.root / raw_contract).resolve()
+            try:
+                candidate_path.relative_to(paths.root.resolve())
+            except ValueError:
+                candidate_path = None
+            contract_path = candidate_path
     pair_contract = _read_json_file(contract_path) if contract_path is not None else None
     pair_lineage = pair_contract.get("prepare_lineage") if isinstance(pair_contract, dict) else None
     pair_ok = (
