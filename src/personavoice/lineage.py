@@ -136,6 +136,9 @@ _BACKENDS = {
     "large-v3": LEGACY_WHISPER,
     "whisper": LEGACY_WHISPER,
     "qwen": GENERAL_QWEN,
+    "qwen/qwen3-asr-1.7b": GENERAL_QWEN,
+    "openai/whisper-large-v3": LEGACY_WHISPER,
+    "jaykwok/qwen3-asr-1.7b-ja-anime-galgame-hf": DOMAIN_QWEN,
     "domain-qwen": DOMAIN_QWEN,
 }
 
