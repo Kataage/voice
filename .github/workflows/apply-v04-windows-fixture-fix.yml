@@ -1,0 +1,71 @@
+name: apply-v04-windows-fixture-fix
+
+on:
+  push:
+    branches: [26-feature]
+    paths:
+      - .github/workflows/apply-v04-windows-fixture-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: 26-feature
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Patch canonical v0.3 fixture newlines
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("tests/test_training_config_migration.py")
+          text = path.read_text(encoding="utf-8")
+          fn = text.index("def test_v03_artifact_adoption_requires_exact_completed_input_and_config_lineage")
+          end = text.index("\ndef test_v03_checkpoint_is_losslessly_seeded", fn)
+          section = text[fn:end]
+          old_a = '''    (paths.dataset / "irodori_source.jsonl").write_text(
+              '{"audio":"a.flac","text":"hello"}\n', encoding="utf-8"
+          )
+          '''
+          new_a = '''    (paths.dataset / "irodori_source.jsonl").write_text(
+              '{"audio":"a.flac","text":"hello"}\n', encoding="utf-8", newline="\n"
+          )
+          '''
+          old_b = '''    (paths.dataset / "lfm_train.jsonl").write_text(
+              '{"messages":[{"role":"assistant","content":"hello"}]}\n',
+              encoding="utf-8",
+          )
+          '''
+          new_b = '''    (paths.dataset / "lfm_train.jsonl").write_text(
+              '{"messages":[{"role":"assistant","content":"hello"}]}\n',
+              encoding="utf-8",
+              newline="\n",
+          )
+          '''
+          # This function writes lfm_train.jsonl twice; both writes must match
+          # the canonical newline='\\n' used by the v0.3 dataset exporter.
+          if section.count(old_a) != 1 or section.count(old_b) != 2:
+              raise SystemExit("v0.3 lineage fixture shape changed unexpectedly")
+          section = section.replace(old_a, new_a, 1).replace(old_b, new_b)
+          path.write_text(text[:fn] + section + text[end:], encoding="utf-8")
+      - name: Validate
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.12.5
+          uv sync --dev --locked
+          uv run --locked pytest tests/test_training_config_migration.py::test_v03_artifact_adoption_requires_exact_completed_input_and_config_lineage
+          uv run --locked ruff check tests/test_training_config_migration.py
+          git diff --check
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_training_config_migration.py
+          git commit -m "test: make v0.3 lineage fixture platform-independent"
+          git push origin HEAD:26-feature
