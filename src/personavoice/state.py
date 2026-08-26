@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from personavoice.atomic import atomic_write_json
 from personavoice.dataset import SCHEMA_VERSION as DATASET_SCHEMA_VERSION
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.model_assets import (
     ASR_MODEL_REVISION,
     LFM_MODEL_REVISION,
@@ -95,8 +96,12 @@ def _prepare_cache_policy() -> str:
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
 PREPARE_CACHE_POLICY_COMPATIBILITY = {
-    "14-b19d85f2c6e8eac470cf": frozenset(
+    # Core Profile and LFM export changes are runtime/training-lineage
+    # additions. Existing Prepare outputs remain valid and must not be
+    # discarded merely because this maintenance branch gained those fields.
+    "14-1f0e72b1f9d2a420a4c8": frozenset(
         {
+            "14-b19d85f2c6e8eac470cf",
             "14-9b93893d6b990319b60e",
             "12-6ef53c9f266fd6794c3e",
             "12-1d31ef1abd217bcf5c4f",
@@ -177,6 +182,15 @@ def _jsonl_contract(path: Path, *, path_key: str | None = None) -> int | None:
                 if not isinstance(value, dict):
                     return None
                 count += 1
+                if path.name == "lfm_train.jsonl":
+                    contract = value.get("lfm_contract")
+                    if contract is not None and (
+                        not isinstance(contract, dict)
+                        or set(contract) != {"schema_version", "fingerprint"}
+                        or contract.get("schema_version") != LFM_CONTRACT_SCHEMA_VERSION
+                        or contract.get("fingerprint") != LFM_CONTRACT_FINGERPRINT
+                    ):
+                        return None
                 if path_key is not None:
                     raw_path = value.get(path_key)
                     if not isinstance(raw_path, str) or not raw_path:

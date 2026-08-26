@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -26,6 +27,7 @@ REQUIRED_MODEL_FILES = (
     "special_tokens_map.json",
     "chat_template.jinja",
 )
+MAX_GENERATION_TOKENS = 1024
 
 
 def _nonempty_file(path: Path) -> bool:
@@ -156,6 +158,33 @@ def verify_adapter(adapter: Path) -> None:
         )
 
 
+def _generation_kwargs(payload: dict) -> dict:
+    raw_temperature = payload.get("temperature", 0.1)
+    if isinstance(raw_temperature, bool) or not isinstance(raw_temperature, (int, float)):
+        raise ValueError("LFM temperature must be a finite number")
+    temperature = float(raw_temperature)
+    if not math.isfinite(temperature) or temperature < 0:
+        raise ValueError("LFM temperature must be finite and non-negative")
+    raw_max_new_tokens = payload.get("max_new_tokens", 384)
+    if (
+        isinstance(raw_max_new_tokens, bool)
+        or not isinstance(raw_max_new_tokens, int)
+        or not 1 <= raw_max_new_tokens <= MAX_GENERATION_TOKENS
+    ):
+        raise ValueError(
+            "LFM max_new_tokens must be an integer between 1 and "
+            f"{MAX_GENERATION_TOKENS}"
+        )
+    options = {
+        "do_sample": temperature > 0,
+        "repetition_penalty": 1.05,
+        "max_new_tokens": raw_max_new_tokens,
+    }
+    if temperature > 0:
+        options.update({"temperature": temperature, "top_k": 50})
+    return options
+
+
 def infer(payload: dict) -> dict:
     tokenizer, model = load_base()
     adapter = payload.get("adapter")
@@ -177,11 +206,7 @@ def infer(payload: dict) -> dict:
         raise RuntimeError("LFM chat template did not return tensor input_ids")
     output = model.generate(
         **inputs,
-        do_sample=True,
-        temperature=float(payload.get("temperature", 0.1)),
-        top_k=50,
-        repetition_penalty=1.05,
-        max_new_tokens=int(payload.get("max_new_tokens", 384)),
+        **_generation_kwargs(payload),
     )
     generated = output[0, input_ids.shape[-1] :]
     text = tokenizer.decode(generated, skip_special_tokens=True).strip()

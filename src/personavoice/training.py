@@ -8,6 +8,7 @@ from pathlib import Path
 
 from personavoice.config import PersonaConfig
 from personavoice.irodori import base_checkpoint, prepare_manifest, train_irodori
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.model_assets import (
     IRODORI_DACVAE_SHA256,
     IRODORI_MODEL_SHA256,
@@ -94,6 +95,75 @@ def _fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
     return digest.hexdigest()
 
 
+def _non_lfm_fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
+    """Fingerprint Irodori/Seed-VC inputs independently from LFM export inputs."""
+
+    repo_root = paths.root.parents[1]
+    contract = {
+        "scope": "non-lfm",
+        "train_schema": TRAIN_SCHEMA_VERSION,
+        "irodori_source_revision": IRODORI_REVISION,
+        "irodori_model_sha256": IRODORI_MODEL_SHA256,
+        "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
+        "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
+        "seed_vc_source_revision": SEED_VC_REVISION,
+        "irodori_lock_sha256": _file_contract(repo_root / "locks" / "Irodori-TTS.uv.lock"),
+        "seed_vc_lock_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "uv.lock"),
+        "training_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "training.py"),
+        "irodori_code_sha256": _file_contract(repo_root / "src" / "personavoice" / "irodori.py"),
+        "seed_vc_worker_sha256": _file_contract(repo_root / "workers" / "seed_vc" / "worker.py"),
+        "training": {
+            key: value
+            for key, value in cfg.training.model_dump(mode="json").items()
+            if not key.startswith("lfm_")
+        },
+    }
+    digest = hashlib.sha256()
+    digest.update(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode())
+    for path in (
+        paths.dataset / "irodori_source.jsonl",
+        paths.dataset / "seed_vc" / "manifest.jsonl",
+    ):
+        if path.is_file():
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _lfm_fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
+    """Fingerprint only the LFM contract, export, model and LoRA settings."""
+
+    repo_root = paths.root.parents[1]
+    contract = {
+        "scope": "lfm",
+        "train_schema": TRAIN_SCHEMA_VERSION,
+        "lfm_contract_schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+        "lfm_contract_fingerprint": LFM_CONTRACT_FINGERPRINT,
+        "lfm_revision": LFM_MODEL_REVISION,
+        "lfm_lock_sha256": _file_contract(repo_root / "workers" / "lfm" / "uv.lock"),
+        "lfm_worker_sha256": _file_contract(repo_root / "workers" / "lfm" / "worker.py"),
+        "lfm_train_code_sha256": _file_contract(repo_root / "workers" / "lfm" / "train.py"),
+        "lfm_checkpoint_contract_code_sha256": _file_contract(
+            repo_root / "workers" / "lfm" / "checkpoint_contract.py"
+        ),
+        "lfm_model_contract_code_sha256": _file_contract(
+            repo_root / "workers" / "lfm" / "model_contract.py"
+        ),
+        "training": {
+            key: value
+            for key, value in cfg.training.model_dump(mode="json").items()
+            if key.startswith("lfm_")
+        },
+    }
+    digest = hashlib.sha256()
+    digest.update(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode())
+    path = paths.dataset / "lfm_train.jsonl"
+    if path.is_file():
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def _invalidate_training_artifacts(paths: PersonaPaths) -> None:
     for target in (
         paths.models / "irodori",
@@ -105,6 +175,12 @@ def _invalidate_training_artifacts(paths: PersonaPaths) -> None:
     (paths.dataset / "irodori_manifest.jsonl").unlink(missing_ok=True)
     for config in paths.cache.glob("irodori_*.yaml"):
         config.unlink(missing_ok=True)
+
+
+def _invalidate_lfm_artifacts(paths: PersonaPaths) -> None:
+    """Invalidate only derived LFM artifacts when the LFM contract changes."""
+
+    shutil.rmtree(paths.models / "lfm", ignore_errors=True)
 
 
 def _has_training_artifacts(paths: PersonaPaths) -> bool:
@@ -390,6 +466,8 @@ def train_persona(
         )
 
     fingerprint = _fingerprint(paths, cfg)
+    non_lfm_fingerprint = _non_lfm_fingerprint(paths, cfg)
+    lfm_fingerprint = _lfm_fingerprint(paths, cfg)
     previous = store.stage("train")
     if not force and store.is_complete("train", fingerprint):
         return previous.get("result", {})
@@ -397,9 +475,20 @@ def train_persona(
     previous_fingerprint = previous.get("fingerprint")
     inputs_changed = bool(previous_fingerprint and previous_fingerprint != fingerprint)
     untracked_artifacts = previous_fingerprint is None and _has_training_artifacts(paths)
+    previous_result = previous.get("result")
+    lfm_only_change = bool(
+        not force
+        and inputs_changed
+        and isinstance(previous_result, dict)
+        and previous_result.get("non_lfm_fingerprint") == non_lfm_fingerprint
+        and previous_result.get("lfm_fingerprint") != lfm_fingerprint
+    )
     if force or inputs_changed or untracked_artifacts:
-        _invalidate_training_artifacts(paths)
-        if cfg.training.seed_vc_finetune:
+        if lfm_only_change:
+            _invalidate_lfm_artifacts(paths)
+        else:
+            _invalidate_training_artifacts(paths)
+        if cfg.training.seed_vc_finetune and not lfm_only_change:
             _clear_seed_vc_runs(repo_root, cfg.name)
 
     with store.running("train", fingerprint):
@@ -423,6 +512,8 @@ def train_persona(
         result = {
             "train_schema": TRAIN_SCHEMA_VERSION,
             "fingerprint": fingerprint,
+            "non_lfm_fingerprint": non_lfm_fingerprint,
+            "lfm_fingerprint": lfm_fingerprint,
             "irodori": irodori,
             "lfm_adapter": lfm,
             "seed_vc_cfm": seed,
