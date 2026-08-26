@@ -660,6 +660,7 @@ def download_models(
     *,
     hf_token: str | None = None,
     include_seed_vc: bool = True,
+    include_vevo2: bool | None = None,
     asr_backends: tuple[str, ...] | None = None,
 ) -> dict:
     env = local_model_env(repo_root, offline=False)
