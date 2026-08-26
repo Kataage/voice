@@ -25,13 +25,13 @@ from personavoice.lineage import (
 from personavoice.pipeline import prepare_persona
 from personavoice.profile import load_core_profile
 from personavoice.project import find_repo_root, get_persona, init_persona
-from personavoice.separation import register_separator_model
 from personavoice.repair import repair_failed_model_materializations
+from personavoice.separation import register_separator_model
 from personavoice.setup_env import download_models, install_environments
 from personavoice.setup_lock import SetupLockError, setup_lock
 from personavoice.stage_lock import StageLockError
-from personavoice.status import persona_status
 from personavoice.state import StateStore
+from personavoice.status import persona_status
 from personavoice.training import train_persona, validate_generation
 
 app = typer.Typer(no_args_is_help=True, help="PersonaVoice local-first voice persona toolkit")
@@ -353,33 +353,63 @@ def validate(
 @app.command()
 def activate(
     name: str,
-    lineage_id: str | None = typer.Option(None, "--lineage-id"),
-    generation_id: str | None = typer.Option(None, "--generation-id"),
+    lineage_id: str | None = typer.Option(
+        None,
+        "--lineage-id",
+        help="Prepare lineage to activate; use with --generation-id for rollback.",
+    ),
+    generation_id: str | None = typer.Option(
+        None,
+        "--generation-id",
+        help="Validated v0.3 generation to activate or restore.",
+    ),
 ) -> None:
     """Atomically activate a validated v0.3 candidate generation."""
 
     _, paths, _ = _load(name)
-    result = StateStore(paths.state).stage("train").get("result")
-    if not isinstance(result, dict):
-        raise typer.BadParameter("No trained candidate exists; run persona train first")
-    selected_lineage = lineage_id or result.get("lineage_id")
-    selected_generation = generation_id or result.get("generation_id")
-    if not isinstance(selected_lineage, str) or not isinstance(selected_generation, str):
-        raise typer.BadParameter("Training result has no lineage/generation identity")
-    if result.get("lineage_id") != selected_lineage or result.get("generation_id") != selected_generation:
-        raise typer.BadParameter(
-            "The requested candidate is not the currently recorded train result; "
-            "validate that candidate explicitly before activation."
-        )
-    validation = result.get("validation")
-    if not isinstance(validation, dict) or validation.get("passed") is not True:
-        raise typer.BadParameter("Candidate has not passed validation; run persona validate first")
+    if (lineage_id is None) != (generation_id is None):
+        raise typer.BadParameter("--lineage-id and --generation-id must be supplied together")
+
+    selected_lineage: str
+    selected_generation: str
+    selected_fingerprint: str
+    if lineage_id is not None and generation_id is not None:
+        try:
+            candidate = paths.for_generation(lineage_id, generation_id)
+            manifest = json.loads(candidate.generation_manifest.read_text(encoding="utf-8"))
+        except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(
+                "The requested candidate generation manifest is missing or unreadable"
+            ) from exc
+        if not isinstance(manifest, dict) or not isinstance(
+            manifest.get("generation_fingerprint"), str
+        ):
+            raise typer.BadParameter("The requested candidate has no valid generation fingerprint")
+        selected_lineage = lineage_id
+        selected_generation = generation_id
+        selected_fingerprint = manifest["generation_fingerprint"]
+    else:
+        result = StateStore(paths.state).stage("train").get("result")
+        if not isinstance(result, dict):
+            raise typer.BadParameter("No trained candidate exists; run persona train first")
+        selected_lineage = result.get("lineage_id")
+        selected_generation = result.get("generation_id")
+        selected_fingerprint = result.get("generation_fingerprint")
+        if not all(
+            isinstance(value, str)
+            for value in (selected_lineage, selected_generation, selected_fingerprint)
+        ):
+            raise typer.BadParameter("Training result has no complete lineage/generation identity")
+        validation = result.get("validation")
+        if not isinstance(validation, dict) or validation.get("passed") is not True:
+            raise typer.BadParameter("Candidate has not passed validation; run persona validate first")
+
     try:
         pointer = activate_generation(
             paths,
             selected_lineage,
             generation_id=selected_generation,
-            generation_fingerprint=result.get("generation_fingerprint"),
+            generation_fingerprint=selected_fingerprint,
         )
     except (ValueError, RuntimeError) as exc:
         console.print(f"[bold red]{exc}[/bold red]")

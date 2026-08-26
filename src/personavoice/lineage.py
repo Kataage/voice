@@ -482,6 +482,8 @@ def _verify_generation_manifest(
         raise RuntimeError("Candidate generation manifest has an unsupported schema")
     if manifest.get("kind") != "personavoice-v03-generation":
         raise RuntimeError("Candidate generation is not a v0.3 generation manifest")
+    if manifest.get("architecture") != "v0.3-pre-full-fine-tuning":
+        raise RuntimeError("Candidate generation is not the v0.3 pre-full-fine-tuning architecture")
     if candidate.generation_id is not None and manifest.get("generation_id") != candidate.generation_id:
         raise RuntimeError("Candidate generation id does not match its path")
     if candidate.generation_id is None and manifest.get("generation_id") is not None:
