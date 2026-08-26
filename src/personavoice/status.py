@@ -132,24 +132,18 @@ def persona_status(
             except (OSError, ValueError, TypeError):
                 prepare["current_complete"] = False
 
-        if prepared.lineage_id is None:
-            train["verification_error"] = (
-                "no immutable Prepare lineage is selected; run persona prepare before training"
-            )
-            train["current_complete"] = False
-            train["fingerprint_current"] = False
+        try:
+            current_train = _training_fingerprint(prepared, cfg)
+        except (OSError, ValueError, TypeError) as exc:
+            train["verification_error"] = f"{type(exc).__name__}: {exc}"
         else:
+            train["current_fingerprint"] = current_train
+            train["fingerprint_current"] = train["recorded_fingerprint"] == current_train
             try:
-                current_train = _training_fingerprint(prepared, cfg)
-            except (OSError, ValueError, TypeError) as exc:
-                train["verification_error"] = f"{type(exc).__name__}: {exc}"
-            else:
-                train["current_fingerprint"] = current_train
-                train["fingerprint_current"] = train["recorded_fingerprint"] == current_train
-                try:
-                    train["current_complete"] = store.is_complete("train", current_train)
-                except (OSError, ValueError, TypeError):
-                    train["current_complete"] = False
+                train["current_complete"] = store.is_complete("train", current_train)
+            except (OSError, ValueError, TypeError):
+                train["current_complete"] = False
+        train["lineage_required_for_new_training"] = prepared.lineage_id is None
 
         # Training has the same hard dependency in train_persona: a current,
         # complete prepare stage is required before a trained artifact can be
