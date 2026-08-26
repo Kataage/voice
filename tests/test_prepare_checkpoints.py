@@ -211,11 +211,13 @@ def test_prepare_policy_text_contract_is_line_ending_independent(tmp_path: Path)
 
 
 def test_prepare_policy_migration_is_scoped_to_exact_new_generation():
-    assert PREPARE_CACHE_POLICY_VERSION == "14-1f0e72b1f9d2a420a4c8"
+    assert PREPARE_CACHE_POLICY_VERSION == "14-8fa7f248e19dab94265c"
     assert set(PREPARE_CACHE_POLICY_COMPATIBILITY) == {PREPARE_CACHE_POLICY_VERSION}
     previous = PREPARE_CACHE_POLICY_COMPATIBILITY[PREPARE_CACHE_POLICY_VERSION]
     assert previous == frozenset(
         {
+            "14-5632a9a5a5b360e5430a",
+            "14-89127e1d568497e01210",
             "14-b19d85f2c6e8eac470cf",
             "14-9b93893d6b990319b60e",
             "12-6ef53c9f266fd6794c3e",

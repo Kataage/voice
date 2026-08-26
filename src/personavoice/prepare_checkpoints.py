@@ -122,15 +122,25 @@ def prepare_batch_progress(persona_root: Path) -> dict[str, dict[str, Any]]:
     """
 
     output: dict[str, dict[str, Any]] = {}
-    for kind in ("identity", "asr", "diarization", "sense"):
-        directory = checkpoint_dir(persona_root / "cache" / kind)
-        progress = _progress_value(directory / _PROGRESS_FILE)
-        if progress is None:
-            continue
-        checkpointed = sum(
-            1
-            for path in directory.glob("*.json")
-            if path.name != _PROGRESS_FILE and path.is_file()
+    cache_roots = [persona_root / "cache"]
+    generations = persona_root / "generations" / "prepare"
+    if generations.is_dir():
+        cache_roots.extend(
+            path / "cache"
+            for path in sorted(generations.iterdir())
+            if path.is_dir() and re.fullmatch(r"pl-[0-9a-f]{32}", path.name)
         )
-        output[kind] = {**progress, "checkpointed_successes": checkpointed}
+    for cache_root in cache_roots:
+        for kind in ("identity", "asr", "diarization", "sense", "alignment"):
+            directory = checkpoint_dir(cache_root / kind)
+            progress = _progress_value(directory / _PROGRESS_FILE)
+            if progress is None:
+                continue
+            checkpointed = sum(
+                1
+                for path in directory.glob("*.json")
+                if path.name != _PROGRESS_FILE and path.is_file()
+            )
+            key = kind if cache_root == persona_root / "cache" else f"{cache_root.parent.name}:{kind}"
+            output[key] = {**progress, "checkpointed_successes": checkpointed}
     return output

@@ -6,11 +6,34 @@ import math
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+from personavoice.asr_contract import (
+    alignment_contract_for_result,
+    alignment_hash,
+    normalize_asr_result,
+    words_alignment,
+)
 from personavoice.atomic import atomic_write_json
 from personavoice.captions import annotate_text, build_caption, normalize_events
 from personavoice.config import PersonaConfig
-from personavoice.dataset import export_irodori, export_lfm, export_seed_vc, replace_utterances
+from personavoice.dataset import (
+    export_irodori,
+    export_lfm,
+    export_seed_vc,
+    load_lfm_tokenizer,
+    replace_utterances,
+)
+from personavoice.lineage import (
+    ALIGNMENT_CONTRACT_VERSION,
+    ASR_CONTRACT_VERSION,
+    build_lineage_record,
+    lineage_identity,
+    master_fingerprint,
+    prepare_lineage_seed,
+    resolve_alignment,
+    resolve_backend,
+)
 from personavoice.media import (
     cut_audio,
     extract_lossless_audio,
@@ -26,13 +49,15 @@ from personavoice.prepare_checkpoints import (
     recover_checkpoint,
 )
 from personavoice.project import PersonaPaths
+from personavoice.separation import materialize_analysis_audio
 from personavoice.speaker import (
     TARGET_NOT_FOUND,
     dominant_speaker,
     overlap_ratio,
     select_target_speaker,
 )
-from personavoice.state import StateStore
+from personavoice.state import StateStore, _prepare_cache_policy
+from personavoice.worker_contracts import valid_alignment_result
 from personavoice.workers import worker
 
 PREPARE_SCHEMA_VERSION = 4
@@ -83,7 +108,10 @@ def _batch_results(rows: list[dict[str, Any]], *, operation: str) -> dict[str, A
     return output
 
 
-def _words(asr: dict[str, Any]) -> list[dict[str, Any]]:
+def _words(
+    asr: dict[str, Any],
+    alignment: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for segment in asr.get("segments", []):
         for word in segment.get("words") or []:
@@ -100,6 +128,24 @@ def _words(asr: dict[str, Any]) -> list[dict[str, Any]]:
                     "probability": word.get("probability"),
                 }
             )
+    if out or not isinstance(alignment, dict):
+        return out
+    for unit in alignment.get("units") or []:
+        if not isinstance(unit, dict):
+            continue
+        start = unit.get("start")
+        end = unit.get("end")
+        text = unit.get("unit") or unit.get("text") or ""
+        if start is None or end is None or not isinstance(text, str) or not text.strip():
+            continue
+        out.append(
+            {
+                "start": float(start),
+                "end": float(end),
+                "text": text,
+                "probability": unit.get("confidence"),
+            }
+        )
     return out
 
 
@@ -208,8 +254,9 @@ def _turn_rows(
     exclusive_turns: list[dict[str, Any]],
     *,
     max_seconds: float,
+    alignment: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    words = _words(asr)
+    words = _words(asr, alignment)
     if not words:
         return _fallback_segments(asr, exclusive_turns)
     rows: list[dict[str, Any]] = []
@@ -354,6 +401,20 @@ def _batch_asr(
     pending = []
     cache_paths: dict[str, Path] = {}
     checkpoints = checkpoint_dir(paths.cache / "asr")
+
+    def normalize(source: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
+        # A historical legacy cache may not carry backend provenance.  It remains
+        # readable for compatibility, while every worker result written by the
+        # current contract is normalized and therefore lineage-bound.
+        if not value.get("backend"):
+            return value
+        return normalize_asr_result(
+            value,
+            backend=cfg.prepare.asr_model,
+            source_audio=source["audio"],
+            analysis_audio=source.get("analysis_audio") or source["audio"],
+        )
+
     for source in sources:
         source_id = str(source["source_id"])
         cache = paths.cache / "asr" / f"{source_id}.json"
@@ -361,15 +422,16 @@ def _batch_asr(
         cached = _read_cache_json(cache) if cache.is_file() else None
         if cached is not None:
             discard_checkpoint(checkpoints, source_id)
-            values[source_id] = cached
+            values[source_id] = normalize(source, cached)
             continue
         recovered = recover_checkpoint(checkpoints, source_id, "asr")
         if recovered is not None:
             _dump(cache, recovered)
             discard_checkpoint(checkpoints, source_id)
-            values[source_id] = recovered
+            values[source_id] = normalize(source, recovered)
             continue
-        pending.append({"id": source_id, "audio": str(source["audio"].resolve())})
+        analysis_audio = source.get("analysis_audio") or source["audio"]
+        pending.append({"id": source_id, "audio": str(Path(analysis_audio).resolve())})
     if pending:
         response = worker(repo_root, "asr").call(
             repo_root,
@@ -378,18 +440,159 @@ def _batch_asr(
                 "items": pending,
                 "model": cfg.prepare.asr_model,
                 "compute_type": cfg.prepare.asr_compute_type,
+                "device": cfg.prepare.asr_device,
+                "dtype": cfg.prepare.asr_dtype,
                 "language": cfg.prepare.language,
+                "contract_version": ASR_CONTRACT_VERSION,
                 "checkpoint_dir": str(checkpoints.resolve()),
             },
         )
         results = _batch_results(response.get("results") or [], operation="ASR")
         for source_id, result in results.items():
+            source = next(item for item in sources if str(item["source_id"]) == source_id)
+            result = normalize(source, result)
             _dump(cache_paths[source_id], result)
             discard_checkpoint(checkpoints, source_id)
             values[source_id] = result
         cleanup_checkpoint_dir(checkpoints)
     elif checkpoints.exists():
         cleanup_checkpoint_dir(checkpoints)
+    return values
+
+
+def _batch_alignment(
+    repo_root: Path,
+    paths: PersonaPaths,
+    cfg: PersonaConfig,
+    sources: list[dict[str, Any]],
+    asr_by_source: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Attach a separately versioned alignment contract to every ASR result."""
+
+    backend = resolve_backend(cfg.prepare.asr_model)
+    alignment_spec = resolve_alignment(backend.key, cfg.prepare.alignment_backend)
+    cache_root = paths.cache / "alignment"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    values: dict[str, dict[str, Any]] = {}
+    pending: list[dict[str, Any]] = []
+    cache_paths: dict[str, Path] = {}
+    for source in sources:
+        source_id = str(source["source_id"])
+        asr = asr_by_source[source_id]
+        request = alignment_contract_for_result(
+            asr,
+            asr_backend=backend.key,
+            requested=cfg.prepare.alignment_backend,
+        )
+        transcript_hash = str(request["transcript_hash"])
+        cache = cache_root / f"{source_id}-{alignment_spec.revision[:16]}.json"
+        cache_paths[source_id] = cache
+        cached = _read_cache_json(cache) if cache.is_file() else None
+        if (
+            isinstance(cached, dict)
+            and cached.get("contract_version") == ALIGNMENT_CONTRACT_VERSION
+            and cached.get("key") == alignment_spec.key
+            and cached.get("backend") == alignment_spec.key
+            and cached.get("model_id") == alignment_spec.model_id
+            and cached.get("model_revision") == alignment_spec.revision
+            and cached.get("transcript_hash") == transcript_hash
+            and cached.get("asr_backend") == backend.key
+            and cached.get("asr_model_id") == backend.model_id
+            and cached.get("asr_model_revision") == backend.revision
+            and cached.get("revision") == alignment_spec.revision
+            and isinstance(cached.get("hash"), str)
+            and cached.get("hash") == alignment_hash(cached.get("units") or [])
+            and valid_alignment_result(cached)
+        ):
+            values[source_id] = cached
+            continue
+        if cache.exists():
+            cache.unlink(missing_ok=True)
+
+        embedded = asr.get("alignment") if isinstance(asr, dict) else None
+        if (
+            isinstance(embedded, dict)
+            and embedded.get("model_revision") == alignment_spec.revision
+        ):
+            embedded_value = {
+                **embedded,
+                **request,
+                "transcript_hash": transcript_hash,
+                "hash": alignment_hash(embedded.get("units") or []),
+            }
+            if (
+                embedded_value.get("key") == alignment_spec.key
+                and embedded_value.get("backend") == alignment_spec.key
+                and embedded_value.get("model_id") == alignment_spec.model_id
+                and embedded_value.get("asr_backend") == backend.key
+                and embedded_value.get("asr_model_id") == backend.model_id
+                and embedded_value.get("asr_model_revision") == backend.revision
+                and valid_alignment_result(embedded_value)
+            ):
+                values[source_id] = embedded_value
+                _dump(cache, values[source_id])
+                continue
+        if alignment_spec.key == "whisper-native-words":
+            alignment = words_alignment(asr.get("segments") or [])
+            values[source_id] = {
+                **alignment,
+                **request,
+                "backend": alignment_spec.key,
+                "model_id": alignment_spec.model_id,
+                "model_revision": alignment_spec.revision,
+                "transcript_hash": transcript_hash,
+            }
+            _dump(cache, values[source_id])
+            continue
+        analysis_audio = source.get("analysis_audio") or source["audio"]
+        pending.append(
+            {
+                "id": source_id,
+                "audio": str(Path(analysis_audio).resolve()),
+                "transcript": "".join(
+                    str(segment.get("text") or "")
+                    for segment in asr.get("segments", [])
+                ).strip(),
+                "segments": asr.get("segments") or [],
+                "contract": request,
+            }
+        )
+    if pending:
+        response = worker(repo_root, "asr").call(
+            repo_root,
+            "batch_align",
+            {
+                "items": pending,
+                "contract_version": ALIGNMENT_CONTRACT_VERSION,
+                "backend": alignment_spec.key,
+                "model": alignment_spec.model_id,
+                "revision": alignment_spec.revision,
+                "asr_backend": backend.key,
+                "device": cfg.prepare.asr_device,
+                "dtype": cfg.prepare.asr_dtype,
+                "checkpoint_dir": str(checkpoint_dir(cache_root)),
+            },
+        )
+        results = _batch_results(response.get("results") or [], operation="ASR alignment")
+        for source_id, result in results.items():
+            if not isinstance(result, dict):
+                raise RuntimeError(f"ASR alignment returned an invalid result for {source_id}")
+            expected = alignment_contract_for_result(
+                asr_by_source[source_id],
+                asr_backend=backend.key,
+                requested=cfg.prepare.alignment_backend,
+            )
+            if result.get("revision") != alignment_spec.revision:
+                raise RuntimeError("ASR alignment revision does not match the requested contract")
+            result = {
+                **result,
+                **expected,
+                "hash": alignment_hash(result.get("units") or []),
+            }
+            if not valid_alignment_result(result):
+                raise RuntimeError(f"ASR alignment returned an invalid result for {source_id}")
+            _dump(cache_paths[source_id], result)
+            values[source_id] = result
     return values
 
 
@@ -561,6 +764,9 @@ def _prepare_fingerprint(paths: PersonaPaths, cfg: PersonaConfig) -> str:
         "raw": inventory_fingerprint(paths.raw),
         "identity": inventory_fingerprint(paths.identity),
         "config": cfg.prepare.model_dump(mode="json"),
+        # State-level completion must notice a changed ASR/alignment/
+        # separation implementation before it can return an older lineage.
+        "implementation_policy": _prepare_cache_policy(),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -603,27 +809,79 @@ def prepare_persona(
     if not force and store.is_complete("prepare", fingerprint):
         return store.stage("prepare").get("result", {})
 
-    with store.running("prepare", fingerprint, force=force):
+    seed = prepare_lineage_seed(
+        paths,
+        cfg,
+        prepare_schema=PREPARE_SCHEMA_VERSION,
+        # The dynamic implementation contract is recorded in the lineage;
+        # the stable state marker remains reserved for legacy root caches.
+        cache_policy_version=_prepare_cache_policy(),
+    )
+    if force:
+        # A forced rerun is always a fresh candidate.  In particular, do not
+        # rewrite the Prepare dataset shared by an already active generation.
+        seed["force_candidate_nonce"] = uuid4().hex
+    lineage_id, lineage_fingerprint = lineage_identity(seed)
+    candidate_paths = paths.for_lineage(lineage_id)
+    candidate_paths.ensure_lineage()
+    # All generated data below is written through this immutable candidate view.
+    # raw/identity/config/state still resolve to the persona root.
+    paths = candidate_paths
+
+    with store.running(
+        "prepare",
+        fingerprint,
+        force=force,
+        lineage=True,
+        lineage_cache_root=paths.cache,
+    ):
         source_inventory = inventory(paths.raw)
         _dump(paths.dataset / "source_inventory.json", source_inventory)
 
         prepared_sources: list[dict[str, Any]] = []
+        separation_rows: list[dict[str, Any]] = []
         for source in source_inventory:
             source_id = source["sha256"][:16]
             source_audio = paths.cache / "audio" / f"{source_id}.flac"
             if not _nonempty_file(source_audio):
                 source_audio.unlink(missing_ok=True)
                 extract_lossless_audio(Path(source["absolute_path"]), source_audio)
+            analysis_audio, separation = materialize_analysis_audio(
+                source_audio,
+                paths,
+                source_id,
+                policy=cfg.prepare.separation_policy,
+                metadata=source,
+            )
+            separation_rows.append(
+                {
+                    "source_id": source_id,
+                    "canonical_audio": str(source_audio.resolve()),
+                    "analysis_audio": str(analysis_audio.resolve()),
+                    **separation,
+                }
+            )
             prepared_sources.append(
                 {
                     "source_id": source_id,
                     "source": source,
                     "audio": source_audio,
+                    "canonical_audio": source_audio,
+                    "analysis_audio": analysis_audio,
+                    "separation": separation,
                 }
             )
+        _dump(paths.dataset / "analysis_audio.json", separation_rows)
 
         identity_embeddings = _identity_embeddings(repo_root, paths)
         asr_by_source = _batch_asr(repo_root, paths, cfg, prepared_sources)
+        alignment_by_source = _batch_alignment(
+            repo_root,
+            paths,
+            cfg,
+            prepared_sources,
+            asr_by_source,
+        )
         diar_by_source = _batch_diarization(repo_root, paths, prepared_sources)
         all_rows: list[dict[str, Any]] = []
         identity_rejections: dict[str, dict[str, Any]] = {}
@@ -632,7 +890,10 @@ def prepare_persona(
             source_id = str(prepared["source_id"])
             source = prepared["source"]
             source_audio: Path = prepared["audio"]
+            analysis_audio: Path = prepared["analysis_audio"]
             asr = asr_by_source[source_id]
+            alignment = alignment_by_source[source_id]
+            asr_spec = resolve_backend(cfg.prepare.asr_model)
             diarization = diar_by_source[source_id]
             embeddings = {
                 str(key): value
@@ -655,6 +916,7 @@ def prepare_persona(
                 asr,
                 exclusive,
                 max_seconds=cfg.prepare.max_clip_seconds,
+                alignment=alignment,
             )
             source_rows = _merge_rows(
                 source_rows,
@@ -685,6 +947,43 @@ def prepare_persona(
                     "caption": "",
                     "audio_path": None,
                     "excluded_reason": None,
+                    "canonical_audio_path": str(source_audio.resolve()),
+                    "analysis_audio_path": str(analysis_audio.resolve()),
+                    "source_audio_kind": "canonical",
+                    "separation": prepared["separation"],
+                    "asr_backend": asr.get("backend") or asr_spec.key,
+                    "asr_model_id": asr.get("model_id") or asr_spec.model_id,
+                    "asr_model_revision": asr.get("model_revision") or asr_spec.revision,
+                    "asr_language_probability": asr.get("language_probability"),
+                    "asr_segment_confidence": [
+                        segment.get("confidence")
+                        for segment in asr.get("segments") or []
+                        if isinstance(segment, dict) and segment.get("confidence") is not None
+                    ],
+                    "transcript_hash": (
+                        asr.get("provenance", {}).get("transcript_hash")
+                        if isinstance(asr.get("provenance"), dict)
+                        else hashlib.sha256(
+                            json.dumps(
+                                asr.get("segments") or [],
+                                sort_keys=True,
+                                ensure_ascii=False,
+                            ).encode("utf-8")
+                        ).hexdigest()
+                    ),
+                    "alignment_backend": alignment.get("key"),
+                    "alignment_model_id": alignment.get("model_id"),
+                    "alignment_model_revision": alignment.get("revision"),
+                    "alignment_hash": alignment.get("hash"),
+                    "boundary_evidence": {
+                        "source": "diarization-turn-and-asr-word-boundary",
+                        "clip_start": round(start, 3),
+                        "clip_end": round(end, 3),
+                        "canonical_audio": str(source_audio.resolve()),
+                        "analysis_audio": str(analysis_audio.resolve()),
+                        "asr_segment_count": len(asr.get("segments") or []),
+                        "alignment_units": len(alignment.get("units") or []),
+                    },
                 }
                 if target and overlap > cfg.prepare.max_overlap_ratio:
                     item["excluded_reason"] = "overlap"
@@ -737,8 +1036,33 @@ def prepare_persona(
             master_db,
             paths.dataset / "irodori_source.jsonl",
             cfg.name,
+            report_path=paths.dataset / "irodori_quality_report.json",
+            lineage_metadata={
+                "lineage_id": lineage_id,
+                "lineage_fingerprint": lineage_fingerprint,
+                "master_fingerprint": master_fingerprint(all_rows),
+            },
+            require_provenance=True,
         )
-        lfm_count = export_lfm(master_db, paths.dataset / "lfm_train.jsonl", cfg.name)
+        lfm_report_path = paths.dataset / "lfm_quality_report.json"
+        lfm_tokenizer = (
+            load_lfm_tokenizer(repo_root / "models" / "lfm" / "base")
+            if cfg.training.lfm_lora
+            else None
+        )
+        lfm_count = export_lfm(
+            master_db,
+            paths.dataset / "lfm_train.jsonl",
+            cfg.name,
+            report_path=lfm_report_path,
+            lineage_metadata={
+                "lineage_id": lineage_id,
+                "lineage_fingerprint": lineage_fingerprint,
+                "master_fingerprint": master_fingerprint(all_rows),
+            },
+            tokenizer=lfm_tokenizer,
+            max_tokens=cfg.training.lfm_max_tokens,
+        )
         seed_count = export_seed_vc(master_db, paths.dataset / "seed_vc")
         target_rows = [row for row in all_rows if row.get("target")]
         usable = [
@@ -746,8 +1070,33 @@ def prepare_persona(
             for row in target_rows
             if row.get("audio_path") and row.get("text_annotated")
         ]
+        prepared_master_fingerprint = master_fingerprint(all_rows)
+        lineage_record = build_lineage_record(
+            seed,
+            lineage_id=lineage_id,
+            lineage_fingerprint=lineage_fingerprint,
+            master_fingerprint=prepared_master_fingerprint,
+            source_count=len(source_inventory),
+            utterance_count=len(all_rows),
+        )
+        _dump(paths.lineage_record, lineage_record)
+
+        def _relative(path: Path) -> str:
+            return path.resolve().relative_to(paths.root.resolve()).as_posix()
+
         result = {
             "prepare_schema": PREPARE_SCHEMA_VERSION,
+            "lineage_schema": 1,
+            "lineage_id": lineage_id,
+            "lineage_fingerprint": lineage_fingerprint,
+            "master_fingerprint": prepared_master_fingerprint,
+            "asr_backend": resolve_backend(cfg.prepare.asr_model).key,
+            "alignment_backend": resolve_alignment(
+                cfg.prepare.asr_model,
+                cfg.prepare.alignment_backend,
+            ).key,
+            "separation_policy": cfg.prepare.separation_policy,
+            "separation_report": _relative(paths.dataset / "analysis_audio.json"),
             "sources": len(source_inventory),
             "skipped_sources": len(skipped_report),
             "utterances": len(all_rows),
@@ -761,7 +1110,17 @@ def prepare_persona(
             "irodori_examples": irodori_count,
             "lfm_examples": lfm_count,
             "seed_vc_examples": seed_count,
-            "master_db": str(master_db.resolve()),
+            "master_db": _relative(master_db),
+            "dataset_root": _relative(paths.dataset),
+            "references_root": _relative(paths.references),
+            "cache_root": _relative(paths.cache),
+            "models_root": _relative(paths.models),
+            "outputs_root": _relative(paths.outputs),
+            "lineage_record": _relative(paths.lineage_record),
+            "lfm_quality_report": _relative(lfm_report_path),
+            "irodori_quality_report": _relative(
+                paths.dataset / "irodori_quality_report.json"
+            ),
         }
         store.set_result("prepare", result)
         return result

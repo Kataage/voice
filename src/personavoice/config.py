@@ -23,8 +23,26 @@ class PrepareConfig(StrictConfigModel):
     language: str = Field(default="ja", min_length=1)
     # PersonaVoice setup/cache contracts audit and materialize exactly this ASR model.
     # Allowing an arbitrary model name here could silently bypass those guarantees.
-    asr_model: Literal["large-v3"] = "large-v3"
+    asr_model: Literal[
+        "large-v3",
+        "whisper-large-v3",
+        "openai/whisper-large-v3",
+        "qwen3-asr-1.7b",
+        "Qwen/Qwen3-ASR-1.7B",
+        "qwen3-asr-1.7b-ja-anime-galgame-hf",
+        "jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame-hf",
+    ] = "large-v3"
     asr_compute_type: str = Field(default="auto", min_length=1)
+    asr_device: Literal["auto", "cpu", "cuda"] = "auto"
+    asr_dtype: Literal["auto", "fp16", "fp32"] = "auto"
+    alignment_backend: Literal[
+        "auto",
+        "whisper-native",
+        "qwen3-forced-aligner-0.6b",
+        "domain-ctc",
+        "domain-ctc-aligner",
+    ] = "auto"
+    separation_policy: Literal["off", "auto", "always"] = "auto"
     min_clip_seconds: float = Field(default=1.0, gt=0)
     max_clip_seconds: float = Field(default=18.0, gt=0)
     merge_gap_seconds: float = Field(default=0.45, ge=0)
@@ -51,6 +69,7 @@ class TrainingConfig(StrictConfigModel):
     irodori_speaker_inversion: bool = True
     irodori_lora: bool = True
     lfm_lora: bool = True
+    lfm_max_tokens: int = Field(default=2048, ge=32, le=32768)
     seed_vc_finetune: bool = False
     irodori_max_steps: int = Field(default=4000, ge=1)
     speaker_inversion_max_steps: int = Field(default=2000, ge=1)

@@ -10,9 +10,7 @@
 6. consent gate、local bind、secret非保存をデフォルトにする。
 7. upstream revisionと全Python依存をlockし、同じcheckoutから同じ環境を再現できるようにする。
 
-v0.3のCore Profile/LFM expressive-plan runtimeはv0.4と同じlogical
-contractを使う。ただしこのbranchのtraining architectureは既存のLoRA/
-Speaker Inversion構成のままで、v0.4のfull-model実行基盤は持ち込まない。
+Core Profile、canonical voice plan、LFM malformed/empty/degenerate boundaryは既存のlogical contractを再利用する。このrelease/0.3のtraining architectureはLFM LoRA + Irodori Speaker Inversion/LoRA + Seed-VCのままで、別のfull-model training/execution/publication architectureは含めない。
 
 ## Runtime layout
 
@@ -96,3 +94,28 @@ Irodori/Seed-VCはsubprocess終了コードだけでなく生成WAVの実在と�
 After `persona setup`, root passes `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` to workers. Model snapshots are materialized under `models/`. Seed-VC keeps its upstream-downloaded checkpoints inside ignored local vendor storage.
 
 `persona doctor --deep`はASR、diarization、SenseVoice、LFM、Seed-VCのlocal model loadに加え、Irodoriをofflineで短時間synthesisして実際のdecode pathまで検証します。さらにlockfile、setup state、vendor revision/cleanlinessをready条件に含めます。
+
+## v0.3 candidate lineage and activation
+
+Prepare semanticsを変える処理はrootのhistorical layoutへ書き込まず、次のcandidate treeへ書き込みます。
+
+```text
+personas/<name>/
+  dataset/ models/ outputs/ cache/       historical v0.3.0/v0.3.1 baseline
+  generations/
+    prepare/pl-<32 hex>/
+      dataset/ references/ cache/        immutable Prepare candidate
+      lineage.json
+      generations/train/gen-<32 hex>/
+        models/{irodori,lfm,seed_vc}/   v0.3 family candidates
+        outputs/
+        generation.json
+    active.json                         the only mutable runtime pointer
+    activation-history/
+```
+
+`active.json`が参照するgenerationだけが通常のinference/APIへ解決されます。pointerを変更する前に、Prepare lineage identity、generation manifest、Irodori/LFM/Seed-VC family marker、全artifactの存在・size・SHA256、validation passedを再検証します。candidate作成・training・validationの失敗はactive pointerを変更しません。
+
+新しいASR/alignment/separation semantics、raw/identity/master、またはderived datasetの変更はfull dependent-family migrationです。順序は `new Prepare lineage -> Irodori -> LFM -> Seed-VC dependency or reference manifest -> validation -> explicit activation` です。同一master lineageでLFM export/filter policyだけを変更する場合だけ、既存Irodori/Seed-VCをコピーしてLFMのみ再生成する狭い例外を許可します。
+
+root historical artifactは読み取り可能なrollback baselineとして保持します。強制再実行で既存active lineageを再利用せず、fresh candidate nonce/generationを使うため、途中失敗がactive generationを破壊しません。

@@ -96,3 +96,15 @@ Training fingerprints include the pinned Irodori source revision, Irodori base/D
 ## Backend contract
 
 `persona setup --backend ...` writes the selected Irodori backend to `.runtime/setup.json`. Manifest preprocessing, Irodori training, normal synthesis, and deep doctor all consume that recorded value rather than independently choosing a visible accelerator. An explicit CPU setup therefore remains CPU even on a machine where `nvidia-smi` and CUDA are available.
+
+## Issue #42 release/0.3 ASR, alignment, and separation registry
+
+論理backendは次の3つです。legacy/referenceは `openai/whisper-large-v3` を論理IDとして扱い、現行v0.3 workerでは固定した `Systran/faster-whisper-large-v3` snapshotとword timestampを実行pinとして使います。general modernは `Qwen/Qwen3-ASR-1.7B` と固定revisionです。
+
+`jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame-hf` はdomain backendとして記録・監査対象ですが、現行policyではfail-closed disabledです。モデルページのApache-2.0表示だけでは有効化せず、学習dataset `litagin/Galgame_Speech_ASR_16kHz` のGPL-3.0、commercial-use prohibition、open-source obligationを含むprovenance/restriction reviewが必要です。
+
+alignmentはASRとは独立した `alignment-v1` contractです。Qwen transcriptには `Qwen/Qwen3-ForcedAligner-0.6B` の固定revisionだけを接続します。domain encoder専用 `ctc_aligner.pt` は同じdomain encoderとのcoupled contractとして定義しますが、domain backendがdisabledのため有効化せず、別encoderへのhead流用もしません。
+
+BGM-aware separationは `audio-separator==0.44.2` と固定source revision、human-reviewed local UVR model manifestの組み合わせです。separated stemはanalysis-onlyで、rawとcanonical audioを置き換えません。モデルのimplicit download、未監査terms、別revisionのstemはPrepareへ入れません。
+
+ASR/alignment/separationのcontractまたはpolicyが変わる場合、旧Prepare cacheを再利用せず新しいPrepare lineageを作成します。詳細なmigration・quality gate・activation・rollbackは[`ASR_LINEAGE_V03.md`](ASR_LINEAGE_V03.md)を参照してください。

@@ -8,6 +8,7 @@ from typing import Any
 
 from personavoice.config import PersonaConfig
 from personavoice.inference import synthesize
+from personavoice.lineage import effective_paths
 from personavoice.project import PersonaPaths
 from personavoice.speaker import cosine_similarity, mean_embedding
 from personavoice.workers import worker
@@ -98,6 +99,7 @@ def _identity(repo_root: Path, paths: PersonaPaths) -> list[float] | None:
 
 
 def evaluate(repo_root: Path, paths: PersonaPaths, cfg: PersonaConfig) -> dict:
+    paths = effective_paths(paths)
     report_dir = paths.outputs / "evaluation"
     report_dir.mkdir(parents=True, exist_ok=True)
     target_embedding = _identity(repo_root, paths)

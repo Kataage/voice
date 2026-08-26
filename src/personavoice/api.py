@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from personavoice.config import PersonaConfig
 from personavoice.inference import chat_turn, reenact, repeat, synthesize
+from personavoice.lineage import effective_paths
 from personavoice.project import find_repo_root, get_persona
 
 app = FastAPI(title="PersonaVoice", version="0.3.0")
@@ -48,7 +49,7 @@ class ChatRequest(BaseModel):
 def _load(name: str):
     root = find_repo_root()
     paths = get_persona(root, name)
-    return root, paths, PersonaConfig.load(paths.config)
+    return root, effective_paths(paths), PersonaConfig.load(paths.config)
 
 
 def _source_file(value: str) -> Path:
