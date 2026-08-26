@@ -326,7 +326,7 @@ def run_cuda_preflight(
 
     expected = _capability_tuple(gpu.compute_capability)
     projects: list[tuple[str, Path]] = [("irodori", irodori_project)]
-    for name in ("diarization", "sense", "lfm", "seed_vc"):
+    for name in ("diarization", "sense", "lfm", "seed_vc", "vevo2"):
         backend = worker_backends.get(name)
         if isinstance(backend, str) and backend.startswith("cu"):
             projects.append((name, repo_root / "workers" / name))

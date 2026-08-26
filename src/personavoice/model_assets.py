@@ -7,6 +7,45 @@ from __future__ import annotations
 IRODORI_SOURCE_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 SEED_VC_SOURCE_REVISION = "51383efd921027683c89e5348211d93ff12ac2a8"
 
+# Vevo2's public FM-only inference path is currently maintained in Amphion.
+# These values are copied from the audited upstream/Hugging Face revisions; do
+# not replace them with a floating branch or an unverified mirror.
+VEVO2_SOURCE_REPOSITORY = "https://github.com/open-mmlab/Amphion.git"
+VEVO2_SOURCE_REVISION = "26f6883110181f1dbfe95c70a7c7dbaf4de5f42a"
+VEVO2_SOURCE_LICENSE = "MIT"
+VEVO2_SOURCE_LICENSE_URL = "https://github.com/open-mmlab/Amphion/blob/main/LICENSE"
+VEVO2_MODEL_ID = "RMSnow/Vevo2"
+VEVO2_MODEL_REVISION = "2674843cbaa50aa89ee7ccaf5bb15d6ccf46c6c8"
+VEVO2_MODEL_LICENSE = "CC BY-NC-ND 4.0"
+VEVO2_MODEL_LICENSE_URL = "https://creativecommons.org/licenses/by-nc-nd/4.0/"
+VEVO2_MODEL_ASSET_SHA256 = {
+    "acoustic_modeling/fm_emilia101k_singnet7k_repa/config.json":
+        "e0ce1432ac20903ec8c65d16794e93c278a11d0a472ab0032241c20b8d07a4db",
+    "acoustic_modeling/fm_emilia101k_singnet7k_repa/model.safetensors":
+        "ef3733b3f92cf8f38e32f6d161f58751247b199cffc15cc1562e76c1289a7186",
+    "acoustic_modeling/fm_emilia101k_singnet7k_repa/whisper_stats.pt":
+        "6117052b3e23e9075a79cc208ecc24328ae2f71a7dd4c9793db7c90a88b4a519",
+    "tokenizer/contentstyle_fvq16384_12.5hz/model.safetensors":
+        "bebdcea39e2d0134dbcce193aed0e7b0d393a866346317cd196389e40e9151b0",
+    "vocoder/config.json":
+        "a6445bcc2182c43d97491b38d79022901f02b0f9fb56aa7a51498d0da8b9767d",
+    "vocoder/model.safetensors":
+        "5b5d1a46b19351c9a71bd8a5a59dd16be0be2ddefe70d3a0b4915d9a425e56d3",
+    "vocoder/model_1.safetensors":
+        "850799d78699134b969056183fc9d490c51f8d8154d0ed00fae3e738b6b30af6",
+    "vocoder/model_2.safetensors":
+        "56130fd13d5fbe828e56d61edb0049d35700db0472a866b8167d1d217d2687f8",
+}
+VEVO2_MODEL_REQUIRED_FILES = tuple(sorted(VEVO2_MODEL_ASSET_SHA256))
+VEVO2_WHISPER_MODEL_URL = (
+    "https://openaipublic.azureedge.net/main/whisper/models/"
+    "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt"
+)
+VEVO2_WHISPER_MODEL_SHA256 = "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1"
+VEVO2_WHISPER_SOURCE_REVISION = "5f86d1d86363843179951550570367b37c5d6f78"
+VEVO2_WHISPER_LICENSE = "MIT"
+VEVO2_WHISPER_LICENSE_URL = "https://github.com/openai/whisper/blob/main/LICENSE"
+
 IRODORI_MODEL_ID = "Aratako/Irodori-TTS-v4.1-Small"
 IRODORI_MODEL_FILENAME = "model.safetensors"
 # v4.1 is a separate Hugging Face repository from v4-Small. The old c0097bd...

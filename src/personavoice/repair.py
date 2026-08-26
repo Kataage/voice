@@ -39,6 +39,7 @@ def repair_failed_model_materializations(
     verification: dict[str, Any],
     *,
     include_seed_vc: bool,
+    include_vevo2: bool = True,
 ) -> list[str]:
     """Discard only local model views that failed deep offline verification.
 
@@ -97,5 +98,12 @@ def repair_failed_model_materializations(
         # path knows how to materialize all transitive upstream checkpoints.
         if not seed_marker.exists():
             repaired.append("seed_vc")
+
+    if include_vevo2 and _is_materialization_failure(worker_health.get("vevo2")):
+        vevo2_marker = repo_root / ".runtime" / "vevo2-models-ready"
+        # Do not delete the shared cache. The explicit Vevo2 materializer will
+        # reuse verified blobs and reconstruct only the local view.
+        if not vevo2_marker.exists():
+            repaired.append("vevo2")
 
     return repaired

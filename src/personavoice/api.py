@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
@@ -12,7 +13,7 @@ from personavoice.config import PersonaConfig
 from personavoice.inference import chat_turn, reenact, repeat, synthesize
 from personavoice.project import find_repo_root, get_persona
 
-app = FastAPI(title="PersonaVoice", version="0.3.0")
+app = FastAPI(title="PersonaVoice", version="0.4.0")
 # All current heavyweight backends target the same local accelerator. Running
 # independent TTS/VC/LLM requests concurrently is far more likely to OOM than to
 # improve latency, so the server uses a safe single-flight default.
@@ -37,6 +38,7 @@ class AudioRequest(BaseModel):
     source: str
     ref: str | None = None
     transfer_style: bool = True
+    backend: Literal["seed-vc-v2", "vevo2-fm"] | None = None
 
 
 class ChatRequest(BaseModel):
@@ -136,6 +138,7 @@ async def voice_convert(request: AudioRequest) -> dict:
                 source,
                 ref=request.ref,
                 transfer_style=request.transfer_style,
+                backend=request.backend,
             )
         return {"output": _output_item(request.persona, paths, output)}
     except Exception as exc:
@@ -148,7 +151,14 @@ async def repeat_endpoint(request: AudioRequest) -> dict:
         root, paths, cfg = _load(request.persona)
         source = _source_file(request.source)
         async with _GENERATION_LOCK:
-            outputs = await asyncio.to_thread(repeat, root, paths, cfg, source)
+            outputs = await asyncio.to_thread(
+                repeat,
+                root,
+                paths,
+                cfg,
+                source,
+                backend=request.backend,
+            )
         return {"outputs": [_output_item(request.persona, paths, path) for path in outputs]}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -198,6 +208,7 @@ audio{width:100%;margin-top:10px}.muted{color:#666}@media(max-width:700px){.grid
 <button class="full" onclick="tts()">Generate</button></div><div id="ttsAudio"></div></div>
 <div class="card"><h2>Audio → Persona</h2><div class="grid">
 <input class="full" id="source" placeholder="入力音声のローカルパス">
+<select id="vcBackend"><option value="">Configured VC backend</option><option value="seed-vc-v2">Seed-VC v2</option><option value="vevo2-fm">Vevo2 FM-only</option></select>
 <button onclick="vc()">Reenact (演技維持)</button><button onclick="repeatAudio()">Repeat (本人として再演)</button>
 </div><div id="audioResult"></div></div>
 <div class="card"><h2>Chat</h2><textarea id="prompt" rows="3" placeholder="メッセージ"></textarea><button onclick="chat()">Send</button><div id="chatAudio"></div></div>
@@ -210,8 +221,9 @@ function setPlayers(id,items){let d=document.getElementById(id);d.replaceChildre
 function setChat(text,audio){let d=document.getElementById('chatAudio'),q=document.createElement('p');q.textContent=text||'';d.replaceChildren(q,player(audio.url))}
 async function post(url,body){o.textContent='Running...';let r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});let x=await r.json();o.textContent=JSON.stringify(x,null,2);if(!r.ok)throw new Error(x.detail||'request failed');return x}
 async function tts(){try{let ev=document.getElementById('events').value.split(',').map(x=>x.trim()).filter(Boolean);let x=await post('/v1/tts',{persona:p.value,text:document.getElementById('text').value,style:document.getElementById('style').value||null,emotion:document.getElementById('emotion').value||null,events:ev,ref:document.getElementById('ref').value||null});setPlayers('ttsAudio',x.outputs||[])}catch(e){o.textContent=String(e)}}
-async function vc(){try{let x=await post('/v1/voice-convert',{persona:p.value,source:document.getElementById('source').value});setPlayers('audioResult',[x.output])}catch(e){o.textContent=String(e)}}
-async function repeatAudio(){try{let x=await post('/v1/repeat',{persona:p.value,source:document.getElementById('source').value});setPlayers('audioResult',x.outputs||[])}catch(e){o.textContent=String(e)}}
+function selectedBackend(){return document.getElementById('vcBackend').value||null}
+async function vc(){try{let x=await post('/v1/voice-convert',{persona:p.value,source:document.getElementById('source').value,backend:selectedBackend()});setPlayers('audioResult',[x.output])}catch(e){o.textContent=String(e)}}
+async function repeatAudio(){try{let x=await post('/v1/repeat',{persona:p.value,source:document.getElementById('source').value,backend:selectedBackend()});setPlayers('audioResult',x.outputs||[])}catch(e){o.textContent=String(e)}}
 async function chat(){try{let prompt=document.getElementById('prompt').value;let x=await post('/v1/chat',{persona:p.value,prompt,history});history.push({role:'user',content:prompt},{role:'assistant',content:JSON.stringify({text:x.text,voice:x.voice})});history=history.slice(-12);setChat(x.text,x.audio)}catch(e){o.textContent=String(e)}}
 init();
 </script></body></html>"""

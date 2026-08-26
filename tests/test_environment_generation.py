@@ -31,7 +31,11 @@ def _dependency_tree(root: Path) -> None:
         json.dumps({"schema_version": 1, "snapshots": {}}),
         encoding="utf-8",
     )
-    for name in ("asr", "diarization", "sense", "lfm", "seed_vc"):
+    (root / "config" / "vevo2_assets.json").write_text(
+        json.dumps({"schema_version": 1}),
+        encoding="utf-8",
+    )
+    for name in ("asr", "diarization", "sense", "lfm", "seed_vc", "vevo2"):
         _write(root / "workers" / name / "pyproject.toml", name.encode())
         _write(root / "workers" / name / "uv.lock", f"{name}-lock".encode())
 
@@ -157,7 +161,7 @@ def test_successful_setup_commits_state_then_clears_transaction_marker(
     result = setup_env.install_environments(tmp_path, backend="cu128")
 
     assert result["irodori_backend"] == "cu128"
-    assert len(synced) == 5
+    assert len(synced) == 6
     assert ("lfm", "cu128") in synced
     assert ("seed_vc", "cu124") in synced
     assert not (tmp_path / ".runtime" / SETUP_TRANSACTION_MARKER).exists()

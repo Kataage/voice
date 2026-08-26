@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/open-mmlab/Amphion.git",
+    "revision": "26f6883110181f1dbfe95c70a7c7dbaf4de5f42a",
+    "license": "MIT",
+    "license_url": "https://github.com/open-mmlab/Amphion/blob/main/LICENSE"
+  },
+  "model": {
+    "repo_id": "RMSnow/Vevo2",
+    "revision": "2674843cbaa50aa89ee7ccaf5bb15d6ccf46c6c8",
+    "local_dir": "vevo2",
+    "license": "CC BY-NC-ND 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+    "required_files": [
+      "acoustic_modeling/fm_emilia101k_singnet7k_repa/config.json",
+      "acoustic_modeling/fm_emilia101k_singnet7k_repa/model.safetensors",
+      "acoustic_modeling/fm_emilia101k_singnet7k_repa/whisper_stats.pt",
+      "tokenizer/contentstyle_fvq16384_12.5hz/model.safetensors",
+      "vocoder/config.json",
+      "vocoder/model.safetensors",
+      "vocoder/model_1.safetensors",
+      "vocoder/model_2.safetensors"
+    ],
+    "sha256": {
+      "acoustic_modeling/fm_emilia101k_singnet7k_repa/config.json": "e0ce1432ac20903ec8c65d16794e93c278a11d0a472ab0032241c20b8d07a4db",
+      "acoustic_modeling/fm_emilia101k_singnet7k_repa/model.safetensors": "ef3733b3f92cf8f38e32f6d161f58751247b199cffc15cc1562e76c1289a7186",
+      "acoustic_modeling/fm_emilia101k_singnet7k_repa/whisper_stats.pt": "6117052b3e23e9075a79cc208ecc24328ae2f71a7dd4c9793db7c90a88b4a519",
+      "tokenizer/contentstyle_fvq16384_12.5hz/model.safetensors": "bebdcea39e2d0134dbcce193aed0e7b0d393a866346317cd196389e40e9151b0",
+      "vocoder/config.json": "a6445bcc2182c43d97491b38d79022901f02b0f9fb56aa7a51498d0da8b9767d",
+      "vocoder/model.safetensors": "5b5d1a46b19351c9a71bd8a5a59dd16be0be2ddefe70d3a0b4915d9a425e56d3",
+      "vocoder/model_1.safetensors": "850799d78699134b969056183fc9d490c51f8d8154d0ed00fae3e738b6b30af6",
+      "vocoder/model_2.safetensors": "56130fd13d5fbe828e56d61edb0049d35700db0472a866b8167d1d217d2687f8"
+    }
+  },
+  "whisper": {
+    "source_repository": "https://github.com/openai/whisper.git",
+    "source_revision": "5f86d1d86363843179951550570367b37c5d6f78",
+    "url": "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt",
+    "local_file": "whisper/medium.pt",
+    "sha256": "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1",
+    "license": "MIT",
+    "license_url": "https://github.com/openai/whisper/blob/main/LICENSE"
+  }
+}

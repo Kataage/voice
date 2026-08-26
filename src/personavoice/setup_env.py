@@ -48,6 +48,11 @@ from personavoice.model_assets import (
     SENSE_MODEL_ID,
     SENSE_MODEL_TOKENIZER_SHA256,
     SENSE_MODEL_WEIGHT_SHA256,
+    VEVO2_MODEL_ID,
+    VEVO2_MODEL_LICENSE,
+    VEVO2_MODEL_REVISION,
+    VEVO2_SOURCE_LICENSE,
+    VEVO2_SOURCE_REVISION,
 )
 from personavoice.process import CommandError, run
 from personavoice.seed_vc_assets import (
@@ -59,12 +64,17 @@ from personavoice.seed_vc_assets import (
 from personavoice.seed_vc_assets import (
     ready_marker as seed_vc_ready_marker,
 )
+from personavoice.vevo2_assets import contract_digest as vevo2_contract_digest
+from personavoice.vevo2_assets import materialize as materialize_vevo2_assets
+from personavoice.vevo2_assets import ready_marker as vevo2_ready_marker
 from personavoice.workers import local_model_env, worker
 
 IRODORI_REPO = "https://github.com/Aratako/Irodori-TTS.git"
 IRODORI_REVISION = IRODORI_SOURCE_REVISION
 SEED_VC_REPO = "https://github.com/Plachtaa/seed-vc.git"
 SEED_VC_REVISION = SEED_VC_SOURCE_REVISION
+VEVO2_REPO = "https://github.com/open-mmlab/Amphion.git"
+VEVO2_REVISION = VEVO2_SOURCE_REVISION
 REVISION_MARKER = ".personavoice-revision"
 IRODORI_LOCK_SWAP_MARKER = "irodori-lock-swap.json"
 IRODORI_MANAGED_PROJECT = "Irodori-TTS.pyproject.toml"
@@ -239,6 +249,11 @@ def _worker_extras(selected_backend: str, *, gpu=None) -> dict[str, str | None]:
             # Seed-VC stays on its audited Torch 2.4 stack. Blackwell and newer
             # GPUs predate that wheel's cubins, so only this worker falls back.
             "seed_vc": seed_backend,
+            # The initial Vevo2 FM worker deliberately uses its own copy of the
+            # audited Torch 2.4/cu124 family. This mapping proves dependency
+            # compatibility only; model VRAM/performance remains a target-machine
+            # validation gate.
+            "vevo2": seed_backend,
         }
     return {
         "asr": None,
@@ -246,6 +261,7 @@ def _worker_extras(selected_backend: str, *, gpu=None) -> dict[str, str | None]:
         "sense": "cpu",
         "lfm": "cpu",
         "seed_vc": "cpu",
+        "vevo2": "cpu",
     }
 
 
@@ -342,6 +358,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
+        "vevo2_revision": VEVO2_REVISION,
         "environment_contract": environment_contract(repo_root),
     }
     # This marker is written before the first environment mutation. It is
@@ -356,10 +373,11 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         IRODORI_REVISION,
     )
     seed = _clone_pinned(repo_root, "seed-vc", SEED_VC_REPO, SEED_VC_REVISION)
+    vevo2 = _clone_pinned(repo_root, "Amphion", VEVO2_REPO, VEVO2_REVISION)
     _install_irodori(repo_root, irodori, selected_backend)
 
     synced = []
-    for name in ("asr", "diarization", "sense", "lfm", "seed_vc"):
+    for name in ("asr", "diarization", "sense", "lfm", "seed_vc", "vevo2"):
         worker(repo_root, name).sync(repo_root, extra=worker_extras[name])
         synced.append(name)
 
@@ -383,6 +401,7 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
         "selected_gpu": selected_gpu_state,
         "irodori_revision": IRODORI_REVISION,
         "seed_vc_revision": SEED_VC_REVISION,
+        "vevo2_revision": VEVO2_REVISION,
         "environment_contract": environment_contract(repo_root),
         "runtime_preflight": runtime_preflight,
         "model_assets": {
@@ -395,6 +414,12 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
             "asr_revision": ASR_MODEL_REVISION,
             "asr_model_sha256": ASR_MODEL_WEIGHT_SHA256,
             "seed_vc_asset_contract_sha256": seed_vc_contract_digest(repo_root),
+            "vevo2_source_revision": VEVO2_SOURCE_REVISION,
+            "vevo2_model_id": VEVO2_MODEL_ID,
+            "vevo2_model_revision": VEVO2_MODEL_REVISION,
+            "vevo2_asset_contract_sha256": vevo2_contract_digest(repo_root),
+            "vevo2_source_license": VEVO2_SOURCE_LICENSE,
+            "vevo2_model_license": VEVO2_MODEL_LICENSE,
         },
         "prepare_assets": {
             "pyannote_revision": PYANNOTE_MODEL_REVISION,
@@ -409,7 +434,11 @@ def install_environments(repo_root: Path, *, backend: str | None = None) -> dict
     return {
         **setup_state,
         "workers": synced,
-        "vendor": {"irodori": str(irodori), "seed_vc": str(seed)},
+        "vendor": {
+            "irodori": str(irodori),
+            "seed_vc": str(seed),
+            "vevo2": str(vevo2),
+        },
     }
 
 
@@ -538,6 +567,7 @@ def download_models(
     *,
     hf_token: str | None = None,
     include_seed_vc: bool = True,
+    include_vevo2: bool = True,
 ) -> dict:
     env = local_model_env(repo_root, offline=False)
     hf_home = Path(env["HF_HOME"])
@@ -687,6 +717,37 @@ def download_models(
             downloaded.append("Seed-VC-v2-local-runtime")
         else:
             reused.append("Seed-VC-v2-local-runtime")
+
+    if include_vevo2:
+        vevo2_assets = materialize_vevo2_assets(
+            repo_root,
+            cache_dir=hub_cache,
+            token=token,
+        )
+        downloaded.extend(f"Vevo2:{name}" for name in vevo2_assets["downloaded"])
+        reused.extend(f"Vevo2:{name}" for name in vevo2_assets["reused"])
+        vevo2_digest = vevo2_contract_digest(repo_root)
+        marker = vevo2_ready_marker(repo_root)
+        try:
+            marker_matches = (
+                marker.is_file()
+                and marker.read_text(encoding="utf-8").strip() == vevo2_digest
+            )
+        except OSError:
+            marker_matches = False
+        if vevo2_assets["downloaded"] or not marker_matches:
+            # This worker command is named for setup compatibility but is
+            # strictly offline: it loads the local pinned FM graph and publishes
+            # the ready marker only after that load succeeds.
+            worker(repo_root, "vevo2").call(
+                repo_root,
+                "download",
+                {"online": False},
+                offline=True,
+            )
+            downloaded.append("Vevo2-FM-local-runtime")
+        else:
+            reused.append("Vevo2-FM-local-runtime")
 
     return {
         "downloaded": downloaded,

@@ -80,10 +80,11 @@ def _prepare_cache_policy() -> str:
         "speaker_code_sha256": _file_contract(repo / "src" / "personavoice" / "speaker.py"),
         "captions_code_sha256": _file_contract(repo / "src" / "personavoice" / "captions.py"),
         "dataset_code_sha256": _file_contract(repo / "src" / "personavoice" / "dataset.py"),
-        "worker_client_code_sha256": _file_contract(repo / "src" / "personavoice" / "workers.py"),
-        "worker_contracts_code_sha256": _file_contract(
-            repo / "src" / "personavoice" / "worker_contracts.py"
-        ),
+        # VC backend routing is intentionally excluded: adding or changing a
+        # zero-shot VC runtime must not invalidate expensive Prepare/ASR/
+        # diarization/SenseVoice caches. Prepare-specific worker code and locks
+        # remain bound above and below; the complete launcher/response contract
+        # is audited by environment_contract instead.
         "asr_worker_code_sha256": _file_contract(repo / "workers" / "asr" / "worker.py"),
         "diarization_worker_code_sha256": _file_contract(
             repo / "workers" / "diarization" / "worker.py"
@@ -96,8 +97,10 @@ def _prepare_cache_policy() -> str:
 
 PREPARE_CACHE_POLICY_VERSION = _prepare_cache_policy()
 PREPARE_CACHE_POLICY_COMPATIBILITY = {
-    "14-b19d85f2c6e8eac470cf": frozenset(
+    "14-5632a9a5a5b360e5430a": frozenset(
         {
+            "14-89127e1d568497e01210",
+            "14-b19d85f2c6e8eac470cf",
             "14-9b93893d6b990319b60e",
             "12-6ef53c9f266fd6794c3e",
             "12-1d31ef1abd217bcf5c4f",
