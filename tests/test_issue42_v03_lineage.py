@@ -215,7 +215,7 @@ def test_quality_reports_record_provenance_rejections_and_short_response_retenti
             "alice",
             report_path=lfm_report,
             lineage_metadata=metadata,
-            max_tokens=128,
+            max_tokens=2048,
         )
         == 1
     )
@@ -236,7 +236,7 @@ def test_quality_reports_record_provenance_rejections_and_short_response_retenti
     assert lfm["accepted_count"] == 1
     assert lfm["rejected_count"] == 1
     assert lfm["rejection_reasons"]["insufficient_target_speaker_evidence"] == 1
-    assert lfm["token_count_source"] in {"heuristic", "mixed_token_count_sources"}
+    assert lfm["token_count_source"] in {"conservative_character_estimate", "mixed_token_count_sources"}
     assert lfm["valid_short_or_nonverbal_retention"] is True
     assert irodori["accepted_count"] == 1
     assert irodori["rejection_reasons"]["missing_target_speaker_evidence"] == 1
