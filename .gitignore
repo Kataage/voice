@@ -11,6 +11,7 @@ __pycache__/
 models/
 vendor/
 personas/*/persona.yaml
+personas/*/core_profile.yaml
 personas/*/raw/*
 personas/*/identity/*
 personas/*/dataset/*

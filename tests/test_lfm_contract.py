@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from personavoice import dataset, training
+from personavoice.lfm_contract import LFM_CONTRACT_FINGERPRINT, LFM_CONTRACT_SCHEMA_VERSION
 from personavoice.model_assets import LFM_MODEL_REVISION
 
 
@@ -73,8 +74,13 @@ def test_lfm_export_uses_conversational_prompt_completion(tmp_path: Path):
     assert dataset.export_lfm(master, output, "alice") == 1
     example = json.loads(output.read_text(encoding="utf-8").strip())
 
+    assert example["lfm_contract"] == {
+        "schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+        "fingerprint": LFM_CONTRACT_FINGERPRINT,
+    }
     assert "messages" not in example
     assert [message["role"] for message in example["prompt"]] == ["system", "user"]
+    assert "Core Profile" in example["prompt"][0]["content"]
     assert [message["role"] for message in example["completion"]] == ["assistant"]
     answer = json.loads(example["completion"][0]["content"])
     assert answer["text"] == "めっちゃ楽しかったよ！"
@@ -180,9 +186,10 @@ def test_lfm_worker_and_trainer_are_pinned_to_jp_202606_contract():
 
     assert 'MODEL_ID = "LiquidAI/LFM2.5-1.2B-JP-202606"' in worker
     assert "b31023f2d69b95fbd7876898f8de9fae90e8afbd" in worker
-    assert "temperature=float(payload.get(\"temperature\", 0.1))" in worker
-    assert "top_k=50" in worker
-    assert "repetition_penalty=1.05" in worker
+    assert "def _generation_kwargs(payload: dict) -> dict:" in worker
+    assert "MAX_GENERATION_TOKENS = 1024" in worker
+    assert '"top_k": 50' in worker
+    assert '"repetition_penalty": 1.05' in worker
     assert "top_p=" not in worker
     assert "verify_adapter(adapter_path)" in worker
     assert "completion_only_loss=True" in trainer

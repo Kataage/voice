@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from personavoice.lfm_contract import (
+    LFM_CONTRACT_FINGERPRINT,
+    LFM_CONTRACT_SCHEMA_VERSION,
+    build_lfm_system_prompt,
+    normalize_voice_fields,
+)
+from personavoice.profile import PROFILE_FILENAME, CoreProfile, load_core_profile
+
 SCHEMA_VERSION = 1
 
 
@@ -283,7 +291,13 @@ def _conversation_blocks(source_rows: list[dict[str, Any]]) -> list[dict[str, An
     return blocks
 
 
-def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
+def export_lfm(
+    master_db: Path,
+    output: Path,
+    persona_name: str,
+    *,
+    profile: CoreProfile | None = None,
+) -> int:
     """Export conversational prompt/completion examples for persona SFT.
 
     TRL applies the model chat template to conversational prompt/completion data
@@ -297,10 +311,11 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
     by_source: dict[str, list[dict[str, Any]]] = {}
     for row in all_rows:
         by_source.setdefault(row["source_id"], []).append(row)
-    system = (
-        f"あなたは{persona_name}の会話スタイルを再現するローカル会話モデルです。"
-        "返答は必ずJSONのみで、textとvoice.caption、voice.emotion、voice.eventsを返してください。"
+    profile = profile or load_core_profile(
+        master_db.parent.parent / PROFILE_FILENAME,
+        persona_name=persona_name,
     )
+    system = build_lfm_system_prompt(profile)
     for source_rows in by_source.values():
         blocks = _conversation_blocks(source_rows)
         for index, block in enumerate(blocks):
@@ -317,16 +332,27 @@ def export_lfm(master_db: Path, output: Path, persona_name: str) -> int:
                 continue
             user = "直前の会話:\n" + "\n".join(lines) + "\nこの続きとして自然に返答してください。"
             voice_row = block["voice_row"]
-            answer = {
-                "text": block["text"],
-                "voice": {
+            caption, emotion, events, _ = normalize_voice_fields(
+                {
                     "caption": voice_row.get("caption") or "自然に話している。",
                     "emotion": voice_row.get("emotion") or "NEUTRAL",
                     "events": voice_row.get("events") or [],
+                }
+            )
+            answer = {
+                "text": block["text"],
+                "voice": {
+                    "caption": caption,
+                    "emotion": emotion,
+                    "events": list(events),
                 },
             }
             examples.append(
                 {
+                    "lfm_contract": {
+                        "schema_version": LFM_CONTRACT_SCHEMA_VERSION,
+                        "fingerprint": LFM_CONTRACT_FINGERPRINT,
+                    },
                     "prompt": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},

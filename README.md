@@ -24,6 +24,7 @@ uv run --locked persona ui
 - LFM2.5-1.2B-JP-202606: 会話/口調LoRA + 発話スタイル計画
 - Seed-VC v2: 入力音声の間・抑揚・演技を使ったVoice Conversion
 - `say`, `reenact`, `repeat`, `chat`, Web UI, localhost REST API
+- versioned `core_profile.yaml` for persistent runtime persona identity and boundaries
 - Irodori境界診断（duration/tail A/B、leading artifactのseed・reference・caption比較）
 - canonical SQLite dataset、content cache、途中再開、入力変更時の自動invalidation
 - rootと各ML stackを独立した`uv`環境に隔離
@@ -107,6 +108,8 @@ ASR・diarization・SenseVoiceはbatch workerとしてモデルを一度だけ�
 
 同じfingerprintで失敗/中断した通常の再実行は安全なcache/checkpointから再開します。`raw/`, `identity/`, prepare設定、固定model revision、前処理worker lock、training dataset/設定、training worker lockが変わった場合は依存artifactを自動で無効化します。リポジトリ/人物フォルダを移動した場合も、absolute-path exportを古い場所のまま再利用しません。`--force`を指定した場合は、同じfingerprintの失敗後であってもprepare由来cache/checkpointを破棄して完全に作り直します。
 
+`core_profile.yaml`はruntime-onlyで、Prepare/Irodori/Seed-VCのfingerprintには含まれません。profile編集は次のchat turnへ反映され、既存artifactの再生成や再学習を要求しません。`persona export-lfm`で将来のLFM学習用exportだけを更新した場合も、再学習時のinvalidationはLFM scopeに限定されます。
+
 ```bash
 uv run --locked persona prepare alice
 uv run --locked persona train alice
@@ -159,9 +162,11 @@ uv run --locked persona repeat alice input.wav
 ```bash
 uv run --locked persona chat alice
 uv run --locked persona chat alice "今日は何してた？"
+# Prepare済みmasterからLFMだけ再export（ASR/diarization/SenseVoiceは再実行しない）
+uv run --locked persona export-lfm alice
 ```
 
-LFMが本文と`voice.caption`, `voice.emotion`, `voice.events`を計画しIrodoriへ渡します。構造化JSONが崩れた場合もplain-text fallbackを行い、型の壊れたcaption/emotion/eventsは正規化してからTTSへ渡します。
+`personas/alice/core_profile.yaml`が恒久的なidentity/self-concept、first-person/addressing、stable facts、relationships、conversation rulesを持ちます。profileは毎ターンruntime conditioningとして読み込まれ、learned LFM styleや会話履歴とは別に扱われます。LFMは本文と`voice.caption`, `voice.emotion`, `voice.events`を同時に計画し、canonical normalization後の**同じvoice plan**をIrodoriへ渡します。neutralな返答の`events`は空でよく、fallbackが笑い・息などを勝手に追加することはありません。malformed/empty/degenerate outputはLFM境界で最大1回だけbounded retryし、Irodoriの`text is empty`へ流しません。profile編集はruntime-onlyで、Prepare/Irodori/Seed-VC artifactや既存LFM LoRAの利用を強制的に無効化しません。詳細は[`docs/CORE_PROFILE_LFM_CONTRACT.md`](docs/CORE_PROFILE_LFM_CONTRACT.md)を参照してください。
 
 ## Web UI / API
 
