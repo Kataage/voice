@@ -6,6 +6,7 @@ import math
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from personavoice.asr_contract import (
     alignment_contract_for_result,
@@ -816,6 +817,10 @@ def prepare_persona(
         # the stable state marker remains reserved for legacy root caches.
         cache_policy_version=_prepare_cache_policy(),
     )
+    if force:
+        # A forced rerun is always a fresh candidate.  In particular, do not
+        # rewrite the Prepare dataset shared by an already active generation.
+        seed["force_candidate_nonce"] = uuid4().hex
     lineage_id, lineage_fingerprint = lineage_identity(seed)
     candidate_paths = paths.for_lineage(lineage_id)
     candidate_paths.ensure_lineage()

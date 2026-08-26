@@ -17,8 +17,8 @@ from personavoice.model_assets import (
     IRODORI_DACVAE_SHA256,
     IRODORI_SOURCE_REVISION,
 )
-from personavoice.project import PersonaPaths
 from personavoice.media import sha256_file
+from personavoice.project import PersonaPaths
 
 IRODORI_INPUT_CONTRACT_SCHEMA = 1
 IRODORI_LATENT_POLICY_VERSION = 1
