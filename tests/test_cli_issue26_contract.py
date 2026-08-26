@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -65,8 +66,11 @@ def test_cli_help_exposes_executor_and_explicit_migration_commands() -> None:
 
     assert root_help.exit_code == 0
     assert "migrate-config" in root_help.stdout
-    assert train_help.exit_code == 0 and "--executor" in train_help.stdout
-    assert build_help.exit_code == 0 and "--executor" in build_help.stdout
+    ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    train_visible = ansi.sub("", train_help.stdout)
+    build_visible = ansi.sub("", build_help.stdout)
+    assert train_help.exit_code == 0 and "--executor" in train_visible
+    assert build_help.exit_code == 0 and "--executor" in build_visible
 
 
 def test_migrate_config_never_writes_until_the_explicit_non_dry_run(

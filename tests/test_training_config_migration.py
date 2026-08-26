@@ -287,8 +287,8 @@ def test_v03_artifact_adoption_requires_exact_completed_input_and_config_lineage
     fingerprints = training_module._legacy_v03_fingerprints(paths, cfg)
     assert fingerprints == frozenset(
         {
-            "389dad1e6ea1f4dc6020a2307075aa322fa68213cfb4b79df39e8209efae116b",
-            "9f0d36409e20fa83a07259dc8df89f54b768755e9e427152565b1bbd9a55e128",
+            "2c06e9a51edbf6bed95492a94cc115c011fd7204a87ddbee3ee1c916f87f8e44",
+            "5f251f84d110e0d33083e0dd21d1756b09b60bb72c307f4f795f84fbdcf12877",
         }
     )
     recorded = sorted(fingerprints)[0]

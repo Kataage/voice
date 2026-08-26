@@ -620,16 +620,20 @@ def test_worker_verifies_and_uses_full_model_without_loading_peft(tmp_path: Path
     class InputIds:
         shape = (1, 2)
 
-        def to(self, _device):
+    class BatchEncoding(dict):
+        def to(self, device):
+            assert device == "cpu"
             return self
 
     class Output:
-        def __getitem__(self, _index):
+        def __getitem__(self, index):
+            assert index == (0, slice(2, None))
             return "generated"
 
     class Tokenizer:
-        def apply_chat_template(self, *_args, **_kwargs):
-            return InputIds()
+        def apply_chat_template(self, *_args, **kwargs):
+            assert kwargs["return_dict"] is True
+            return BatchEncoding(input_ids=InputIds())
 
         def decode(self, _tokens, **_kwargs):
             return "full result"
@@ -637,9 +641,9 @@ def test_worker_verifies_and_uses_full_model_without_loading_peft(tmp_path: Path
     class Model:
         device = "cpu"
 
-        def generate(self, *_args, **_kwargs):
+        def generate(self, **kwargs):
+            assert isinstance(kwargs.pop("input_ids"), InputIds)
             return Output()
-
     monkeypatch.setattr(worker, "load_full_model", lambda path: (Tokenizer(), Model()))
     monkeypatch.setattr(
         worker,

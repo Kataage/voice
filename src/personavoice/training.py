@@ -108,6 +108,14 @@ _EXTERNAL_CANDIDATE_PREFIX = "__candidate__/"
 _IRODORI_PERIODIC_CHECKPOINT_RE = re.compile(r"^checkpoint_(\d+)(?:\.pt|\.speaker\.safetensors)?$")
 _REMOTE_CHECKPOINT_OBSERVER_SECONDS = 5.0
 _LEGACY_V03_TRAIN_SCHEMA = 8
+_LEGACY_V03_MODEL_CONTRACT = {
+    "irodori_source_revision": "8224dafb46d0aba89209a8f905f1cb7e3299d9c1",
+    "irodori_model_sha256": "c85de88c01700cb53538e706f128ebcb1b8513ad21d7d0e75f58bc82cdbf89f6",
+    "irodori_dacvae_sha256": "db120339c5ee7eca1912cdf29bc612b947a0808e69c3cebfb4936b45a762c1d5",
+    "irodori_text_encoder_revision": "77675fc96a7e445e982e2ba90246b816efc74ec6",
+    "lfm_revision": "b31023f2d69b95fbd7876898f8de9fae90e8afbd",
+    "seed_vc_source_revision": "51383efd921027683c89e5348211d93ff12ac2a8",
+}
 # Exact SHA-256 values of the v0.3.0 tag (commit
 # 939c341f76424ee6d88ef8bc62cc9aba8beada27) used by its train-stage
 # fingerprint.  Both Git LF blobs and Windows core.autocrlf CRLF worktrees are
@@ -292,12 +300,7 @@ def _legacy_v03_fingerprints(paths: PersonaPaths, cfg: PersonaConfig) -> frozens
         digest = hashlib.sha256()
         digest.update(f"train-schema:{_LEGACY_V03_TRAIN_SCHEMA}".encode())
         model_contract = {
-            "irodori_source_revision": IRODORI_REVISION,
-            "irodori_model_sha256": IRODORI_MODEL_SHA256,
-            "irodori_dacvae_sha256": IRODORI_DACVAE_SHA256,
-            "irodori_text_encoder_revision": IRODORI_TEXT_ENCODER_REVISION,
-            "lfm_revision": LFM_MODEL_REVISION,
-            "seed_vc_source_revision": SEED_VC_REVISION,
+            **_LEGACY_V03_MODEL_CONTRACT,
             **file_contract,
         }
         digest.update(

@@ -727,47 +727,45 @@ def test_full_conditioning_comparison_reports_all_required_metrics(
             self.name = name
 
         def call(self, repo_root, command, payload):
-            del repo_root, command
-            items = payload.get("items") or payload.get("embeddings")
+            del repo_root
+            if self.name == "diarization":
+                assert command == "embed"
+                assert set(payload) == {"audio"}
+                return {"embedding": [1.0, 0.0]}
+
+            items = payload.get("items")
+            assert isinstance(items, list)
             if self.name == "asr":
                 return {
                     "results": [
                         {
                             "id": item["id"],
                             "ok": True,
-                            "result": {"segments": [{"text": case_for_item(item["id"])["text"]}]},
-                        }
-                        for item in items
-                    ]
-                }
-            if self.name == "sense":
-                return {
-                    "results": [
-                        {
-                            "id": item["id"],
-                            "ok": True,
                             "result": {
-                                "emotion": case_for_item(item["id"])["emotion"],
-                                "events": [],
+                                "segments": [
+                                    {"text": case_for_item(item["id"])["text"]}
+                                ]
                             },
                         }
                         for item in items
                     ]
                 }
-            assert self.name == "diarization"
+            assert self.name == "sense"
             return {
-                "embeddings": [
+                "results": [
                     {
                         "id": item["id"],
                         "ok": True,
-                        "result": {"embedding": [1.0, 0.0]},
+                        "result": {
+                            "emotion": case_for_item(item["id"])["emotion"],
+                            "events": [],
+                        },
                     }
                     for item in items
                 ]
             }
-
     monkeypatch.setattr(evaluation, "worker", lambda repo_root, name: FakeWorker(name))
-    monkeypatch.setattr(evaluation, "_identity", lambda repo_root, paths: [1.0, 0.0])
+    monkeypatch.setattr(evaluation, "_identity", lambda repo_root, paths: ([1.0, 0.0], {}))
 
     report = evaluation._analyze_voice_sets(
         tmp_path,
