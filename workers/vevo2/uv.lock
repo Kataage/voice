@@ -760,6 +760,7 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "safetensors" },
     { name = "scipy" },
+    { name = "setuptools" },
     { name = "six" },
     { name = "soundfile" },
     { name = "torch", version = "2.4.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-vevo2-cpu') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-vevo2-cpu' and extra == 'extra-25-personavoice-worker-vevo2-cu124') or (platform_python_implementation != 'CPython' and sys_platform == 'linux' and extra == 'extra-25-personavoice-worker-vevo2-cpu' and extra == 'extra-25-personavoice-worker-vevo2-cu124') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-25-personavoice-worker-vevo2-cpu') or (sys_platform == 'win32' and extra == 'extra-25-personavoice-worker-vevo2-cpu' and extra == 'extra-25-personavoice-worker-vevo2-cu124')" },
@@ -812,6 +813,7 @@ requires-dist = [
     { name = "ruamel-yaml", specifier = "==0.18.16" },
     { name = "safetensors", specifier = "==0.6.2" },
     { name = "scipy", specifier = "==1.13.1" },
+    { name = "setuptools", specifier = "==81.0.0" },
     { name = "six", specifier = "==1.17.0" },
     { name = "soundfile", specifier = "==0.12.1" },
     { name = "torch", specifier = "==2.4.0" },
@@ -1142,6 +1144,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a3/ba/7255e5dc82a65adbe83771c72f384d99c43063648456796436c9a5585ec3/scipy-1.13.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f26264b282b9da0952a024ae34710c2aff7d27480ee91a2e82b7b7073c24722f", size = 38577335, upload-time = "2024-05-23T03:19:21.984Z" },
     { url = "https://files.pythonhosted.org/packages/49/a5/bb9ded8326e9f0cdfdc412eeda1054b914dfea952bda2097d174f8832cc0/scipy-1.13.1-cp310-cp310-musllinux_1_1_x86_64.whl", hash = "sha256:eccfa1906eacc02de42d70ef4aecea45415f5be17e72b61bafcfd329bdc52e94", size = 38820728, upload-time = "2024-05-23T03:19:28.225Z" },
     { url = "https://files.pythonhosted.org/packages/12/30/df7a8fcc08f9b4a83f5f27cfaaa7d43f9a2d2ad0b6562cced433e5b04e31/scipy-1.13.1-cp310-cp310-win_amd64.whl", hash = "sha256:2831f0dc9c5ea9edd6e51e6e769b655f08ec6db6e2e10f86ef39bd32eb11da54", size = 46210588, upload-time = "2024-05-23T03:19:35.661Z" },
+]
+
+[[package]]
+name = "setuptools"
+version = "81.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/1c/73e719955c59b8e424d015ab450f51c0af856ae46ea2da83eba51cc88de1/setuptools-81.0.0.tar.gz", hash = "sha256:487b53915f52501f0a79ccfd0c02c165ffe06631443a886740b91af4b7a5845a", size = 1198299, upload-time = "2026-02-06T21:10:39.601Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl", hash = "sha256:fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6", size = 1062021, upload-time = "2026-02-06T21:10:37.175Z" },
 ]
 
 [[package]]
